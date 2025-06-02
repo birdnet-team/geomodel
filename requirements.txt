@@ -1,0 +1,8 @@
+cartopy
+matplotlib
+pandas
+tqdm
+global-land-mask
+earthengine.api
+numpy
+dotenv
