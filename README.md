@@ -49,7 +49,7 @@ Spatiotemporal species range prediction for detection post-filtering
     *   [iNaturalist Observation Dataset](http://www.inaturalist.org/observations/gbif-observations-dwca.zip)
     *   [eBird Observation Dataset](https://hosted-datasets.gbif.org/eBird/2023-eBird-dwca-1.0.zip)
 
-    **Make sure to appropriately citate the sources of these datasets in your work.**
+    **Make sure to appropriately cite the sources of these datasets in your work.**
 
     After copiyng the datasets to your working directory, create a `.env` file and specify the path:
 
@@ -84,6 +84,21 @@ This script generates a grid of environmental data and plots it. It uses Google 
     *   `--plot_column`: Column to plot (default: `elevation_m`). Set to `None` to skip plotting.
 
     Results will be saved in the working directory, and plots will be generated in the `plots` directory.
+
+### observations.py
+
+This script processes iNaturalist and eBird observations, filters them, and saves the results.
+
+1.  **Parsing source data:**
+
+    ```bash
+    python observations.py --parse_inat_source --parse_ebird_source
+    ```
+
+    **Arguments:**
+    *   `--parse_inat_source`: If set, parses the iNaturalist source data.
+    *   `--parse_ebird_source`: If set, parses the eBird source data.
+
 
 ## Citation
 If you use this code in your research, please cite as:
