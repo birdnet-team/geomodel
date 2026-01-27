@@ -205,7 +205,47 @@ def compute_environmental_data(h3_indexes: Iterable[str], scale: int = 30, field
 
     # Define datasets (only initialize used ones)
     jrc = ee.Image("JRC/GSW1_4/GlobalSurfaceWater").select('occurrence') if 'water' in fields else None
-    elev_img = ee.Image("USGS/SRTMGL1_003") if 'elevation' in fields else None
+    # SRTM has limited northward coverage (~60°N). Compose with a GMTED
+    # fallback so that areas above 60°N receive elevation values when
+    # available. We prefer `USGS/GMTED2010_FULL` then fall back to the
+    # legacy `USGS/GMTED2010` name if needed. If neither fallback is
+    # available the pipeline will still use SRTM and the existing silent
+    # nearest-neighbour fill will attempt to improve coverage.
+    elev_img = None
+    if 'elevation' in fields:
+        try:
+            srtm = ee.Image("USGS/SRTMGL1_003")
+            fallback = None
+            for candidate in ("USGS/GMTED2010_FULL", "USGS/GMTED2010"):
+                try:
+                    # Select the first band from the candidate so unmask() is
+                    # supplied a single-band image (SRTM is single-band).
+                    fb = ee.Image(candidate).select(0)
+                    # don't raise here; just assign the first candidate
+                    fallback = fb
+                    LOG.debug('Using elevation fallback candidate: %s', candidate)
+                    break
+                except Exception:
+                    continue
+            if fallback is not None:
+                # Ensure fallback is single-band; select(0) above does this.
+                elev_img = srtm.unmask(fallback)
+                LOG.debug('Composed SRTM with GMTED fallback for elevation')
+            else:
+                elev_img = srtm
+                LOG.debug('Using SRTM for elevation (no GMTED fallback available)')
+        except Exception:
+            # Best-effort: if constructing SRTM fails, try to use any GMTED
+            try:
+                elev_img = ee.Image("USGS/GMTED2010_FULL").select(0)
+                LOG.debug('Using GMTED_FULL for elevation (SRTM unavailable)')
+            except Exception:
+                try:
+                    elev_img = ee.Image("USGS/GMTED2010").select(0)
+                    LOG.debug('Using GMTED for elevation (SRTM unavailable)')
+                except Exception:
+                    LOG.warning('No elevation sources available (SRTM/GMTED)')
+                    elev_img = None
     canopy_img = ee.Image("NASA/JPL/global_forest_canopy_height_2005") if 'canopy' in fields else None
     worldclim = ee.Image("WORLDCLIM/V1/BIO") if 'climate' in fields else None
     modis_img = None
