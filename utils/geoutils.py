@@ -449,13 +449,27 @@ def fill_missing_with_nearest(gdf: gpd.GeoDataFrame, columns: Optional[List[str]
 
         # Only attempt to fill rows that have at least one other value present.
         # Skip rows that are completely empty across the considered columns.
+        k = 3
         for mi in missing_idx:
             if not rows_with_any[mi]:
                 continue
+            # squared distances to non-missing points
             dists = np.sum((coords[non_missing_idx] - coords[mi]) ** 2, axis=1)
-            nearest = non_missing_idx[int(np.argmin(dists))]
+            # indices of the k nearest non-missing points
+            order = np.argsort(dists)[:k]
+            nearest_idx = non_missing_idx[order]
             try:
-                gdf.at[gdf.index[mi], col] = gdf.iloc[nearest][col]
+                vals = gdf.iloc[nearest_idx][col].dropna().to_numpy()
+                if vals.size == 0:
+                    continue
+                # Numeric: use mean of nearest values. Categorical: use mode.
+                if ptypes.is_numeric_dtype(gdf[col].dtype):
+                    fill_val = float(np.mean(vals.astype(float)))
+                else:
+                    # simple mode from nearest neighbours
+                    uniq, counts = np.unique(vals, return_counts=True)
+                    fill_val = uniq[int(np.argmax(counts))]
+                gdf.at[gdf.index[mi], col] = fill_val
             except Exception:
                 # best-effort: skip on any assignment error
                 continue
