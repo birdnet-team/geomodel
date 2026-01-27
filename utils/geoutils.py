@@ -349,9 +349,14 @@ def compute_environmental_data(h3_indexes: Iterable[str], scale: int = 30, field
     # Compute water first, then run remaining dataset reductions concurrently.
     water_map = {}
     if jrc is not None:
-        jrc_props = ['occurrence']
+        # For water fraction we need an area-based mean rather than a
+        # single-point sample; use polygonal reduceRegions. The reducer
+        # output property name can vary (e.g. 'mean' or the band name),
+        # so include multiple candidates to be robust.
+        jrc_props = ['occurrence', 'mean', 'occurrence_mean']
         try:
-            water_map = reduce_image_chunks(jrc, ee.Reducer.mean(), scale, jrc_props, False, True, 'JRC', threads)
+            # centroid=False forces polygonal reduction (area mean)
+            water_map = reduce_image_chunks(jrc, ee.Reducer.mean(), scale, jrc_props, False, False, 'JRC', threads)
         except Exception as e:
             LOG.warning('JRC water reduction failed: %s', e)
 
@@ -421,7 +426,6 @@ def compute_environmental_data(h3_indexes: Iterable[str], scale: int = 30, field
 
         lc = lc_map.get(h)
         lc_class = int(lc) if lc is not None else None
-
         row = {'h3_index': h, 'geometry': poly}
         if 'water' in fields:
             row['water_fraction'] = water_frac
