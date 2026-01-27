@@ -324,8 +324,16 @@ def compute_environmental_data(h3_indexes: Iterable[str], scale: int = 30, field
         canopy_props = ['1']
         tasks['canopy'] = partial(reduce_image_chunks, canopy_img.select('1'), ee.Reducer.mean(), scale, canopy_props, False, True, 'Canopy', threads)
     if worldclim is not None:
-        wc_props = ['bio01', 'bio12']
-        tasks['worldclim'] = partial(reduce_image_chunks, worldclim.select(['bio01', 'bio12']), ee.Reducer.mean(), scale, wc_props, False, True, 'WorldClim', threads)
+        # Reduce each WorldClim band separately so we keep bio01 (temperature)
+        # and bio12 (precipitation) as distinct mappings. Previously both
+        # were read into a single map and assigned to both outputs, which
+        # caused precipitation to show temperature values.
+        tasks['worldclim_bio01'] = partial(
+            reduce_image_chunks, worldclim.select('bio01'), ee.Reducer.mean(), scale, ['bio01'], False, True, 'WorldClim_bio01', threads
+        )
+        tasks['worldclim_bio12'] = partial(
+            reduce_image_chunks, worldclim.select('bio12'), ee.Reducer.mean(), scale, ['bio12'], False, True, 'WorldClim_bio12', threads
+        )
     if modis_img is not None:
         lc_props = ['LC_Type1']
         tasks['modis'] = partial(reduce_image_chunks, modis_img, ee.Reducer.mode(), 500, lc_props, True, True, 'MODIS', threads)
@@ -347,10 +355,9 @@ def compute_environmental_data(h3_indexes: Iterable[str], scale: int = 30, field
     # Map results to expected variables
     elev_map = results.get('elevation', {})
     canopy_map = results.get('canopy', {})
-    wc_map = results.get('worldclim', {})
+    wc_bio01_map = results.get('worldclim_bio01', {})
+    wc_bio12_map = results.get('worldclim_bio12', {})
     lc_map = results.get('modis', {})
-    wc_bio01_map = wc_map
-    wc_bio12_map = wc_map
 
     rows = []
     for h in h3_indexes:
@@ -635,4 +642,4 @@ if __name__ == '__main__':
             LOG.info('Combined parquet written to %s', combined)
 
     # Basic use command (Europe only)
-    # python utils/geoutils.py --km 50 --bounds -10.0 34.0 40.0 72.0 --threads 8 --out-dir outputs/europe_chunks --combine --combined-out outputs/europe_50km.parquet
+    # python utils/geoutils.py --km 25 --bounds -10.0 34.0 40.0 72.0 --threads 8 --out-dir outputs/europe_chunks --combine --combined-out outputs/europe_25km.parquet
