@@ -51,7 +51,11 @@ LANDCOVER_NAMES = {
     14: "Cropland/Natural Vegetation Mosaic",
     15: "Snow and Ice",
     16: "Barren or Sparsely Vegetated",
+    17: "Water",
 }
+
+# Common alternate codes that represent water/no-data in some MODIS vintages
+WATER_ALIASES = {0, 17, 254, 255}
 
 
 def load_gdf(path: str) -> gpd.GeoDataFrame:
@@ -128,6 +132,16 @@ def plot_variable(
         vals = sorted(gdf_plot[column].dropna().unique())
         if not vals:
             return
+        # Sanitize landcover values: restrict to plausible MODIS LC_Type1 codes
+        try:
+            valid_range = set(range(0, 18))
+            vals_clean = [int(v) for v in vals if int(v) in valid_range]
+        except Exception:
+            vals_clean = vals
+        if len(vals_clean) == 0:
+            # nothing sensible to plot
+            return
+        vals = sorted(vals_clean)
         # Compute a simple proxy area (bbox area in deg^2) and draw smaller
         # polygons last so large, possibly-wrapping polygons don't obscure
         # detailed features when plotting global datasets.
@@ -143,7 +157,16 @@ def plot_variable(
         gdf_plot = gdf_plot.copy()
         gdf_plot["_cat"] = gdf_plot[column].map(class_to_idx)
         gdf_plot.plot(column="_cat", cmap=cmap_use, ax=ax, transform=ccrs.PlateCarree(), linewidth=0, alpha=0.95)
-        patches = [mpatches.Patch(color=cmap_use(i), label=LANDCOVER_NAMES.get(v, str(v))) for v, i in class_to_idx.items()]
+        def _label_for_class(v):
+            # Prefer explicit names; detect common water aliases
+            try:
+                if int(v) in WATER_ALIASES:
+                    return 'Water'
+            except Exception:
+                pass
+            return LANDCOVER_NAMES.get(v, str(v))
+
+        patches = [mpatches.Patch(color=cmap_use(i), label=_label_for_class(v)) for v, i in class_to_idx.items()]
         ax.legend(handles=patches, loc="lower left", fontsize="small", framealpha=0.9)
         # GeoPandas may force an 'equal' aspect which keeps the globe square; allow
         # the map projection to fill the axes by using an automatic aspect.
@@ -152,7 +175,21 @@ def plot_variable(
         except Exception:
             pass
     else:
-        vmin, vmax = safe_vmin_vmax(gdf_plot[column])
+        # Handle canopy height specially: if zeros dominate the data (likely
+        # widespread masked/no-data), treat zeros as missing when computing
+        # the color scale so meaningful non-zero values remain visible.
+        series = gdf_plot[column].dropna()
+        if column == 'canopy_height_m' and series.size > 0:
+            nonzero_count = (series != 0).sum()
+            frac_nonzero = float(nonzero_count) / float(series.size)
+            if frac_nonzero < 0.02 and nonzero_count > 0:
+                # Treat zeros as NA for scaling
+                tmp_series = series[series != 0]
+                vmin, vmax = safe_vmin_vmax(tmp_series)
+            else:
+                vmin, vmax = safe_vmin_vmax(series)
+        else:
+            vmin, vmax = safe_vmin_vmax(series)
         if vmin is None:
             return
         norm = mpl.colors.Normalize(vmin=vmin, vmax=vmax)
