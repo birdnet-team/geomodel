@@ -5,4 +5,8 @@ tqdm
 global-land-mask
 earthengine.api
 numpy
-dotenv
+python-dotenv
+h3
+geopandas
+shapely
+pyarrow

@@ -1,6 +1,9 @@
 # Exclude plots
 *.png
 
+# Exclude outputs dir
+outputs/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
