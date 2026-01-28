@@ -10,6 +10,8 @@ Example:
         --outdir outputs/plots --sample-limit 100000
 """
 
+
+import os, sys
 from pathlib import Path
 import argparse
 from typing import Optional, Tuple, List
@@ -22,7 +24,13 @@ import cartopy.crs as ccrs
 import cartopy.feature as cfeature
 import matplotlib.patches as mpatches
 from matplotlib.colors import ListedColormap
-from utils.regions import resolve_bounds_arg
+try:
+    from utils.regions import resolve_bounds_arg
+except Exception:
+    _repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+    if _repo_root not in sys.path:
+        sys.path.insert(0, _repo_root)
+    from utils.regions import resolve_bounds_arg
 
 
 LANDCOVER_NAMES = {
