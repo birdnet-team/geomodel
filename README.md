@@ -98,6 +98,7 @@ Use the provided plotting utility to render PNG maps from GeoParquet outputs.
   - `--outdir` (`-o`): Output directory for PNGs (default: `outputs/plots`)
   - `--sample-limit`: Max cells to plot (random sample). Use `None` or `-1` to plot all (default: `200000`)
   - `--columns`: Optional comma-separated list of columns to plot (defaults to common environmental variables)
+  - `--bounds`: Optional bbox (LON_MIN LAT_MIN LON_MAX LAT_MAX) to limit plotting area
 
 Example:
 
