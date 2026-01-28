@@ -71,6 +71,15 @@ def load_gdf(path: str) -> gpd.GeoDataFrame:
 
 def safe_vmin_vmax(series, q_low=0.02, q_high=0.98):
     arr = series.dropna().to_numpy()
+    # If zeros dominate (likely fallback values), exclude them when
+    # computing quantile-based vmin/vmax so the color scale reflects
+    # the meaningful data range rather than fallback mass.
+    if arr.size > 0:
+        n_zeros = (arr == 0).sum()
+        if n_zeros / arr.size > 0.5:
+            nonzero = arr[arr != 0]
+            if nonzero.size > 0:
+                arr = nonzero
     if arr.size == 0:
         return None, None
     vmin = np.quantile(arr, q_low)
@@ -119,6 +128,15 @@ def plot_variable(
         vals = sorted(gdf_plot[column].dropna().unique())
         if not vals:
             return
+        # Compute a simple proxy area (bbox area in deg^2) and draw smaller
+        # polygons last so large, possibly-wrapping polygons don't obscure
+        # detailed features when plotting global datasets.
+        try:
+            b = gdf_plot.geometry.bounds
+            proxy_area = (b['maxx'] - b['minx']).abs() * (b['maxy'] - b['miny']).abs()
+            gdf_plot = gdf_plot.assign(_area=proxy_area).sort_values('_area', ascending=True)
+        except Exception:
+            pass
         cmap_list = plt.get_cmap("tab20").colors
         cmap_use = ListedColormap(cmap_list[: len(vals)])
         class_to_idx = {v: i for i, v in enumerate(vals)}
@@ -139,6 +157,12 @@ def plot_variable(
             return
         norm = mpl.colors.Normalize(vmin=vmin, vmax=vmax)
         sm = plt.cm.ScalarMappable(norm=norm, cmap=cmap)
+        try:
+            b = gdf_plot.geometry.bounds
+            proxy_area = (b['maxx'] - b['minx']).abs() * (b['maxy'] - b['miny']).abs()
+            gdf_plot = gdf_plot.assign(_area=proxy_area).sort_values('_area', ascending=True)
+        except Exception:
+            pass
         gdf_plot.plot(column=column, cmap=cmap, ax=ax, transform=ccrs.PlateCarree(), linewidth=0, alpha=0.95, norm=norm)
         cbar = fig.colorbar(sm, ax=ax, orientation="horizontal", fraction=0.04, pad=0.05)
         cbar.set_label(column)
