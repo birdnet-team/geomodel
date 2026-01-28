@@ -64,19 +64,17 @@ CLI
 
 - `--km` : Target diameter in km (e.g. 5, 10, 25)
 - `--out-dir` : Directory to write per-chunk parquet files (one file per chunk)
-- `--bounds` : Optional bbox (LON_MIN LAT_MIN LON_MAX LAT_MAX) to limit processing
+- `--bounds` : Optional bbox (LON_MIN LAT_MIN LON_MAX LAT_MAX) or named region to limit processing
 - `--threads` : Number of worker threads to use for parallel chunk processing
+- `--fraction` : Optional sampling fraction (0.0–1.0) to process a random subset of H3 cells
 - `--combine` : If set, combines all chunk parquet files into one after processing
-- `--combined-out` : Output path for combined parquet (if `--combine` is set)
-- `--fill-missing` : If set, fills missing data (e.g. ocean cells) with nearest neighbor values
+- `--combined-out` : Output path for the combined parquet (if `--combine` is set)
+- `--fill-missing` : If set, fills missing data (e.g. ocean cells) with nearest neighbor values after combining
 
 Notes
 
-- The script chunks (500 cells per chunk) and writes one parquet file
-    per chunk into `--out-dir`.
-- To reduce EE client-side concurrency warnings, set the environment
-    variable `EE_MAX_CONCURRENCY` to a conservative value (e.g. 4–8) before
-    running large jobs.
+- The script processes H3 cells in fixed-size chunks (500 cells per chunk) and writes one parquet file per chunk into `--out-dir`.
+- To reduce Earth Engine client-side concurrency warnings, set the environment variable `EE_MAX_CONCURRENCY` to limit concurrent EE requests (default: 8). Values between 4–12 are commonly reasonable depending on your network and EE quotas.
 
 Example (regional run):
 
@@ -93,13 +91,13 @@ Import `compute_environmental_data` or `run_global_in_chunks` from
 
 Use the provided plotting utility to render PNG maps from GeoParquet outputs.
 
-- Script: `scripts/plot_environmental_clean.py` (clean, streamlined plotting utility)
-- Purpose: Reads a GeoParquet (output from `utils/geoutils.py`) and writes one PNG per variable.
+- Script: `scripts/plot_environmental.py` (reads a GeoParquet and writes one PNG per variable)
+- Purpose: Reads a GeoParquet (output from `utils.geoutils.py`) and writes one PNG per variable.
 - Key options:
-    - `--input` (`-i`): Input GeoParquet file (required)
-    - `--outdir` (`-o`): Output directory for PNGs (default: `outputs/plots`)
-    - `--sample-limit`: Max cells to plot (random sample). Use `None` or `-1` to plot all (default: `200000`)
-    - `--columns`: Optional comma-separated list of columns to plot (defaults to common environmental variables)
+  - `--input` (`-i`): Input GeoParquet file (required)
+  - `--outdir` (`-o`): Output directory for PNGs (default: `outputs/plots`)
+  - `--sample-limit`: Max cells to plot (random sample). Use `None` or `-1` to plot all (default: `200000`)
+  - `--columns`: Optional comma-separated list of columns to plot (defaults to common environmental variables)
 
 Example:
 
