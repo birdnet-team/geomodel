@@ -346,8 +346,24 @@ def compute_environmental_data(h3_indexes: Iterable[str], scale: int = 30, field
                     finally:
                         _EE_SEMAPHORE.release()
                 except Exception as e:
-                    LOG.warning('Chunk %d-%d failed: %s', i0, i1, e)
-                    return {}
+                        LOG.warning('Chunk %d-%d reduceRegions failed: %s — attempting centroid fallback', i0, i1, e)
+                        # Fallback: try centroid sampling for this chunk (quicker, less reliable for area means)
+                        try:
+                            feats_cent = []
+                            for h in sub:
+                                lat, lon = h3.cell_to_latlng(h)
+                                ee_pt = ee.Geometry.Point([lon, lat])
+                                feats_cent.append(ee.Feature(ee_pt, {"h3": h}))
+                            fc_cent = ee.FeatureCollection(feats_cent)
+                            s2 = 500 if modis_scale else scale_arg
+                            _EE_SEMAPHORE.acquire()
+                            try:
+                                res_chunk = image.sampleRegions(collection=fc_cent, scale=s2).getInfo()
+                            finally:
+                                _EE_SEMAPHORE.release()
+                        except Exception as e2:
+                            LOG.warning('Chunk %d-%d centroid fallback also failed: %s', i0, i1, e2)
+                            return {}
             return map_props(res_chunk, prop_candidates)
 
         if threads is None or threads <= 1:
