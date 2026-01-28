@@ -23,6 +23,7 @@ import ee
 import h3
 import geopandas as gpd
 from shapely.geometry import Polygon, MultiPolygon
+from shapely.ops import transform as _shapely_transform
 from tqdm import tqdm
 
 LOG = logging.getLogger(__name__)
@@ -503,6 +504,52 @@ def export_geoparquet(gdf: gpd.GeoDataFrame, out_path: str) -> None:
     """
     # Ensure parent directory exists
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
+    # Final safety pass: attempt lightweight repairs then drop rows with
+    # invalid or out-of-range geometries. We prefer dropping malformed
+    # cells over remapping coordinates which can produce visual artifacts
+    # (horizontal lines) when plotting global extents.
+    try:
+        initial_count = len(gdf)
+        # Attempt quick repair of invalid geometries with buffer(0)
+        try:
+            invalid_mask = ~gdf.geometry.is_valid
+            if invalid_mask.any():
+                for idx in gdf.loc[invalid_mask].index:
+                    try:
+                        geom = gdf.at[idx, 'geometry']
+                        if geom is None:
+                            continue
+                        repaired = geom.buffer(0)
+                        if repaired is not None and repaired.is_valid:
+                            gdf.at[idx, 'geometry'] = repaired
+                    except Exception:
+                        continue
+        except Exception:
+            LOG.debug('Quick geometry repair pass failed')
+
+        # Compute bounds and filter rows whose longitudes fall outside
+        # the canonical [-180, 180] range or whose geometry spans are
+        # impossibly large (>180 degrees). These are likely malformed
+        # and cause plotting issues at global scale.
+        try:
+            b = gdf.geometry.bounds
+            minx = b['minx']
+            maxx = b['maxx']
+            span = (maxx - minx).abs()
+            bad = (~gdf.geometry.notna()) | (~gdf.geometry.is_valid) | (minx < -180.0) | (maxx > 180.0) | (span > 180.0)
+            n_bad = int(bad.sum())
+            if n_bad > 0:
+                LOG.debug('Dropping %d rows with invalid/out-of-range geometries before export', n_bad)
+                gdf = gdf.loc[~bad].reset_index(drop=True)
+        except Exception:
+            LOG.debug('Geometry bounds/filter pass failed')
+
+        removed = initial_count - len(gdf)
+        if removed > 0:
+            LOG.debug('Removed %d invalid geometries before export', removed)
+    except Exception:
+        LOG.debug('Geometry validation before export failed')
+
     # Use geopandas to_parquet (pyarrow engine)
     gdf.to_parquet(out_path, index=False)
     return
@@ -782,6 +829,28 @@ def combine_parquet_parts(parts_dir: str, out_path: Optional[str] = None, patter
                     LOG.debug('Failed to drop oversized geometries after repair')
             except Exception:
                 LOG.debug('Could not compute centroids for geometry validation')
+            # Final normalization pass: ensure all longitudes are wrapped into
+            # the canonical [-180, 180] range. Some datasets may still contain
+            # coordinates outside that window which confuses cartopy when
+            # plotting global extents. This pass remaps each coordinate's
+            # longitude using a modulo wrap while preserving latitudes.
+            def _wrap_lon_geom(geom):
+                if geom is None:
+                    return geom
+                try:
+                    def _wrap_coords(x, y, z=None):
+                        # x=lon, y=lat
+                        lon = ((x + 180.0) % 360.0) - 180.0
+                        if z is None:
+                            return (lon, y)
+                        return (lon, y, z)
+                    return _shapely_transform(_wrap_coords, geom)
+                except Exception:
+                    return geom
+            try:
+                combined['geometry'] = combined['geometry'].apply(lambda g: _wrap_lon_geom(g) if g is not None else g)
+            except Exception:
+                LOG.debug('Final longitude wrapping pass failed')
     except Exception as e:
         LOG.error('Failed to concatenate parquet parts: %s', e)
         return None
