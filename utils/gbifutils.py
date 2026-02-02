@@ -1,5 +1,4 @@
 import logging
-import math
 import zipfile
 import pandas as pd
 from tqdm import tqdm
@@ -62,10 +61,12 @@ def process_gbif_file(gbif_zip_path, file, output_csv_path):
         'latitude': [],
         'longitude': [],
         'taxon': [],
-        'week': []
+        'scientificName': [],
+        'week': [],
+        'class': []
     })
 
-    output_df.to_csv(output_csv_path, index=False)
+    output_df.to_csv(output_csv_path, index=False, encoding='utf-8')
 
     with zipfile.ZipFile(gbif_zip_path, 'r') as z:
         estimated_rows = estimate_rows(z, file)
@@ -82,12 +83,16 @@ def process_gbif_file(gbif_zip_path, file, output_csv_path):
                         day = row.get('day')
                         month = row.get('month')
                         taxon = row.get('taxonKey')
+                        scientific_name = row.get('scientificName')
+                        cls = row.get('class')
 
                         if pd.isna(lat) or pd.isna(lon):  # Skip row if lat or lon is missing
                             continue
                         if pd.isna(day) or pd.isna(month):  # Skip row if day or month is missing
                             continue
                         if pd.isna(taxon):  # Skip row if taxon is missing
+                            continue
+                        if pd.isna(cls):  # Skip row if class is missing
                             continue
 
                         # round coordinates to 3 decimal places
@@ -98,11 +103,11 @@ def process_gbif_file(gbif_zip_path, file, output_csv_path):
                             continue
 
                         week = date_to_week(int(day), int(month))
-                        rows.append({'latitude': latv, 'longitude': lonv, 'taxon': taxon, 'week': week})
+                        rows.append({'latitude': latv, 'longitude': lonv, 'taxon': taxon, 'scientificName': scientific_name, 'week': week, 'class': cls})
 
                     if rows:
-                        output_chunk = pd.DataFrame.from_records(rows, columns=['latitude', 'longitude', 'taxon', 'week'])
-                        output_chunk.to_csv(output_csv_path, mode='a', header=False, index=False)
+                        output_chunk = pd.DataFrame.from_records(rows, columns=['latitude', 'longitude', 'taxon', 'scientificName', 'week', 'class'])
+                        output_chunk.to_csv(output_csv_path, mode='a', header=False, index=False, encoding='utf-8')
                     pbar.update(len(chunk))
 
 if __name__ == '__main__':
