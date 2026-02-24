@@ -55,7 +55,7 @@ def estimate_rows(zip_archive, file_path, sample_rows=10000):
     else:
         return 0
 
-def process_gbif_file(gbif_zip_path, file, output_csv_path, only_classes=None, max_rows=None):
+def process_gbif_file(gbif_zip_path, file, output_csv_path, valid_classes=None, max_rows=None):
 
     output_df = pd.DataFrame({
         'latitude': [],
@@ -94,7 +94,7 @@ def process_gbif_file(gbif_zip_path, file, output_csv_path, only_classes=None, m
                             continue
                         if pd.isna(cls):  # Skip row if class is missing
                             continue
-                        if only_classes and cls.lower() not in only_classes:  # Skip row if class is not in the specified list
+                        if valid_classes and cls.lower() not in valid_classes:  # Skip row if class is not in the specified list
                             continue
                         if len(scientific_name.split()) > 2: # Only full species, ingoring subspecies and higher taxa
                             continue
@@ -124,8 +124,8 @@ if __name__ == '__main__':
     parser.add_argument('--gbif', type=str, default="gbif_dev.zip", help='Path to the zipped GBIF file')
     parser.add_argument('--file', type=str, default="gbif_dev.csv", help='Name of the CSV file inside the zip')
     parser.add_argument('--output', type=str, default="./outputs/gbif_processed.gz", help='Output gzipped CSV file')
-    parser.add_argument('--only_classes', nargs='*', default=['aves', 'amphibia', 'insecta', 'mammalia', 'reptilia'], help='List of classes to include (default: aves, amphibia, insecta, mammalia, reptilia)')
+    parser.add_argument('--valid_classes', nargs='*', default=['aves', 'amphibia', 'insecta', 'mammalia', 'reptilia'], help='List of classes to include (default: aves, amphibia, insecta, mammalia, reptilia)')
     parser.add_argument('--max_rows', type=int, default=None, help='Maximum number of rows to process (for testing purposes)')
     args = parser.parse_args()
 
-    process_gbif_file(args.gbif, args.file, args.output, only_classes=[cls.lower() for cls in args.only_classes], max_rows=args.max_rows)
+    process_gbif_file(args.gbif, args.file, args.output, valid_classes=[cls.lower() for cls in args.valid_classes], max_rows=args.max_rows)
