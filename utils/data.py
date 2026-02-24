@@ -260,7 +260,11 @@ class H3DataPreprocessor:
         self.idx_to_species = {i: s for s, i in self.species_to_idx.items()}
 
     def encode_species_multilabel(self, species_lists: List[List[int]]) -> np.ndarray:
-        """Convert species lists to multi-label binary matrix."""
+        """Convert species lists to multi-label binary matrix.
+
+        NOTE: only used for small datasets. For large datasets use
+        encode_species_sparse() to avoid OOM on the dense matrix.
+        """
         if not self.species_vocab:
             self.build_species_vocabulary(species_lists)
         n_samples = len(species_lists)
@@ -273,7 +277,27 @@ class H3DataPreprocessor:
                     matrix[i, idx] = 1.0
         return matrix
 
+    def encode_species_sparse(self, species_lists: List[List[int]]) -> List[np.ndarray]:
+        """Convert species lists to a list of sparse index arrays.
+
+        Each element is an int32 array of active species indices for that
+        sample.  The dense one-hot vector is materialised per-sample inside
+        BirdSpeciesDataset.__getitem__, keeping total memory proportional to
+        the *number of observations* rather than samples × species.
+        """
+        if not self.species_vocab:
+            self.build_species_vocabulary(species_lists)
+        sparse: List[np.ndarray] = []
+        for sl in species_lists:
+            indices = [self.species_to_idx[sid] for sid in sl
+                       if sid in self.species_to_idx]
+            sparse.append(np.array(indices, dtype=np.int32))
+        return sparse
+
     # -- Full pipeline ----------------------------------------------------
+
+    # Heuristic: if dense matrix would exceed this many bytes, use sparse
+    _DENSE_LIMIT_BYTES = 8 * 1024**3  # 8 GiB
 
     def prepare_training_data(
         self,
@@ -283,29 +307,43 @@ class H3DataPreprocessor:
         species_lists: List[List[int]],
         env_features: pd.DataFrame,
         fit: bool = True,
-    ) -> Tuple[Dict[str, np.ndarray], Dict[str, np.ndarray]]:
+    ) -> Tuple[Dict[str, np.ndarray], Dict[str, Any]]:
         """Run full preprocessing: encode inputs, normalize targets, build vocab."""
         encoded_coords = self.sinusoidal_encode_coordinates(lats, lons)
         encoded_weeks = self.sinusoidal_encode_weeks(weeks)
         normalized_env = self.normalize_environmental_features(env_features, fit=fit)
         if fit:
             self.build_species_vocabulary(species_lists)
-        species_binary = self.encode_species_multilabel(species_lists)
+
+        n_samples = len(species_lists)
+        n_species = len(self.species_vocab)
+        dense_bytes = n_samples * n_species * 4  # float32
+
+        if dense_bytes > self._DENSE_LIMIT_BYTES:
+            dense_gb = dense_bytes / 1024**3
+            print(f"   Using sparse species encoding "
+                  f"(dense would need {dense_gb:.1f} GiB)")
+            species_enc = self.encode_species_sparse(species_lists)
+        else:
+            species_enc = self.encode_species_multilabel(species_lists)
 
         inputs = {'coordinates': encoded_coords, 'week': encoded_weeks}
-        targets = {'species': species_binary, 'env_features': normalized_env}
+        targets = {'species': species_enc, 'env_features': normalized_env}
         return inputs, targets
 
     def split_data(
         self,
         inputs: Dict[str, np.ndarray],
-        targets: Dict[str, np.ndarray],
+        targets: Dict[str, Any],
         test_size: float = 0.2,
         val_size: float = 0.1,
         random_state: int = 42,
         split_by_location: bool = True,
-    ) -> Tuple[Dict[str, np.ndarray], ...]:
-        """Split into train/val/test (optionally grouped by location to prevent leakage)."""
+    ) -> Tuple:
+        """Split into train/val/test (optionally grouped by location to prevent leakage).
+
+        Handles both dense ndarray and sparse list-of-arrays species targets.
+        """
         n_samples = len(inputs['coordinates'])
         indices = np.arange(n_samples)
 
@@ -331,10 +369,22 @@ class H3DataPreprocessor:
             val_mask = np.isin(indices, idx_val)
             test_mask = np.isin(indices, idx_test)
 
-        split = lambda d, m: {k: v[m] for k, v in d.items()}
+        def _split_dict(d: Dict[str, Any], mask: np.ndarray) -> Dict[str, Any]:
+            out = {}
+            for k, v in d.items():
+                if isinstance(v, np.ndarray):
+                    out[k] = v[mask]
+                elif isinstance(v, list):
+                    # sparse species: list of arrays
+                    idxs = np.where(mask)[0]
+                    out[k] = [v[i] for i in idxs]
+                else:
+                    out[k] = v
+            return out
+
         return (
-            split(inputs, train_mask), split(inputs, val_mask), split(inputs, test_mask),
-            split(targets, train_mask), split(targets, val_mask), split(targets, test_mask),
+            _split_dict(inputs, train_mask), _split_dict(inputs, val_mask), _split_dict(inputs, test_mask),
+            _split_dict(targets, train_mask), _split_dict(targets, val_mask), _split_dict(targets, test_mask),
         )
 
     def get_preprocessing_info(self) -> Dict[str, Any]:
@@ -351,37 +401,68 @@ class H3DataPreprocessor:
 # ---------------------------------------------------------------------------
 
 class BirdSpeciesDataset(Dataset):
-    """PyTorch Dataset for bird species occurrence prediction."""
+    """PyTorch Dataset for bird species occurrence prediction.
 
-    def __init__(self, inputs: Dict[str, np.ndarray], targets: Dict[str, np.ndarray]):
+    Species targets can be either:
+      - Dense: np.ndarray of shape [n_samples, n_species]
+      - Sparse: list of np.ndarray index arrays (one per sample)
+
+    When sparse, the dense one-hot vector is materialised on the fly in
+    __getitem__, keeping resident memory proportional to the number of
+    *observations* rather than samples × species.
+    """
+
+    def __init__(self, inputs: Dict[str, np.ndarray], targets: Dict[str, Any],
+                 n_species: int = 0):
         self.coordinates = torch.from_numpy(inputs['coordinates']).float()
         self.week = torch.from_numpy(inputs['week']).float()
-        self.species = torch.from_numpy(targets['species']).float()
         self.env_features = torch.from_numpy(targets['env_features']).float()
-        assert len(self.coordinates) == len(self.week) == len(self.species) == len(self.env_features)
+
+        species = targets['species']
+        if isinstance(species, np.ndarray):
+            # Dense path
+            self.species_dense = torch.from_numpy(species).float()
+            self.species_sparse = None
+            self.n_species = species.shape[1]
+        else:
+            # Sparse path (list of index arrays)
+            self.species_dense = None
+            self.species_sparse = species
+            self.n_species = n_species
+
+        assert len(self.coordinates) == len(self.week) == len(self.env_features)
 
     def __len__(self) -> int:
         return len(self.coordinates)
 
     def __getitem__(self, idx: int):
+        if self.species_dense is not None:
+            sp = self.species_dense[idx]
+        else:
+            # Materialise dense vector from sparse indices
+            sp = torch.zeros(self.n_species, dtype=torch.float32)
+            indices = self.species_sparse[idx]
+            if len(indices) > 0:
+                sp[indices] = 1.0
         return (
             {'coordinates': self.coordinates[idx], 'week': self.week[idx]},
-            {'species': self.species[idx], 'env_features': self.env_features[idx]},
+            {'species': sp, 'env_features': self.env_features[idx]},
         )
 
 
 def create_dataloaders(
     train_inputs: Dict[str, np.ndarray],
-    train_targets: Dict[str, np.ndarray],
+    train_targets: Dict[str, Any],
     val_inputs: Dict[str, np.ndarray],
-    val_targets: Dict[str, np.ndarray],
+    val_targets: Dict[str, Any],
     batch_size: int = 256,
     num_workers: int = 0,
     pin_memory: bool = True,
+    n_species: int = 0,
 ) -> Tuple[DataLoader, DataLoader]:
     """Create training and validation DataLoaders."""
-    train_ds = BirdSpeciesDataset(train_inputs, train_targets)
-    val_ds = BirdSpeciesDataset(val_inputs, val_targets)
+    train_ds = BirdSpeciesDataset(train_inputs, train_targets, n_species=n_species)
+    val_ds = BirdSpeciesDataset(val_inputs, val_targets, n_species=n_species)
     train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True,
                               num_workers=num_workers, pin_memory=pin_memory, drop_last=True)
     val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False,

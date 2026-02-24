@@ -326,6 +326,7 @@ def main():
         train_in, train_tgt, val_in, val_tgt,
         batch_size=args.batch_size, num_workers=args.num_workers,
         pin_memory=(device.type == 'cuda'),
+        n_species=n_species,
     )
 
     # -- Model ---
