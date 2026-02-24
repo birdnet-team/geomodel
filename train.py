@@ -1,0 +1,332 @@
+"""
+Training script for BirdNET Geomodel.
+
+Pipeline: load parquet → preprocess → train multi-task model → save checkpoints.
+
+Usage:
+    python train.py --data_path ./outputs/global_350km_ee_gbif.parquet
+    python train.py --data_path data.parquet --model_size large --num_epochs 100
+    python train.py --resume checkpoints/checkpoint_best.pt
+"""
+
+import argparse
+import csv
+import json
+from pathlib import Path
+from typing import Dict
+
+import torch
+import torch.nn as nn
+from torch.utils.data import DataLoader
+from tqdm import tqdm
+
+from model.model import create_model
+from model.loss import MultiTaskLoss
+from utils.data import H3DataLoader, H3DataPreprocessor, create_dataloaders, get_class_weights
+
+
+class Trainer:
+    """Training loop with validation, checkpointing, and history tracking."""
+
+    def __init__(
+        self,
+        model: nn.Module,
+        criterion: nn.Module,
+        optimizer: torch.optim.Optimizer,
+        device: torch.device,
+        checkpoint_dir: Path,
+        model_config: Dict = None,
+        species_vocab: Dict = None,
+        log_interval: int = 10,
+    ):
+        self.model = model.to(device)
+        self.criterion = criterion
+        self.optimizer = optimizer
+        self.device = device
+        self.checkpoint_dir = checkpoint_dir
+        self.model_config = model_config or {}
+        self.species_vocab = species_vocab or {}
+        self.log_interval = log_interval
+
+        self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
+
+        self.history = {
+            'train_loss': [], 'train_species_loss': [], 'train_env_loss': [],
+            'val_loss': [], 'val_species_loss': [], 'val_env_loss': [],
+        }
+        self.best_val_loss = float('inf')
+        self.current_epoch = 0
+
+    def train_epoch(self, train_loader: DataLoader) -> Dict[str, float]:
+        self.model.train()
+        total_loss = total_species = total_env = 0.0
+        n_batches = 0
+
+        pbar = tqdm(train_loader, desc=f'Epoch {self.current_epoch + 1} [Train]')
+        for batch_idx, (inputs, targets) in enumerate(pbar):
+            coords = inputs['coordinates'].to(self.device)
+            week = inputs['week'].to(self.device)
+            species_t = targets['species'].to(self.device)
+            env_t = targets['env_features'].to(self.device)
+
+            self.optimizer.zero_grad()
+            outputs = self.model(coords, week, return_env=True)
+            losses = self.criterion(outputs, {'species': species_t, 'env_features': env_t})
+            losses['total'].backward()
+            torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+            self.optimizer.step()
+
+            total_loss += losses['total'].item()
+            total_species += losses['species'].item()
+            total_env += losses['env'].item()
+            n_batches += 1
+
+            if (batch_idx + 1) % self.log_interval == 0:
+                pbar.set_postfix(loss=f"{losses['total'].item():.4f}",
+                                 species=f"{losses['species'].item():.4f}",
+                                 env=f"{losses['env'].item():.4f}")
+
+        return {'loss': total_loss / n_batches, 'species_loss': total_species / n_batches,
+                'env_loss': total_env / n_batches}
+
+    @torch.no_grad()
+    def validate(self, val_loader: DataLoader) -> Dict[str, float]:
+        self.model.eval()
+        total_loss = total_species = total_env = 0.0
+        n_batches = 0
+
+        for inputs, targets in tqdm(val_loader, desc=f'Epoch {self.current_epoch + 1} [Val]  '):
+            coords = inputs['coordinates'].to(self.device)
+            week = inputs['week'].to(self.device)
+            species_t = targets['species'].to(self.device)
+            env_t = targets['env_features'].to(self.device)
+
+            outputs = self.model(coords, week, return_env=True)
+            losses = self.criterion(outputs, {'species': species_t, 'env_features': env_t})
+
+            total_loss += losses['total'].item()
+            total_species += losses['species'].item()
+            total_env += losses['env'].item()
+            n_batches += 1
+
+        return {'loss': total_loss / n_batches, 'species_loss': total_species / n_batches,
+                'env_loss': total_env / n_batches}
+
+    def save_checkpoint(self, is_best: bool = False):
+        checkpoint = {
+            'epoch': self.current_epoch,
+            'model_state_dict': self.model.state_dict(),
+            'optimizer_state_dict': self.optimizer.state_dict(),
+            'best_val_loss': self.best_val_loss,
+            'history': self.history,
+            'model_config': self.model_config,
+            'species_vocab': self.species_vocab,
+        }
+
+        torch.save(checkpoint, self.checkpoint_dir / 'checkpoint_latest.pt')
+        if is_best:
+            torch.save(checkpoint, self.checkpoint_dir / 'checkpoint_best.pt')
+            print(f"  Saved best model (val_loss: {self.best_val_loss:.4f})")
+
+    def load_checkpoint(self, checkpoint_path: Path):
+        ckpt = torch.load(checkpoint_path, map_location=self.device)
+        self.model.load_state_dict(ckpt['model_state_dict'])
+        self.optimizer.load_state_dict(ckpt['optimizer_state_dict'])
+        self.current_epoch = ckpt['epoch']
+        self.best_val_loss = ckpt['best_val_loss']
+        self.history = ckpt['history']
+        self.model_config = ckpt.get('model_config', {})
+        self.species_vocab = ckpt.get('species_vocab', {})
+        print(f"Resumed from epoch {self.current_epoch + 1}")
+
+    def train(self, train_loader: DataLoader, val_loader: DataLoader,
+              num_epochs: int, save_every: int = 5):
+        print(f"\nTraining for {num_epochs} epochs on {self.device}")
+        print(f"  Train: {len(train_loader.dataset):,} samples  |  Val: {len(val_loader.dataset):,} samples")
+        print(f"  Batch size: {train_loader.batch_size}  |  Batches/epoch: {len(train_loader)}\n")
+
+        start_epoch = self.current_epoch
+        for epoch in range(start_epoch, start_epoch + num_epochs):
+            self.current_epoch = epoch
+            train_m = self.train_epoch(train_loader)
+            val_m = self.validate(val_loader)
+
+            for k in ('loss', 'species_loss', 'env_loss'):
+                self.history[f'train_{k}'].append(train_m[k])
+                self.history[f'val_{k}'].append(val_m[k])
+
+            print(f"\nEpoch {epoch + 1} — "
+                  f"Train: {train_m['loss']:.4f} (sp={train_m['species_loss']:.4f} env={train_m['env_loss']:.4f})  "
+                  f"Val: {val_m['loss']:.4f} (sp={val_m['species_loss']:.4f} env={val_m['env_loss']:.4f})")
+
+            is_best = val_m['loss'] < self.best_val_loss
+            if is_best:
+                self.best_val_loss = val_m['loss']
+            if (epoch + 1) % save_every == 0 or is_best:
+                self.save_checkpoint(is_best=is_best)
+
+        # Save final history
+        with open(self.checkpoint_dir / 'training_history.json', 'w') as f:
+            json.dump(self.history, f, indent=2)
+
+        print(f"\nTraining complete — best val loss: {self.best_val_loss:.4f}")
+        print(f"Checkpoints: {self.checkpoint_dir}")
+
+
+def main():
+    parser = argparse.ArgumentParser(description='Train BirdNET Geomodel')
+
+    # Data
+    parser.add_argument('--data_path', type=str, default='./outputs/global_350km_ee_gbif.parquet')
+
+    # Model
+    parser.add_argument('--model_size', type=str, default='medium', choices=['small', 'medium', 'large'])
+
+    # Training
+    parser.add_argument('--batch_size', type=int, default=256)
+    parser.add_argument('--num_epochs', type=int, default=50)
+    parser.add_argument('--lr', type=float, default=0.001)
+    parser.add_argument('--weight_decay', type=float, default=1e-5)
+    parser.add_argument('--species_weight', type=float, default=1.0)
+    parser.add_argument('--env_weight', type=float, default=0.1)
+
+    # Data split
+    parser.add_argument('--test_size', type=float, default=0.2)
+    parser.add_argument('--val_size', type=float, default=0.1)
+
+    # Checkpoints
+    parser.add_argument('--checkpoint_dir', type=str, default='./checkpoints')
+    parser.add_argument('--taxonomy', type=str, default=None,
+                        help='Path to taxonomy CSV (produced by combine.py). Auto-detected if omitted.')
+    parser.add_argument('--resume', type=str, default=None)
+    parser.add_argument('--save_every', type=int, default=5)
+
+    # Device
+    parser.add_argument('--device', type=str, default='auto', choices=['auto', 'cuda', 'cpu'])
+    parser.add_argument('--num_workers', type=int, default=0)
+
+    args = parser.parse_args()
+
+    device = torch.device(
+        'cuda' if args.device == 'auto' and torch.cuda.is_available()
+        else 'cpu' if args.device == 'auto' else args.device
+    )
+
+    print("=" * 70)
+    print("  BirdNET Geomodel Training")
+    print("=" * 70)
+    print(f"  Data:       {args.data_path}")
+    print(f"  Model:      {args.model_size}")
+    print(f"  Epochs:     {args.num_epochs}")
+    print(f"  Batch size: {args.batch_size}")
+    print(f"  LR:         {args.lr}")
+    print(f"  Device:     {device}")
+
+    # -- Data loading & preprocessing ---
+    print("\n1. Loading data...")
+    loader = H3DataLoader(args.data_path)
+    loader.load_data()
+
+    print("2. Flattening to samples...")
+    lats, lons, weeks, species_lists, env_features = loader.flatten_to_samples()
+
+    print("3. Preprocessing...")
+    preprocessor = H3DataPreprocessor()
+    inputs, targets = preprocessor.prepare_training_data(
+        lats, lons, weeks, species_lists, env_features, fit=True
+    )
+
+    info = preprocessor.get_preprocessing_info()
+    n_species = info['n_species']
+    n_env = info['n_env_features']
+    print(f"   Samples: {len(inputs['coordinates']):,}  |  Species: {n_species:,}  |  Env features: {n_env}")
+
+    print("4. Splitting data...")
+    train_in, val_in, test_in, train_tgt, val_tgt, test_tgt = preprocessor.split_data(
+        inputs, targets, test_size=args.test_size, val_size=args.val_size,
+        random_state=42, split_by_location=True,
+    )
+    print(f"   Train: {len(train_in['coordinates']):,}  |  Val: {len(val_in['coordinates']):,}  |  Test: {len(test_in['coordinates']):,}")
+
+    print("5. Creating DataLoaders...")
+    train_loader, val_loader = create_dataloaders(
+        train_in, train_tgt, val_in, val_tgt,
+        batch_size=args.batch_size, num_workers=args.num_workers,
+        pin_memory=(device.type == 'cuda'),
+    )
+
+    # -- Model ---
+    print("\n6. Creating model...")
+    model = create_model(n_species=n_species, n_env_features=n_env, model_size=args.model_size)
+    total_params = sum(p.numel() for p in model.parameters())
+    print(f"   {args.model_size} — {total_params:,} params (~{total_params * 4 / 1024 / 1024:.1f} MB)")
+
+    model_config = {
+        'model_size': args.model_size,
+        'n_species': n_species,
+        'n_env_features': n_env,
+    }
+    species_vocab = {
+        'species_to_idx': preprocessor.species_to_idx,
+        'idx_to_species': preprocessor.idx_to_species,
+    }
+
+    checkpoint_dir = Path(args.checkpoint_dir)
+
+    # Save labels file from taxonomy CSV (produced by combine.py)
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    labels_path = checkpoint_dir / 'labels.txt'
+    name_map: Dict[int, tuple] = {}  # taxonKey → (sciName, comName)
+
+    taxonomy_path = args.taxonomy
+    if taxonomy_path is None:
+        # Auto-detect: same dir as data parquet, _taxonomy.csv suffix
+        auto = Path(args.data_path).with_name(
+            Path(args.data_path).stem.replace('_with_ee', '') + '_taxonomy.csv'
+        )
+        # Also try exact stem match
+        auto2 = Path(args.data_path).with_suffix('.csv').with_name(
+            Path(args.data_path).stem + '_taxonomy.csv'
+        )
+        for candidate in [auto2, auto]:
+            if candidate.exists():
+                taxonomy_path = str(candidate)
+                break
+
+    if taxonomy_path and Path(taxonomy_path).exists():
+        print(f"\n7. Loading taxonomy from {taxonomy_path}...")
+        with open(taxonomy_path, encoding='utf-8') as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                tk = int(row['taxonKey'])
+                name_map[tk] = (row['scientificName'], row.get('commonName', row['scientificName']))
+    else:
+        print("\n7. No taxonomy file found — labels will use taxonKey only")
+
+    with open(labels_path, 'w', encoding='utf-8') as f:
+        for idx in range(n_species):
+            tk = preprocessor.idx_to_species[idx]
+            sci, com = name_map.get(tk, (str(tk), str(tk)))
+            f.write(f"{tk}\t{sci}\t{com}\n")
+    named = sum(1 for idx in range(n_species) if preprocessor.idx_to_species[idx] in name_map)
+    print(f"   Saved {n_species} labels ({named} with names) to {labels_path}")
+
+    criterion = MultiTaskLoss(
+        species_weight=args.species_weight, env_weight=args.env_weight, pos_weight=None
+    )
+    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+    trainer = Trainer(
+        model=model, criterion=criterion, optimizer=optimizer, device=device,
+        checkpoint_dir=checkpoint_dir, model_config=model_config, species_vocab=species_vocab,
+    )
+
+    if args.resume:
+        trainer.load_checkpoint(Path(args.resume))
+
+    # -- Train ---
+    print("\n" + "=" * 70)
+    trainer.train(train_loader, val_loader, num_epochs=args.num_epochs, save_every=args.save_every)
+
+
+if __name__ == '__main__':
+    main()

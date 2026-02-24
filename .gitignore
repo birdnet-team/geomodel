@@ -3,9 +3,11 @@
 
 # Exclude outputs dir
 outputs/
+checkpoints/
 
 # Exclude dev files
 commands.txt
+dev/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

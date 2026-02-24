@@ -9,7 +9,7 @@ import pandas as pd
 from tqdm import tqdm
 
 # Columns read from the processed GBIF CSV
-GBIF_REQUIRED_COLUMNS = ['latitude', 'longitude', 'taxonKey', 'week', 'class']
+GBIF_REQUIRED_COLUMNS = ['latitude', 'longitude', 'taxonKey', 'verbatimScientificName', 'commonName', 'week', 'class']
 
 # Number of BirdNET weeks per year
 NUM_WEEKS = 48
@@ -56,6 +56,9 @@ def combine_geodata_and_gbif(geodata_path, gbif_processed_path, output_path, val
     # Accumulate species per (cell, week) — sets for automatic deduplication
     cell_week_species = defaultdict(set)
 
+    # Collect taxonKey → (scientificName, commonName) mapping
+    taxon_names: dict = {}
+
     estimated_rows = estimate_gzip_rows(gbif_processed_path)
 
     with gzip.open(gbif_processed_path, 'rt', encoding='utf-8') as f:
@@ -81,13 +84,19 @@ def combine_geodata_and_gbif(geodata_path, gbif_processed_path, output_path, val
                         logging.warning(f"{len(new_missing)} new H3 cell(s) not in geodata")
                         missing_cells.update(new_missing)
 
-                    # Accumulate species
-                    for h3_cell, week, taxon in zip(
-                        chunk.loc[mask, 'h3_cell'].values,
-                        chunk.loc[mask, 'week'].values,
-                        chunk.loc[mask, 'taxonKey'].values,
+                    # Accumulate species and names
+                    matched = chunk.loc[mask]
+                    for h3_cell, week, taxon, sci_name, com_name in zip(
+                        matched['h3_cell'].values,
+                        matched['week'].values,
+                        matched['taxonKey'].values,
+                        matched['verbatimScientificName'].values,
+                        matched['commonName'].values,
                     ):
                         cell_week_species[(h3_cell, int(week))].add(taxon)
+                        tk = int(taxon)
+                        if tk not in taxon_names:
+                            taxon_names[tk] = (str(sci_name), str(com_name))
 
                 pbar.update(chunk_size)
 
@@ -105,6 +114,15 @@ def combine_geodata_and_gbif(geodata_path, gbif_processed_path, output_path, val
 
     gdf.to_parquet(output_path, index=False)
     logging.info(f"Saved combined dataset to {output_path}")
+
+    # Save taxonomy CSV (taxonKey, scientificName, commonName) alongside the parquet
+    taxonomy_path = output_path.replace('.parquet', '_taxonomy.csv') if isinstance(output_path, str) else str(output_path).replace('.parquet', '_taxonomy.csv')
+    taxonomy_df = pd.DataFrame([
+        {'taxonKey': k, 'scientificName': sci, 'commonName': com}
+        for k, (sci, com) in sorted(taxon_names.items())
+    ])
+    taxonomy_df.to_csv(taxonomy_path, index=False)
+    logging.info(f"Saved taxonomy ({len(taxon_names)} species) to {taxonomy_path}")
 
 
 if __name__ == '__main__':

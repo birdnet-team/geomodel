@@ -1,3 +1,4 @@
+import ast
 import logging
 import zipfile
 import numpy as np
@@ -6,7 +7,7 @@ from tqdm import tqdm
 
 
 # Output CSV column order
-OUTPUT_COLUMNS = ['latitude', 'longitude', 'taxonKey', 'verbatimScientificName', 'week', 'class']
+OUTPUT_COLUMNS = ['latitude', 'longitude', 'taxonKey', 'verbatimScientificName', 'commonName', 'week', 'class']
 
 # Required source columns (must all be non-null)
 REQUIRED_COLUMNS = ['decimalLatitude', 'decimalLongitude', 'day', 'month', 'taxonKey', 'verbatimScientificName', 'class']
@@ -47,15 +48,71 @@ def estimate_rows(zip_archive, file_path, sample_rows=10000):
     return 0
 
 
-def process_gbif_file(gbif_zip_path, file, output_csv_path, valid_classes=None, max_rows=None):
+def load_taxonomy(taxonomy_path):
+    """
+    Load taxonomy CSV.
+
+    Returns:
+        valid_names: set of all valid scientific names (including synonyms)
+        common_names: dict mapping sciName → common name (English)
+    """
+    df = pd.read_csv(taxonomy_path)
+    valid_names = set()
+    common_names: dict = {}
+
+    # Build sciName → commonName lookup from primary name column
+    common_col = 'comNameEn (Clements/eBird/ML)'
+    fallback_col = 'comNameEn (IOC)'
+
+    # Collect names from synonym lists (covers primary names too)
+    # and map each synonym to its row's common name
+    if 'sciNameSynonyms' in df.columns:
+        for _, row in df.iterrows():
+            val = row.get('sciNameSynonyms')
+            if pd.isna(val):
+                continue
+            try:
+                names = ast.literal_eval(str(val))
+                if isinstance(names, list):
+                    valid_names.update(names)
+                    # Resolve common name: prefer Clements, fallback IOC, else sci name
+                    com = row.get(common_col)
+                    if pd.isna(com) or not str(com).strip():
+                        com = row.get(fallback_col)
+                    if pd.isna(com) or not str(com).strip():
+                        com = row.get('sciName (Clements/eBird/ML)', '')
+                    com = str(com).strip() if not pd.isna(com) else ''
+                    for n in names:
+                        if n and n not in common_names:
+                            common_names[n] = com if com else n
+            except (ValueError, SyntaxError):
+                pass
+
+    # Also add explicit sci name columns as fallback
+    for col in ['sciName (Clements/eBird/ML)', 'sciName (GBIF)', 'sciName (IOC)']:
+        if col in df.columns:
+            valid_names.update(df[col].dropna().astype(str).values)
+
+    valid_names.discard('')
+    logging.info(f"Loaded {len(valid_names)} valid species names from taxonomy")
+    return valid_names, common_names
+
+
+def process_gbif_file(gbif_zip_path, file, output_csv_path, valid_classes=None, taxonomy_path=None, max_rows=None):
     """
     Process a GBIF Darwin Core Archive zip, filter and transform records,
     and write the result to a (optionally gzipped) CSV.
+
+    If taxonomy_path is provided, only species listed in the taxonomy are kept.
     """
     # Write CSV header
     pd.DataFrame(columns=OUTPUT_COLUMNS).to_csv(output_csv_path, index=False, encoding='utf-8')
 
     valid_classes_set = set(valid_classes) if valid_classes else None
+    if taxonomy_path:
+        valid_species, common_names = load_taxonomy(taxonomy_path)
+    else:
+        valid_species, common_names = None, {}
     rows_processed = 0
 
     with zipfile.ZipFile(gbif_zip_path, 'r') as z:
@@ -73,9 +130,13 @@ def process_gbif_file(gbif_zip_path, file, output_csv_path, valid_classes=None, 
                     if valid_classes_set and not chunk.empty:
                         chunk = chunk[chunk['class'].str.lower().isin(valid_classes_set)]
 
-                    # Keep only full species (1-2 word names, skip subspecies / higher taxa)
+                    # Keep only full species (2 word names, skip subspecies / higher taxa)
                     if not chunk.empty:
-                        chunk = chunk[chunk['verbatimScientificName'].str.split().str.len() <= 2]
+                        chunk = chunk[chunk['verbatimScientificName'].str.split().str.len() == 2]
+
+                    # Filter to species in taxonomy
+                    if valid_species is not None and not chunk.empty:
+                        chunk = chunk[chunk['verbatimScientificName'].isin(valid_species)]
 
                     if not chunk.empty:
                         chunk = chunk.copy()
@@ -85,6 +146,9 @@ def process_gbif_file(gbif_zip_path, file, output_csv_path, valid_classes=None, 
 
                     if not chunk.empty:
                         chunk['week'] = date_to_week(chunk['day'], chunk['month'])
+                        chunk['commonName'] = chunk['verbatimScientificName'].map(
+                            lambda n: common_names.get(n, n)
+                        )
                         chunk[OUTPUT_COLUMNS].to_csv(
                             output_csv_path, mode='a', header=False, index=False, encoding='utf-8'
                         )
@@ -105,11 +169,14 @@ if __name__ == '__main__':
     parser.add_argument('--output', type=str, default="./outputs/gbif_processed.gz", help='Output gzipped CSV file')
     parser.add_argument('--valid_classes', nargs='*', default=['aves', 'amphibia', 'insecta', 'mammalia', 'reptilia'],
                         help='List of classes to include (default: aves, amphibia, insecta, mammalia, reptilia)')
+    parser.add_argument('--taxonomy', type=str, default=None,
+                        help='Path to taxonomy CSV — only species in the taxonomy are kept')
     parser.add_argument('--max_rows', type=int, default=None, help='Maximum number of rows to process (for testing)')
     args = parser.parse_args()
 
     process_gbif_file(
         args.gbif, args.file, args.output,
         valid_classes=[cls.lower() for cls in args.valid_classes],
+        taxonomy_path=args.taxonomy,
         max_rows=args.max_rows,
     )
