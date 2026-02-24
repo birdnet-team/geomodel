@@ -78,7 +78,15 @@ class SpatioTemporalEncoder(nn.Module):
 # ---------------------------------------------------------------------------
 
 class SpeciesPredictionHead(nn.Module):
-    """Multi-label classification head with residual blocks."""
+    """Multi-label classification head with residual blocks and low-rank output.
+
+    The final projection uses a low-rank factorization:
+        hidden_dim → bottleneck → n_species
+    instead of a single Linear(hidden_dim, n_species).  This reduces
+    parameters dramatically when n_species is large (10K+) while learning
+    a compact species-embedding space whose dimensions can be interpreted
+    as latent ecological niches.
+    """
 
     def __init__(
         self,
@@ -87,6 +95,7 @@ class SpeciesPredictionHead(nn.Module):
         hidden_dim: int = 512,
         n_blocks: int = 2,
         dropout: float = 0.2,
+        bottleneck: int = 128,
     ):
         super().__init__()
         self.n_species = n_species
@@ -96,7 +105,9 @@ class SpeciesPredictionHead(nn.Module):
         )
         self.head = nn.Sequential(
             nn.LayerNorm(hidden_dim),
-            nn.Linear(hidden_dim, n_species),
+            nn.Linear(hidden_dim, bottleneck),
+            nn.GELU(),
+            nn.Linear(bottleneck, n_species),
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -153,6 +164,7 @@ class BirdNETGeoModel(nn.Module):
         encoder_blocks: int = 4,
         species_head_dim: int = 512,
         species_head_blocks: int = 2,
+        species_bottleneck: int = 128,
         env_head_dim: int = 256,
         env_head_blocks: int = 1,
         dropout: float = 0.1,
@@ -170,7 +182,7 @@ class BirdNETGeoModel(nn.Module):
         self.species_head = SpeciesPredictionHead(
             input_dim=embed_dim, n_species=n_species,
             hidden_dim=species_head_dim, n_blocks=species_head_blocks,
-            dropout=species_dropout,
+            dropout=species_dropout, bottleneck=species_bottleneck,
         )
         self.env_head = EnvironmentalPredictionHead(
             input_dim=embed_dim, n_env_features=n_env_features,
@@ -219,19 +231,19 @@ def create_model(
     configs = {
         'small': dict(
             embed_dim=256, encoder_blocks=3,
-            species_head_dim=256, species_head_blocks=1,
+            species_head_dim=256, species_head_blocks=1, species_bottleneck=64,
             env_head_dim=128, env_head_blocks=1,
             dropout=0.1, species_dropout=0.15, env_dropout=0.1,
         ),
         'medium': dict(
             embed_dim=512, encoder_blocks=4,
-            species_head_dim=512, species_head_blocks=2,
+            species_head_dim=512, species_head_blocks=2, species_bottleneck=128,
             env_head_dim=256, env_head_blocks=1,
             dropout=0.1, species_dropout=0.2, env_dropout=0.1,
         ),
         'large': dict(
             embed_dim=1024, encoder_blocks=6,
-            species_head_dim=1024, species_head_blocks=3,
+            species_head_dim=1024, species_head_blocks=3, species_bottleneck=256,
             env_head_dim=512, env_head_blocks=2,
             dropout=0.15, species_dropout=0.25, env_dropout=0.15,
         ),
