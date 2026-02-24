@@ -1,5 +1,6 @@
 import logging
 import zipfile
+import numpy as np
 import pandas as pd
 from tqdm import tqdm
 
@@ -55,7 +56,17 @@ def estimate_rows(zip_archive, file_path, sample_rows=10000):
     else:
         return 0
 
+def date_to_week_vectorized(day, month):
+    """
+    Vectorized version of date_to_week. Converts day/month arrays to week numbers (1-48).
+    """
+    week = (month.astype(int) - 1) * 4
+    week = week + np.where(day <= 7, 1, np.where(day <= 14, 2, np.where(day <= 21, 3, 4)))
+    return week.astype(int)
+
 def process_gbif_file(gbif_zip_path, file, output_csv_path, valid_classes=None, max_rows=None):
+
+    required_cols = ['decimalLatitude', 'decimalLongitude', 'day', 'month', 'taxonKey', 'verbatimScientificName', 'class']
 
     output_df = pd.DataFrame({
         'latitude': [],
@@ -68,52 +79,63 @@ def process_gbif_file(gbif_zip_path, file, output_csv_path, valid_classes=None, 
 
     output_df.to_csv(output_csv_path, index=False, encoding='utf-8')
 
+    if valid_classes:
+        valid_classes_set = set(valid_classes)
+
+    rows_processed = 0
+
     with zipfile.ZipFile(gbif_zip_path, 'r') as z:
         estimated_rows = estimate_rows(z, file)
         with z.open(file) as f:
             with tqdm(total=estimated_rows, desc="Processing GBIF data") as pbar:
-                for chunk in pd.read_csv(f, sep='\t', chunksize=10000, on_bad_lines='warn'):
-                    # Collect rows in a list and create a DataFrame once per chunk
-                    rows = []
+                for chunk in pd.read_csv(f, sep='\t', chunksize=100000, on_bad_lines='warn'):
+                    chunk_size = len(chunk)
 
-                    # Process chunk
-                    for idx, row in chunk.iterrows():
-                        lat = row.get('decimalLatitude')
-                        lon = row.get('decimalLongitude')
-                        day = row.get('day')
-                        month = row.get('month')
-                        taxon = row.get('taxonKey')
-                        scientific_name = row.get('verbatimScientificName')
-                        cls = row.get('class')
+                    # Drop rows missing any required field
+                    chunk = chunk.dropna(subset=required_cols)
 
-                        if pd.isna(lat) or pd.isna(lon):  # Skip row if lat or lon is missing
-                            continue
-                        if pd.isna(day) or pd.isna(month):  # Skip row if day or month is missing
-                            continue
-                        if pd.isna(taxon):  # Skip row if taxon is missing
-                            continue
-                        if pd.isna(cls):  # Skip row if class is missing
-                            continue
-                        if valid_classes and cls.lower() not in valid_classes:  # Skip row if class is not in the specified list
-                            continue
-                        if len(scientific_name.split()) > 2: # Only full species, ingoring subspecies and higher taxa
-                            continue
+                    if chunk.empty:
+                        pbar.update(chunk_size)
+                        rows_processed += chunk_size
+                        if max_rows is not None and rows_processed >= max_rows:
+                            break
+                        continue
 
-                        # round coordinates to 3 decimal places
-                        try:
-                            latv = round(float(lat), 3)
-                            lonv = round(float(lon), 3)
-                        except Exception:
-                            continue
+                    # Filter valid classes (vectorized)
+                    if valid_classes:
+                        chunk = chunk[chunk['class'].str.lower().isin(valid_classes_set)]
 
-                        week = date_to_week(int(day), int(month))
-                        rows.append({'latitude': latv, 'longitude': lonv, 'taxonID': taxon, 'scientificName': scientific_name, 'week': week, 'class': cls})
+                    # Filter to full species only (exactly 1 or 2 words, ignoring subspecies and higher taxa)
+                    chunk = chunk[chunk['verbatimScientificName'].str.split().str.len() <= 2]
 
-                    if rows:
-                        output_chunk = pd.DataFrame.from_records(rows, columns=['latitude', 'longitude', 'taxonID', 'scientificName', 'week', 'class'])
-                        output_chunk.to_csv(output_csv_path, mode='a', header=False, index=False, encoding='utf-8')
-                    pbar.update(len(chunk))
-                    if max_rows is not None and pbar.n >= max_rows:
+                    if chunk.empty:
+                        pbar.update(chunk_size)
+                        rows_processed += chunk_size
+                        if max_rows is not None and rows_processed >= max_rows:
+                            break
+                        continue
+
+                    # Vectorized coordinate rounding
+                    chunk = chunk.copy()
+                    chunk['latitude'] = chunk['decimalLatitude'].astype(float).round(3)
+                    chunk['longitude'] = chunk['decimalLongitude'].astype(float).round(3)
+
+                    # Drop rows where coordinate conversion produced NaN
+                    chunk = chunk.dropna(subset=['latitude', 'longitude'])
+
+                    # Vectorized week computation
+                    chunk['week'] = date_to_week_vectorized(
+                        chunk['day'].astype(int),
+                        chunk['month'].astype(int)
+                    )
+
+                    # Build output columns (taxonKey -> taxon position in CSV)
+                    output_chunk = chunk[['latitude', 'longitude', 'taxonKey', 'verbatimScientificName', 'week', 'class']]
+                    output_chunk.to_csv(output_csv_path, mode='a', header=False, index=False, encoding='utf-8')
+
+                    pbar.update(chunk_size)
+                    rows_processed += chunk_size
+                    if max_rows is not None and rows_processed >= max_rows:
                         break
 
 if __name__ == '__main__':
