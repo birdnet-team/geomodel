@@ -173,9 +173,12 @@ python train.py --data_path ./outputs/combined.parquet --model_size medium --num
 
 `predict.py` loads a checkpoint and predicts species occurrence for a given location and week. Species names are resolved from `labels.txt` (auto-detected in the checkpoint directory).
 
+Pass `--week -1` to get a **yearly** species list (the model is trained with yearly samples that aggregate all weeks).
+
 ```bash
 python predict.py --lat 50.83 --lon 12.92 --week 10
 python predict.py --lat 42.44 --lon -76.50 --week 20 --top_k 20 --threshold 0.1
+python predict.py --lat 50.83 --lon 12.92 --week -1   # yearly prediction
 ```
 
 | Flag | Default | Description |
@@ -183,7 +186,7 @@ python predict.py --lat 42.44 --lon -76.50 --week 20 --top_k 20 --threshold 0.1
 | `--checkpoint` | `checkpoints/checkpoint_best.pt` | Path to model checkpoint |
 | `--lat` | (required) | Latitude (-90 to 90) |
 | `--lon` | (required) | Longitude (-180 to 180) |
-| `--week` | (required) | Week number (1–48) |
+| `--week` | (required) | Week number (1–48, or -1 for yearly) |
 | `--top_k` | `100` | Maximum species to show |
 | `--threshold` | `0.05` | Minimum probability |
 | `--device` | `auto` | `auto`, `cuda`, or `cpu` |
@@ -225,9 +228,22 @@ geomodel/
 
 ## Plotting
 
-Use the provided plotting utility to render PNG maps from GeoParquet outputs.
+### Species Occurrence Over Weeks
 
-- Script: `scripts/plot_environmental.py`
+`scripts/plot_species_weeks.py` runs inference across all 48 weeks plus the yearly prediction for a given location and generates bar charts showing each species' probability over time.
+
+```bash
+python scripts/plot_species_weeks.py --lat 50.83 --lon 12.92
+python scripts/plot_species_weeks.py --lat 42.44 --lon -76.50 --top_k 20 --threshold 0.1 --outdir outputs/plots
+```
+
+Outputs:
+- One PNG per species with weekly + yearly probability bars
+- A `summary.png` grid with the top species stacked vertically
+
+### Environmental Features
+
+Use `scripts/plot_environmental.py` to render PNG maps from GeoParquet outputs.
 - Key options:
   - `--input` (`-i`): Input GeoParquet file (required)
   - `--outdir` (`-o`): Output directory for PNGs (default: `outputs/plots`)

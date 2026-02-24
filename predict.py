@@ -125,24 +125,28 @@ def main():
     parser.add_argument('--checkpoint', type=str, default='checkpoints/checkpoint_best.pt', help='Path to model checkpoint')
     parser.add_argument('--lat', type=float, required=True, help='Latitude (-90 to 90)')
     parser.add_argument('--lon', type=float, required=True, help='Longitude (-180 to 180)')
-    parser.add_argument('--week', type=int, required=True, help='Week number (1-48)')
+    parser.add_argument('--week', type=int, required=True, help='Week number (1-48, or -1 for yearly)')
     parser.add_argument('--top_k', type=int, default=100, help='Show top K species')
-    parser.add_argument('--threshold', type=float, default=0.05, help='Min probability threshold')
+    parser.add_argument('--threshold', type=float, default=0.15, help='Min probability threshold')
     parser.add_argument('--device', type=str, default='auto', choices=['auto', 'cuda', 'cpu'])
     args = parser.parse_args()
 
-    if not 1 <= args.week <= 48:
-        parser.error("Week must be between 1 and 48")
+    if not (args.week == -1 or 1 <= args.week <= 48):
+        parser.error("Week must be between 1 and 48, or -1 for yearly")
+
+    # Map CLI -1 → internal week 0 (yearly)
+    internal_week = 0 if args.week == -1 else args.week
 
     results = predict(
         checkpoint_path=args.checkpoint,
-        lat=args.lat, lon=args.lon, week=args.week,
+        lat=args.lat, lon=args.lon, week=internal_week,
         top_k=args.top_k, threshold=args.threshold,
         device=args.device,
     )
 
     # Print results
-    print(f"\nPredictions for lat={args.lat}, lon={args.lon}, week={args.week}")
+    week_label = "yearly" if args.week == -1 else f"week={args.week}"
+    print(f"\nPredictions for lat={args.lat}, lon={args.lon}, {week_label}")
     print(f"{'Rank':<5} {'TaxonKey':<12} {'Probability':<12} {'Common Name':<30} {'Scientific Name'}")
     print("-" * 100)
     for i, (taxon_key, sci_name, com_name, prob) in enumerate(results, 1):

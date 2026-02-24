@@ -69,6 +69,9 @@ class H3DataLoader:
         """
         Flatten H3-cell × weeks to individual (lat, lon, week, species, env) samples.
 
+        For each cell, creates 48 weekly samples (week 1–48) plus one yearly
+        sample (week 0) whose species list is the union of all weeks.
+
         Returns:
             lats, lons, weeks, species_lists, env_features
         """
@@ -79,19 +82,26 @@ class H3DataLoader:
 
         n_cells = len(self.gdf)
         n_weeks = 48
-        total = n_cells * n_weeks
+        samples_per_cell = n_weeks + 1  # 48 weekly + 1 yearly
 
-        lats = np.repeat(cell_lats, n_weeks)
-        lons = np.repeat(cell_lons, n_weeks)
-        weeks = np.tile(np.arange(1, n_weeks + 1), n_cells)
+        lats = np.repeat(cell_lats, samples_per_cell)
+        lons = np.repeat(cell_lons, samples_per_cell)
+        # Week order per cell: 1..48, 0 (yearly)
+        week_pattern = np.concatenate([np.arange(1, n_weeks + 1), [0]])
+        weeks = np.tile(week_pattern, n_cells)
 
         species_lists: List = []
         for _, row in self.gdf.iterrows():
+            yearly_species: set = set()
             for w in range(1, n_weeks + 1):
-                species_lists.append(row[f'week_{w}'])
+                sp = row[f'week_{w}']
+                species_lists.append(sp)
+                if hasattr(sp, '__iter__'):
+                    yearly_species.update(sp)
+            species_lists.append(list(yearly_species))
 
         env_features_df = pd.DataFrame(
-            np.repeat(env_data.values, n_weeks, axis=0),
+            np.repeat(env_data.values, samples_per_cell, axis=0),
             columns=self.env_columns,
         )
 
@@ -136,9 +146,18 @@ class H3DataPreprocessor:
 
     @staticmethod
     def sinusoidal_encode_weeks(weeks: np.ndarray, n_weeks: int = 48) -> np.ndarray:
-        """Cyclical sinusoidal encoding: [sin(week), cos(week)]."""
+        """
+        Cyclical sinusoidal encoding: [sin(week), cos(week)].
+
+        Week 0 (yearly / all-year) is encoded as [0, 0].
+        """
+        weeks = np.asarray(weeks)
         week_rad = 2 * np.pi * (weeks - 1) / n_weeks
-        return np.column_stack([np.sin(week_rad), np.cos(week_rad)]).astype(np.float32)
+        result = np.column_stack([np.sin(week_rad), np.cos(week_rad)]).astype(np.float32)
+        # Zero out yearly samples (week == 0)
+        yearly_mask = weeks == 0
+        result[yearly_mask] = 0.0
+        return result
 
     # -- Normalization ----------------------------------------------------
 
