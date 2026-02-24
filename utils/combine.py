@@ -85,11 +85,13 @@ def combine_geodata_and_gbif(geodata_path, gbif_processed_path, output_path, val
         with tqdm(total=estimated_rows, desc="Processing GBIF data") as pbar:
 
             for chunk in pd.read_csv(f, chunksize=100000):
+                chunk_size = len(chunk)
+
                 # Vectorized: filter to valid classes
                 chunk = chunk[chunk['class'].isin(valid_classes_set)]
 
                 if chunk.empty:
-                    pbar.update(len(chunk))
+                    pbar.update(chunk_size)
                     continue
 
                 # Vectorized: compute H3 cells for the entire chunk
@@ -120,7 +122,7 @@ def combine_geodata_and_gbif(geodata_path, gbif_processed_path, output_path, val
                         cell_week_species[key] = set()
                     cell_week_species[key].add(taxon)
 
-                pbar.update(len(chunk))
+                pbar.update(chunk_size)
 
     # Build h3_index -> gdf row index mapping for O(1) assignment
     h3_to_idx = {h3_val: idx for idx, h3_val in zip(gdf.index, gdf['h3_index'])}
