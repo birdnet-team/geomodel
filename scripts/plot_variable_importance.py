@@ -130,6 +130,11 @@ def load_data_samples(
     env_names = list(env_df.columns)
     env_matrix = env_df.values.astype(np.float32)
 
+    # Drop uninformative columns (constant metadata)
+    keep = [i for i, n in enumerate(env_names) if n not in DROP_COLUMNS]
+    env_names = [env_names[i] for i in keep]
+    env_matrix = env_matrix[:, keep]
+
     # Subsample if requested
     n = len(lats)
     if max_samples and max_samples < n:
@@ -191,10 +196,78 @@ PRETTY_NAMES = {
     'precipitation_range': 'Precipitation (range)',
     'water_fraction': 'Water fraction',
     'urban_fraction': 'Urban fraction',
-    'landcover_class': 'Land cover class',
     'ndvi_mean': 'NDVI (mean)',
     'ndvi_range': 'NDVI (range)',
 }
+
+# MODIS MCD12Q1 LC_Type1 (IGBP) class names
+IGBP_CLASS_NAMES = {
+    1: 'Evergreen Needleleaf Forest',
+    2: 'Evergreen Broadleaf Forest',
+    3: 'Deciduous Needleleaf Forest',
+    4: 'Deciduous Broadleaf Forest',
+    5: 'Mixed Forest',
+    6: 'Closed Shrublands',
+    7: 'Open Shrublands',
+    8: 'Woody Savannas',
+    9: 'Savannas',
+    10: 'Grasslands',
+    11: 'Permanent Wetlands',
+    12: 'Croplands',
+    13: 'Urban / Built-up',
+    14: 'Cropland / Vegetation Mosaic',
+    15: 'Snow / Ice',
+    16: 'Barren',
+    17: 'Water Bodies',
+}
+
+# Columns to exclude — constant metadata, not meaningful for correlation
+DROP_COLUMNS = {'h3_resolution', 'target_km'}
+
+# Columns that should be one-hot encoded (categorical integers)
+CATEGORICAL_COLUMNS = {'landcover_class'}
+
+
+def expand_categoricals(
+    env_matrix: np.ndarray,
+    env_names: List[str],
+) -> Tuple[np.ndarray, List[str]]:
+    """
+    One-hot encode categorical columns (e.g. landcover_class) into individual
+    binary indicator columns.  Non-categorical columns pass through unchanged.
+
+    Returns:
+        expanded_matrix, expanded_names
+    """
+    parts: List[np.ndarray] = []
+    names: List[str] = []
+
+    for col_idx, col_name in enumerate(env_names):
+        col = env_matrix[:, col_idx]
+
+        if col_name not in CATEGORICAL_COLUMNS:
+            parts.append(col.reshape(-1, 1))
+            names.append(col_name)
+            continue
+
+        # Determine class lookup
+        if col_name == 'landcover_class':
+            class_names = IGBP_CLASS_NAMES
+        else:
+            class_names = {}
+
+        # Find unique non-NaN classes present in the data
+        valid = col[~np.isnan(col)].astype(int)
+        unique_classes = sorted(set(valid.tolist()))
+
+        for cls in unique_classes:
+            indicator = (col == cls).astype(np.float32)
+            parts.append(indicator.reshape(-1, 1))
+            label = class_names.get(cls, f'{col_name}_{cls}')
+            names.append(f'LC: {label}' if col_name == 'landcover_class' else label)
+
+    expanded = np.hstack(parts) if parts else env_matrix
+    return expanded, names
 
 
 def compute_correlations(
@@ -234,6 +307,49 @@ def prettify_name(name: str) -> str:
 
 # ── Plotting ───────────────────────────────────────────────────────────
 
+# Semantic variable groups — order defines the top-to-bottom layout.
+# Each entry: (group_label, list of raw variable name prefixes/exact matches)
+VARIABLE_GROUPS = [
+    ('Location',   ['latitude', 'longitude']),
+    ('Climate',    ['temperature', 'precipitation']),
+    ('Terrain',    ['elevation', 'canopy']),
+    ('Surface',    ['water_fraction', 'urban_fraction']),
+    ('Land Cover', ['LC:']),  # one-hot land cover columns start with "LC:"
+]
+
+
+def _group_order(
+    variable_names: List[str],
+) -> List[int]:
+    """
+    Return indices into *variable_names* sorted by semantic group.
+
+    Variables within each group keep their original order.
+    Any variable that doesn't match a group is appended at the end.
+    """
+    used: set = set()
+    ordered: List[int] = []
+
+    pretty = [prettify_name(n) for n in variable_names]
+
+    for _, prefixes in VARIABLE_GROUPS:
+        for idx, (raw, pn) in enumerate(zip(variable_names, pretty)):
+            if idx in used:
+                continue
+            for pfx in prefixes:
+                if raw.startswith(pfx) or pn.startswith(pfx):
+                    ordered.append(idx)
+                    used.add(idx)
+                    break
+
+    # Anything unmatched goes at the end
+    for idx in range(len(variable_names)):
+        if idx not in used:
+            ordered.append(idx)
+
+    return ordered
+
+
 def plot_variable_importance(
     correlations: np.ndarray,
     variable_names: List[str],
@@ -243,7 +359,8 @@ def plot_variable_importance(
     """
     Plot a horizontal bar chart of variable–species correlations.
 
-    Variables are sorted alphabetically so plots are comparable across species.
+    Variables are arranged in semantic groups (Location, Climate, Terrain,
+    Surface, Land Cover) so plots are comparable across species.
 
     Parameters:
         correlations: Spearman rho per variable
@@ -253,12 +370,14 @@ def plot_variable_importance(
     """
     _, taxon_key, sci_name, com_name = species_info
 
-    # Pretty-print names, then sort alphabetically (Z→A so A is at top)
-    pretty_names = [prettify_name(n) for n in variable_names]
-    order = np.argsort(pretty_names)[::-1]  # reverse so A is at top of barh
+    # Order by semantic groups
+    order = _group_order(variable_names)
+
+    # Reverse so first group appears at the top of the horizontal bar chart
+    order = order[::-1]
 
     sorted_corrs = correlations[order]
-    sorted_names = [pretty_names[i] for i in order]
+    sorted_names = [prettify_name(variable_names[i]) for i in order]
 
     n_bars = len(sorted_corrs)
     fig_height = max(4, 0.35 * n_bars + 1.5)
@@ -268,6 +387,27 @@ def plot_variable_importance(
 
     y_pos = np.arange(n_bars)
     ax.barh(y_pos, sorted_corrs, color=colors, edgecolor='white', linewidth=0.5, height=0.7)
+
+    # Draw thin horizontal lines between groups
+    raw_order = order[::-1]  # back to top-first for boundary detection
+    pretty_ordered = [prettify_name(variable_names[i]) for i in raw_order]
+    group_boundaries: List[Tuple[int, str]] = []  # (bar_index, group_label)
+    prev_group = None
+    for pos, (idx, pn) in enumerate(zip(raw_order, pretty_ordered)):
+        raw = variable_names[idx]
+        cur_group = None
+        for grp_label, prefixes in VARIABLE_GROUPS:
+            for pfx in prefixes:
+                if raw.startswith(pfx) or pn.startswith(pfx):
+                    cur_group = grp_label
+                    break
+            if cur_group:
+                break
+        if cur_group != prev_group and prev_group is not None:
+            # pos is top-first index; convert to bar y position (reversed)
+            bar_y = n_bars - pos - 0.5
+            ax.axhline(bar_y, color='#999999', linewidth=0.6, linestyle='-', zorder=0)
+        prev_group = cur_group
 
     ax.set_yticks(y_pos)
     ax.set_yticklabels(sorted_names, fontsize=9)
@@ -357,14 +497,16 @@ def main():
     )
     print(f"  Samples: {len(lats):,}  |  Env features: {len(env_names)}")
 
-    # Build combined variable matrix: [lat, lon, week, env_features...]
+    # Build combined variable matrix: [lat, lon, env_features...]
+    # One-hot encode categorical columns (e.g. landcover_class)
+    # Week is excluded — it's a model input, not a habitat variable.
+    env_expanded, env_expanded_names = expand_categoricals(env_matrix, env_names)
     all_variable_values = np.column_stack([
         lats.astype(np.float32),
         lons.astype(np.float32),
-        weeks.astype(np.float32),
-        env_matrix,
+        env_expanded,
     ])
-    all_variable_names = ['latitude', 'longitude', 'week'] + env_names
+    all_variable_names = ['latitude', 'longitude'] + env_expanded_names
 
     # Get model indices for batch inference
     model_indices = [sp[0] for sp in species_list]
