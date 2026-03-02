@@ -422,9 +422,8 @@ def plot_variable_importance(
     ax.xaxis.grid(True, alpha=0.3, linestyle='--')
     ax.set_axisbelow(True)
 
-    # Extend x-axis slightly for breathing room
-    xlim = max(0.15, np.max(np.abs(sorted_corrs)) * 1.15)
-    ax.set_xlim(-xlim, xlim)
+    # Fixed scale for cross-species comparability
+    ax.set_xlim(-1.0, 1.0)
 
     plt.tight_layout()
 
