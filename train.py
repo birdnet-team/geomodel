@@ -7,7 +7,7 @@ Features:
   - AdamW optimizer with CosineAnnealingWarmRestarts LR schedule
   - Automatic mixed-precision (AMP) on CUDA for ~2× speed-up
   - Early stopping based on validation-loss plateau
-  - Focal loss (default) for heavily imbalanced species labels
+  - BCE loss (default); focal loss available via --species_loss focal
   - Gradient clipping
 
 Usage:
@@ -251,8 +251,8 @@ def main():
     parser.add_argument('--weight_decay', type=float, default=1e-4)
     parser.add_argument('--species_weight', type=float, default=1.0)
     parser.add_argument('--env_weight', type=float, default=0.1)
-    parser.add_argument('--species_loss', type=str, default='focal', choices=['focal', 'bce'],
-                        help='Species loss function (default: focal)')
+    parser.add_argument('--species_loss', type=str, default='bce', choices=['bce', 'focal'],
+                        help='Species loss function (default: bce)')
     parser.add_argument('--focal_alpha', type=float, default=0.25)
     parser.add_argument('--focal_gamma', type=float, default=2.0)
 

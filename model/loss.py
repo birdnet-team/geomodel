@@ -1,7 +1,7 @@
 """
 Loss functions for multi-task learning.
 
-Species prediction: focal loss (default) or BCE with logits.
+Species prediction: BCE with logits (default) or focal loss.
 Environmental prediction: mean squared error (auxiliary task).
 """
 
@@ -51,7 +51,7 @@ class MultiTaskLoss(nn.Module):
         species_weight: float = 1.0,
         env_weight: float = 0.5,
         pos_weight: Optional[torch.Tensor] = None,
-        species_loss: str = 'focal',
+        species_loss: str = 'bce',
         focal_alpha: float = 0.25,
         focal_gamma: float = 2.0,
         reduction: str = 'mean',
@@ -61,7 +61,7 @@ class MultiTaskLoss(nn.Module):
             species_weight: Multiplier for species loss.
             env_weight: Multiplier for environmental loss.
             pos_weight: Positive-class weights for BCE mode (ignored for focal).
-            species_loss: 'focal' (default) or 'bce'.
+            species_loss: 'bce' (default) or 'focal'.
             focal_alpha: Alpha for focal loss.
             focal_gamma: Gamma for focal loss.
         """

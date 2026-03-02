@@ -140,7 +140,7 @@ python utils/combine.py \
 - **Inputs:** Raw latitude, longitude, and week number — circular encoding is handled inside the model
 - **Circular encoding:** Multi-harmonic `[sin(θ), cos(θ), sin(2θ), cos(2θ), …]` applied to lat (radians), lon (radians), and week (mapped to 2π cycle). Number of harmonics is configurable (`--coord_harmonics`, `--week_harmonics`)
 - **Shared encoder:** Residual blocks with pre-norm (LayerNorm → GELU → Linear + skip connections)
-- **Species head:** Multi-label classification with residual blocks (focal loss by default)
+- **Species head:** Multi-label classification with residual blocks (BCE loss by default; focal loss optional)
 - **Environmental head:** Regression on env features (MSE loss, auxiliary — training only)
 - **Sizes:** small (~860K params), medium (~3.5M, default), large (~21.5M)
 
@@ -158,7 +158,7 @@ The environmental targets are encoded according to their type:
 - Cosine annealing with warm restarts LR schedule
 - Automatic mixed precision (AMP) on CUDA
 - Early stopping with configurable patience
-- Focal loss for species (handles extreme label imbalance)
+- BCE loss for species (well-calibrated probabilities); focal loss available as option
 - Gradient clipping (max norm 1.0)
 
 **Key CLI options:**
@@ -173,7 +173,7 @@ The environmental targets are encoded according to their type:
 | `--num_epochs` | `100` | Number of training epochs |
 | `--lr` | `0.001` | Learning rate |
 | `--weight_decay` | `1e-4` | AdamW weight decay |
-| `--species_loss` | `focal` | `focal` or `bce` |
+| `--species_loss` | `bce` | `bce` or `focal` |
 | `--focal_alpha` | `0.25` | Focal loss alpha |
 | `--focal_gamma` | `2.0` | Focal loss gamma |
 | `--species_weight` | `1.0` | Weight for species loss |
