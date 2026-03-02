@@ -2,9 +2,9 @@
 Loss functions for multi-task learning.
 
 Species prediction:
-  - BCE with logits (default)
+  - Assume-Negative (AN) loss for presence-only data with negative sampling (default)
+  - BCE with logits
   - Focal loss
-  - Assume-Negative (AN) loss for presence-only data with negative sampling
 
 Environmental prediction: mean squared error (auxiliary task).
 
@@ -71,19 +71,24 @@ class AssumeNegativeLoss(nn.Module):
     subset of size M drawn from species with label 0 for that sample.
 
     Args:
-        pos_lambda: Up-weighting factor for positive samples (default 2048).
+        pos_lambda: Up-weighting factor for positive samples.
         neg_samples: Number of negative species to sample per example (M).
             Use 0 to include all negatives (exact but slow for large vocabs).
+        label_smoothing: Smooth binary targets to prevent overconfident
+            predictions.  Positive targets become ``1 - ε``, negatives
+            become ``ε``.  Set to 0 to disable.
     """
 
     def __init__(
         self,
-        pos_lambda: float = 512.0,
+        pos_lambda: float = 32.0,
         neg_samples: int = 192,
+        label_smoothing: float = 0.05,
     ):
         super().__init__()
         self.pos_lambda = pos_lambda
         self.neg_samples = neg_samples
+        self.label_smoothing = label_smoothing
 
     def forward(
         self,
@@ -101,12 +106,16 @@ class AssumeNegativeLoss(nn.Module):
         """
         batch_size, n_species = logits.shape
 
-        # Per-element BCE (unreduced)
-        bce = F.binary_cross_entropy_with_logits(logits, targets, reduction='none')
-
-        # Masks
+        # Masks are computed from the original binary targets
         pos_mask = targets > 0.5   # (B, S)
         neg_mask = ~pos_mask       # (B, S)
+
+        # Apply label smoothing: 1 → 1-ε, 0 → ε
+        if self.label_smoothing > 0:
+            targets = targets.clamp(self.label_smoothing, 1.0 - self.label_smoothing)
+
+        # Per-element BCE (unreduced)
+        bce = F.binary_cross_entropy_with_logits(logits, targets, reduction='none')
 
         # --- Positive loss (weighted by λ) ---
         # Mean per-sample positive BCE, then mean across batch
@@ -140,7 +149,7 @@ class AssumeNegativeLoss(nn.Module):
 
 class MultiTaskLoss(nn.Module):
     """
-    Weighted multi-task loss: species (focal or BCE) + environmental (MSE).
+    Weighted multi-task loss: species (AN, BCE, or focal) + environmental (MSE).
 
     Total = species_weight × species_loss  +  env_weight × env_loss
     """
@@ -148,13 +157,14 @@ class MultiTaskLoss(nn.Module):
     def __init__(
         self,
         species_weight: float = 1.0,
-        env_weight: float = 0.5,
+        env_weight: float = 0.1,
         pos_weight: Optional[torch.Tensor] = None,
-        species_loss: str = 'bce',
+        species_loss: str = 'an',
         focal_alpha: float = 0.25,
         focal_gamma: float = 2.0,
-        pos_lambda: float = 512.0,
+        pos_lambda: float = 32.0,
         neg_samples: int = 192,
+        label_smoothing: float = 0.05,
         reduction: str = 'mean',
     ):
         """
@@ -162,11 +172,12 @@ class MultiTaskLoss(nn.Module):
             species_weight: Multiplier for species loss.
             env_weight: Multiplier for environmental loss.
             pos_weight: Positive-class weights for BCE mode (ignored for focal/an).
-            species_loss: 'bce' (default), 'focal', or 'an' (assume-negative).
+            species_loss: 'an' (assume-negative, default), 'bce', or 'focal'.
             focal_alpha: Alpha for focal loss.
             focal_gamma: Gamma for focal loss.
             pos_lambda: λ for assume-negative loss (positive up-weighting).
             neg_samples: M for assume-negative loss (negative species to sample).
+            label_smoothing: Smooth binary targets (AN loss only, 0 = off).
         """
         super().__init__()
         self.species_weight = species_weight
@@ -184,6 +195,7 @@ class MultiTaskLoss(nn.Module):
         elif species_loss == 'an':
             self.species_criterion = AssumeNegativeLoss(
                 pos_lambda=pos_lambda, neg_samples=neg_samples,
+                label_smoothing=label_smoothing,
             )
 
         self.env_criterion = nn.MSELoss(reduction=reduction)

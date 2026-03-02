@@ -4,10 +4,11 @@ Training script for BirdNET Geomodel.
 Pipeline: load parquet → preprocess → train multi-task model → save checkpoints.
 
 Features:
-  - AdamW optimizer with CosineAnnealingWarmRestarts LR schedule
+  - AdamW optimizer with linear LR warmup + CosineAnnealingWarmRestarts
   - Automatic mixed-precision (AMP) on CUDA for ~2× speed-up
   - Early stopping based on validation-loss plateau
-  - BCE loss (default); focal loss available via --species_loss focal
+  - Assume-negative (AN) loss (default); BCE and focal also available
+  - Label smoothing and observation cap for regularization
   - Gradient clipping
 
 Usage:
@@ -297,12 +298,14 @@ def main():
                         help='Species loss function: an (assume-negative, default), bce, or focal')
     parser.add_argument('--focal_alpha', type=float, default=0.25)
     parser.add_argument('--focal_gamma', type=float, default=2.0)
-    parser.add_argument('--pos_lambda', type=float, default=512.0,
-                        help='Positive up-weighting λ for assume-negative loss (default: 512)')
+    parser.add_argument('--pos_lambda', type=float, default=32.0,
+                        help='Positive up-weighting λ for assume-negative loss (default: 32)')
     parser.add_argument('--neg_samples', type=int, default=192,
                         help='Number of negative species to sample per example for AN loss (default: 192, 0=all)')
-    parser.add_argument('--max_obs_per_species', type=int, default=0,
-                        help='Cap observations per species to reduce common-species dominance (default: 0=no cap, recommended: 1000)')
+    parser.add_argument('--label_smoothing', type=float, default=0.05,
+                        help='Smooth binary targets to prevent overconfident predictions (default: 0.05, 0=off)')
+    parser.add_argument('--max_obs_per_species', type=int, default=1000,
+                        help='Cap observations per species to reduce common-species dominance (default: 1000, 0=no cap)')
 
     # LR schedule
     parser.add_argument('--lr_schedule', type=str, default='cosine', choices=['cosine', 'none'],
@@ -311,6 +314,8 @@ def main():
                         help='Cosine restart period in epochs (default: 10)')
     parser.add_argument('--lr_min', type=float, default=1e-6,
                         help='Minimum LR for cosine schedule')
+    parser.add_argument('--lr_warmup', type=int, default=3,
+                        help='Linear LR warmup epochs before cosine schedule (default: 3, 0=off)')
 
     # Early stopping
     parser.add_argument('--patience', type=int, default=15,
@@ -345,10 +350,10 @@ def main():
     print(f"  Model:      {args.model_size}")
     print(f"  Epochs:     {args.num_epochs}")
     print(f"  Batch size: {args.batch_size}")
-    print(f"  LR:         {args.lr}  (schedule: {args.lr_schedule})")
+    print(f"  LR:         {args.lr}  (schedule: {args.lr_schedule}, warmup: {args.lr_warmup})")
     loss_desc = args.species_loss
     if args.species_loss == 'an':
-        loss_desc += f"  (λ={args.pos_lambda}, M={args.neg_samples})"
+        loss_desc += f"  (λ={args.pos_lambda}, M={args.neg_samples}, smooth={args.label_smoothing})"
     elif args.species_loss == 'focal':
         loss_desc += f"  (α={args.focal_alpha}, γ={args.focal_gamma})"
     print(f"  Loss:       {loss_desc}")
@@ -458,6 +463,7 @@ def main():
         species_loss=args.species_loss,
         focal_alpha=args.focal_alpha, focal_gamma=args.focal_gamma,
         pos_lambda=args.pos_lambda, neg_samples=args.neg_samples,
+        label_smoothing=args.label_smoothing,
     )
     optimizer = torch.optim.AdamW(
         model.parameters(), lr=args.lr, weight_decay=args.weight_decay,
@@ -465,9 +471,20 @@ def main():
 
     scheduler = None
     if args.lr_schedule == 'cosine':
-        scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
+        cosine = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
             optimizer, T_0=args.lr_T0, eta_min=args.lr_min,
         )
+        if args.lr_warmup > 0:
+            warmup = torch.optim.lr_scheduler.LinearLR(
+                optimizer, start_factor=1e-2, end_factor=1.0,
+                total_iters=args.lr_warmup,
+            )
+            scheduler = torch.optim.lr_scheduler.SequentialLR(
+                optimizer, schedulers=[warmup, cosine],
+                milestones=[args.lr_warmup],
+            )
+        else:
+            scheduler = cosine
 
     trainer = Trainer(
         model=model, criterion=criterion, optimizer=optimizer,

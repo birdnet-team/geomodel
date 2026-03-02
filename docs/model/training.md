@@ -58,9 +58,10 @@ The training script handles the full pipeline automatically:
 | `--species_loss` | `an` | Loss function: `an` (assume-negative, default), `bce`, or `focal` |
 | `--focal_alpha` | `0.25` | Focal loss alpha (only with `--species_loss focal`) |
 | `--focal_gamma` | `2.0` | Focal loss gamma |
-| `--pos_lambda` | `512.0` | Positive up-weighting λ for AN loss |
+| `--pos_lambda` | `32.0` | Positive up-weighting λ for AN loss |
 | `--neg_samples` | `192` | Negative species to sample per example for AN loss (0 = all) |
-| `--max_obs_per_species` | `0` | Cap observations per species (0 = no cap, recommended: 1000) |
+| `--label_smoothing` | `0.05` | Smooth binary targets to prevent overconfidence (0 = off) |
+| `--max_obs_per_species` | `1000` | Cap observations per species (0 = no cap) |
 
 ### Learning Rate Schedule
 
@@ -69,6 +70,7 @@ The training script handles the full pipeline automatically:
 | `--lr_schedule` | `cosine` | `cosine` (warm restarts) or `none` |
 | `--lr_T0` | `10` | Cosine restart period in epochs |
 | `--lr_min` | `1e-6` | Minimum learning rate |
+| `--lr_warmup` | `3` | Linear warmup epochs before cosine schedule (0 = off) |
 
 ### Early Stopping
 
@@ -145,7 +147,7 @@ This is the default loss. To tune parameters:
 ```bash
 python train.py \
     --species_loss an \
-    --pos_lambda 512 \
+    --pos_lambda 32 \
     --neg_samples 192 \
     --max_obs_per_species 1000
 ```
@@ -154,9 +156,10 @@ python train.py \
 
 | Parameter | Default | Notes |
 |---|---|---|
-| `--pos_lambda` | 512 | Higher values emphasize positives more; start with 512 |
+| `--pos_lambda` | 32 | Balances positive/negative gradient; increase if recall too low |
 | `--neg_samples` | 192 | 0 = use all negatives (exact but slow); 192 works well for 13K species |
-| `--max_obs_per_species` | 0 | Set to 1000 to prevent common species from dominating training |
+| `--label_smoothing` | 0.05 | Prevents overconfident predictions; set 0 to disable |
+| `--max_obs_per_species` | 1000 | Prevents common species from dominating training |
 
 ### Observation Cap
 

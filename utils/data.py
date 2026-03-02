@@ -311,15 +311,11 @@ class H3DataPreprocessor:
 
         # --- observation cap per species ---
         if max_obs_per_species > 0 and fit:
-            species_lists, keep_mask = self._cap_observations(
+            species_lists, n_removed = self._cap_observations(
                 species_lists, max_obs_per_species,
             )
-            lats = lats[keep_mask]
-            lons = lons[keep_mask]
-            weeks = weeks[keep_mask]
-            normalized_env = normalized_env[keep_mask]
-            print(f"   Observation cap: {max_obs_per_species} per species → "
-                  f"{int(keep_mask.sum()):,} / {len(keep_mask):,} samples kept")
+            print(f"   Observation cap: {max_obs_per_species} per species "
+                  f"({n_removed:,} excess labels removed)")
 
         n_samples = len(species_lists)
         n_species = len(self.species_vocab)
@@ -346,26 +342,24 @@ class H3DataPreprocessor:
         self,
         species_lists: List[List[int]],
         max_obs: int,
-    ) -> Tuple[List[List[int]], np.ndarray]:
+    ) -> Tuple[List[List[int]], int]:
         """Cap per-species observations to reduce dominance of common species.
 
-        For each species, if total positive samples exceed *max_obs*, a random
-        subset of samples containing that species is kept and the species is
-        removed from the remaining samples' lists.  Samples that end up empty
-        are still kept (they remain valid "all-negative" training examples).
+        For each species that appears in more than *max_obs* samples, a random
+        subset of its occurrences is kept and the species is removed from the
+        remaining samples' lists.  Samples themselves are never dropped — those
+        that lose all species remain as valid all-negative training examples.
 
         Args:
-            species_lists: List of species-index lists per sample.
+            species_lists: List of taxonKey lists per sample.
             max_obs: Maximum positive samples per species.
 
         Returns:
-            Tuple of (modified species_lists, boolean keep_mask).
+            Tuple of (modified species_lists, number of removed labels).
         """
-        from collections import Counter
-
         rng = np.random.default_rng(42)
 
-        # Count occurrences per species across all samples
+        # Map each species to the sample indices where it appears
         species_samples: Dict[int, List[int]] = {}
         for i, sl in enumerate(species_lists):
             for sid in sl:
@@ -387,9 +381,7 @@ class H3DataPreprocessor:
                 new_lists.append(filtered)
             species_lists = new_lists
 
-        # Keep all samples (even if their species list became empty)
-        keep_mask = np.ones(len(species_lists), dtype=bool)
-        return species_lists, keep_mask
+        return species_lists, len(remove_pairs)
 
     def split_data(
         self,
