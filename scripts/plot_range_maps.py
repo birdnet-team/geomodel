@@ -5,6 +5,9 @@ For each requested species, produces a 2×2 figure with maps for weeks 1, 13,
 26, and 39 (roughly Jan, Apr, Jul, Oct).  Grid cells are colored by the
 model's predicted probability for that species.
 
+With ``--gif``, all 48 weeks are rendered and combined into an animated GIF.
+Multiple species are shown as gridded subplots in each frame.
+
 Usage:
     # By common name (case-insensitive substring match):
     python scripts/plot_range_maps.py --species "Eurasian Blackbird" "House Sparrow"
@@ -12,17 +15,17 @@ Usage:
     # By taxonKey:
     python scripts/plot_range_maps.py --taxon_keys 9750029 9747657
 
+    # Animated GIF with 4 species in a 2×2 grid:
+    python scripts/plot_range_maps.py --species "Barn Swallow" "House Sparrow" \
+        "European Robin" "Blue Jay" --gif --cols 2
+
     # Custom grid resolution and region:
     python scripts/plot_range_maps.py --species "Barn Swallow" --resolution 2.0 --bounds europe
-
-    # All options:
-    python scripts/plot_range_maps.py --species "Barn Swallow" \
-        --checkpoint checkpoints/checkpoint_best.pt \
-        --resolution 2.0 --batch_size 4096 --bounds world \
-        --outdir outputs/plots/range_maps
 """
 
 import argparse
+import io
+import math
 import os
 import sys
 import warnings
@@ -35,6 +38,7 @@ import matplotlib.pyplot as plt
 import matplotlib as mpl
 import numpy as np
 import torch
+from PIL import Image
 
 # Add project root to path so we can import project modules
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -65,6 +69,51 @@ def build_grid(
     lats = np.arange(lat_min + resolution_deg / 2, lat_max, resolution_deg)
     lon_grid, lat_grid = np.meshgrid(lons, lats)
     return lat_grid.ravel(), lon_grid.ravel()
+
+
+def _add_map_features(ax, *, zorder_bg: int = 0, zorder_fg: int = 3):
+    """Add ocean, land, coastlines and borders to a cartopy axis.
+
+    Background features (ocean, land) are drawn at *zorder_bg* and foreground
+    line features (coastlines, borders) at *zorder_fg* so they appear on top
+    of data layers.
+    """
+    ax.add_feature(cfeature.OCEAN, facecolor='#e6f0f7', zorder=zorder_bg)
+    ax.add_feature(cfeature.LAND, facecolor='#f5f5f5', edgecolor='none', zorder=zorder_bg)
+    ax.add_feature(cfeature.COASTLINE, linewidth=0.5, color='#888888', zorder=zorder_fg)
+    ax.add_feature(cfeature.BORDERS, linewidth=0.2, color='#bbbbbb', zorder=zorder_fg)
+
+
+def _plot_cells(
+    ax,
+    probs: np.ndarray,
+    resolution_deg: float,
+    bounds: Tuple[float, float, float, float],
+    cmap,
+    norm,
+):
+    """Plot a probability array as gap-free filled cells via *pcolormesh*.
+
+    *probs* is the flat 1-D array produced by :func:`predict_grid`.  It is
+    reshaped to the 2-D grid implied by *resolution_deg* and *bounds*.
+    Cells with probability <= 0.005 are masked (transparent).
+    """
+    lon_min, lat_min, lon_max, lat_max = bounds
+    n_lons = len(np.arange(lon_min + resolution_deg / 2, lon_max, resolution_deg))
+    n_lats = len(np.arange(lat_min + resolution_deg / 2, lat_max, resolution_deg))
+
+    # Cell edges (pcolormesh needs boundaries, not centres)
+    lon_edges = np.linspace(lon_min, lon_min + n_lons * resolution_deg, n_lons + 1)
+    lat_edges = np.linspace(lat_min, lat_min + n_lats * resolution_deg, n_lats + 1)
+
+    prob_grid = probs.reshape(n_lats, n_lons)
+    prob_grid = np.ma.masked_less_equal(prob_grid, 0.005)
+
+    ax.pcolormesh(
+        lon_edges, lat_edges, prob_grid,
+        cmap=cmap, norm=norm,
+        transform=ccrs.PlateCarree(), zorder=2,
+    )
 
 
 def load_model_and_labels(checkpoint_path: str, device: torch.device):
@@ -210,13 +259,6 @@ def plot_range_map(
     warnings.filterwarnings('ignore', message='facecolor will have no effect', category=UserWarning)
     fig, axes = plt.subplots(2, 2, figsize=(18, 10), subplot_kw=dict(projection=proj))
 
-    # Compute marker size based on resolution and figure size
-    if is_global:
-        marker_size = max(0.3, min(3.0, 360 / (resolution_deg * 40)))
-    else:
-        lon_span = bounds[2] - bounds[0]
-        marker_size = max(0.5, min(8.0, lon_span / (resolution_deg * 20)))
-
     for ax, week in zip(axes.ravel(), PLOT_WEEKS):
         probs = probs_per_week[week]
 
@@ -225,20 +267,8 @@ def plot_range_map(
         else:
             ax.set_extent([bounds[0], bounds[2], bounds[1], bounds[3]], crs=ccrs.PlateCarree())
 
-        ax.add_feature(cfeature.OCEAN, facecolor='#e6f0f7', zorder=0)
-        ax.add_feature(cfeature.LAND, facecolor='#f5f5f5', edgecolor='#cccccc', linewidth=0.3, zorder=0)
-        ax.add_feature(cfeature.COASTLINE, linewidth=0.4, color='#888888')
-        ax.add_feature(cfeature.BORDERS, linewidth=0.2, color='#bbbbbb')
-
-        # Only plot cells with non-negligible probability
-        mask = probs > 0.005
-        if mask.any():
-            sc = ax.scatter(
-                lons[mask], lats[mask],
-                c=probs[mask], cmap=cmap, norm=norm,
-                s=marker_size, marker='s', linewidths=0,
-                transform=ccrs.PlateCarree(), zorder=2,
-            )
+        _add_map_features(ax)
+        _plot_cells(ax, probs, resolution_deg, bounds, cmap, norm)
 
         ax.set_title(WEEK_LABELS[week], fontsize=12, fontweight='bold')
 
@@ -260,6 +290,176 @@ def plot_range_map(
     print(f"Saved {out_path}")
 
 
+# ---------------------------------------------------------------------------
+# GIF mode
+# ---------------------------------------------------------------------------
+
+MONTH_STARTS = {
+    1: "Jan", 5: "Feb", 9: "Mar", 13: "Apr", 17: "May", 22: "Jun",
+    26: "Jul", 31: "Aug", 35: "Sep", 39: "Oct", 44: "Nov", 48: "Dec",
+}
+
+
+def _week_label(week: int) -> str:
+    """Return a human-readable label like 'Week 13 — Apr'."""
+    # Find the closest month
+    month = "Jan"
+    for start_week, name in sorted(MONTH_STARTS.items()):
+        if week >= start_week:
+            month = name
+    return f"Week {week} — {month}"
+
+
+def _render_gif_frame(
+    lats: np.ndarray,
+    lons: np.ndarray,
+    probs: np.ndarray,
+    species_list: List[Tuple[int, int, str, str]],
+    week: int,
+    resolution_deg: float,
+    bounds: Tuple[float, float, float, float],
+    n_cols: int,
+    vmax_per_species: List[float],
+) -> Image.Image:
+    """Render a single GIF frame with gridded species subplots.
+
+    Args:
+        probs: (n_cells, n_species) probability array.
+        species_list: List of (idx, taxonKey, sciName, comName).
+        week: Week number.
+        n_cols: Number of columns in the subplot grid.
+        vmax_per_species: Per-species vmax for consistent color scale.
+
+    Returns:
+        PIL Image of the rendered frame.
+    """
+    n_species = len(species_list)
+    n_rows = math.ceil(n_species / n_cols)
+    is_global = bounds == (-180.0, -90.0, 180.0, 90.0)
+
+    proj = ccrs.Robinson() if is_global else ccrs.PlateCarree()
+    warnings.filterwarnings('ignore', message='facecolor will have no effect', category=UserWarning)
+
+    fig_w = 9 * n_cols
+    fig_h = 5 * n_rows + 1.2  # extra space for title + colorbar
+    fig, axes = plt.subplots(
+        n_rows, n_cols, figsize=(fig_w, fig_h),
+        subplot_kw=dict(projection=proj),
+        squeeze=False,
+    )
+
+    cmap = plt.cm.YlOrRd.copy()
+    cmap.set_under(color='#f0f0f0', alpha=0.0)
+
+    # Global vmax for shared colorbar (max across species)
+    global_vmax = max(vmax_per_species) if vmax_per_species else 1.0
+
+    for sp_idx, sp_info in enumerate(species_list):
+        row, col = divmod(sp_idx, n_cols)
+        ax = axes[row][col]
+        _, _, sci_name, com_name = sp_info
+        sp_probs = probs[:, sp_idx]
+        vmax = vmax_per_species[sp_idx]
+        norm = mpl.colors.Normalize(vmin=0.0, vmax=vmax)
+
+        if is_global:
+            ax.set_global()
+        else:
+            ax.set_extent([bounds[0], bounds[2], bounds[1], bounds[3]], crs=ccrs.PlateCarree())
+
+        _add_map_features(ax)
+        _plot_cells(ax, sp_probs, resolution_deg, bounds, cmap, norm)
+
+        ax.set_title(f"{com_name}", fontsize=11, fontweight='bold')
+
+    # Hide unused subplots
+    for idx in range(n_species, n_rows * n_cols):
+        row, col = divmod(idx, n_cols)
+        axes[row][col].set_visible(False)
+
+    fig.suptitle(_week_label(week), fontsize=16, fontweight='bold', y=0.98)
+
+    # Shared colorbar
+    norm = mpl.colors.Normalize(vmin=0.0, vmax=global_vmax)
+    sm = plt.cm.ScalarMappable(norm=norm, cmap=cmap)
+    cbar = fig.colorbar(sm, ax=axes, orientation='horizontal', fraction=0.03, pad=0.04, shrink=0.5)
+    cbar.set_label('Predicted occurrence probability', fontsize=11)
+
+    buf = io.BytesIO()
+    fig.savefig(buf, format='png', dpi=100, bbox_inches='tight', facecolor='white')
+    plt.close(fig)
+    buf.seek(0)
+    img = Image.open(buf).convert('RGB')
+    return img
+
+
+def _plot_gif(
+    model: torch.nn.Module,
+    lats: np.ndarray,
+    lons: np.ndarray,
+    model_indices: List[int],
+    species_list: List[Tuple[int, int, str, str]],
+    device: torch.device,
+    batch_size: int,
+    resolution_deg: float,
+    bounds: Tuple[float, float, float, float],
+    outdir: str,
+    cols: int,
+    fps: int,
+):
+    """Predict all 48 weeks and assemble an animated GIF."""
+    n_species = len(species_list)
+    n_cols = cols if cols > 0 else math.ceil(math.sqrt(n_species))
+    n_cols = min(n_cols, n_species)  # don't exceed species count
+
+    print(f"GIF mode: {n_species} species in {math.ceil(n_species / n_cols)}×{n_cols} grid, 48 frames")
+
+    # First pass: predict all weeks and compute vmax per species
+    all_weeks = list(range(1, 49))
+    all_probs = {}
+    for week in all_weeks:
+        print(f"  Predicting week {week}/48...", end='\r')
+        all_probs[week] = predict_grid(model, lats, lons, week, model_indices, device, batch_size)
+    print(f"  Predictions complete for all 48 weeks.       ")
+
+    # Compute per-species vmax from the 99th percentile across all weeks
+    vmax_per_species = []
+    for sp_idx in range(n_species):
+        all_vals = np.concatenate([all_probs[w][:, sp_idx] for w in all_weeks])
+        positive = all_vals[all_vals > 0]
+        if len(positive) > 0:
+            vmax = float(np.percentile(positive, 99))
+            vmax = max(vmax, 0.05)
+        else:
+            vmax = 1.0
+        vmax_per_species.append(vmax)
+
+    # Render frames
+    frames: List[Image.Image] = []
+    for week in all_weeks:
+        print(f"  Rendering frame {week}/48...", end='\r')
+        img = _render_gif_frame(
+            lats, lons, all_probs[week], species_list, week,
+            resolution_deg, bounds, n_cols, vmax_per_species,
+        )
+        frames.append(img)
+    print(f"  Rendered all 48 frames.                      ")
+
+    # Assemble GIF
+    os.makedirs(outdir, exist_ok=True)
+    names = '_'.join(info[3].replace(' ', '-') for info in species_list[:4])
+    if n_species > 4:
+        names += f'_+{n_species - 4}'
+    out_path = os.path.join(outdir, f"range_{names}.gif")
+
+    duration_ms = int(1000 / fps)
+    frames[0].save(
+        out_path, save_all=True, append_images=frames[1:],
+        duration=duration_ms, loop=0, optimize=True,
+    )
+    print(f"Saved {out_path} ({len(frames)} frames, {fps} fps)")
+
+
 def plot_range_maps(
     species_names: Optional[List[str]] = None,
     taxon_keys: Optional[List[int]] = None,
@@ -269,8 +469,16 @@ def plot_range_maps(
     outdir: str = 'outputs/plots/range_maps',
     batch_size: int = 4096,
     device: str = 'auto',
+    gif: bool = False,
+    cols: int = 0,
+    fps: int = 4,
 ):
-    """Generate species range maps for the given species across 4 seasonal weeks."""
+    """Generate species range maps for the given species.
+
+    In default mode, produces a 2×2 seasonal figure per species.
+    With *gif=True*, renders all 48 weeks and assembles an animated GIF
+    with all species shown in a single gridded figure per frame.
+    """
     if not species_names and not taxon_keys:
         print("Error: provide --species and/or --taxon_keys")
         return
@@ -300,19 +508,22 @@ def plot_range_maps(
     # Collect model indices for batched inference
     model_indices = [sp[0] for sp in species_list]
 
-    # Predict for each of the 4 weeks
-    probs_by_week = {}
-    for week in PLOT_WEEKS:
-        print(f"  Predicting week {week}...")
-        probs = predict_grid(model, lats, lons, week, model_indices, dev, batch_size)
-        probs_by_week[week] = probs  # (n_cells, n_species)
+    if gif:
+        _plot_gif(model, lats, lons, model_indices, species_list,
+                  dev, batch_size, resolution_deg, bounds, outdir, cols, fps)
+    else:
+        # Default mode: predict 4 seasonal weeks, one PNG per species
+        probs_by_week = {}
+        for week in PLOT_WEEKS:
+            print(f"  Predicting week {week}...")
+            probs = predict_grid(model, lats, lons, week, model_indices, dev, batch_size)
+            probs_by_week[week] = probs
 
-    # Plot each species
-    for sp_idx, sp_info in enumerate(species_list):
-        sp_probs_per_week = {w: probs_by_week[w][:, sp_idx] for w in PLOT_WEEKS}
-        plot_range_map(lats, lons, sp_probs_per_week, sp_info, outdir, resolution_deg, bounds)
+        for sp_idx, sp_info in enumerate(species_list):
+            sp_probs_per_week = {w: probs_by_week[w][:, sp_idx] for w in PLOT_WEEKS}
+            plot_range_map(lats, lons, sp_probs_per_week, sp_info, outdir, resolution_deg, bounds)
 
-    print(f"\nDone. {len(species_list)} range maps saved to {outdir}/")
+        print(f"\nDone. {len(species_list)} range maps saved to {outdir}/")
 
 
 def main():
@@ -340,6 +551,12 @@ def main():
     parser.add_argument('--batch_size', type=int, default=4096,
                         help='Batch size for inference')
     parser.add_argument('--device', type=str, default='auto', choices=['auto', 'cuda', 'cpu'])
+    parser.add_argument('--gif', action='store_true',
+                        help='Plot all 48 weeks and assemble into an animated GIF')
+    parser.add_argument('--cols', type=int, default=0,
+                        help='Number of columns for the species grid in GIF mode (default: auto)')
+    parser.add_argument('--fps', type=int, default=4,
+                        help='Frames per second for the GIF (default: 4)')
     args = parser.parse_args()
 
     bounds = resolve_bounds_arg(args.bounds)
@@ -356,6 +573,9 @@ def main():
         outdir=args.outdir,
         batch_size=args.batch_size,
         device=args.device,
+        gif=args.gif,
+        cols=args.cols,
+        fps=args.fps,
     )
 
 

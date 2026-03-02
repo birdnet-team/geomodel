@@ -7,7 +7,7 @@ The `scripts/` directory contains plotting tools for analyzing model predictions
 | Script | Purpose | Requires Model | Requires Data |
 |---|---|---|---|
 | [Species Weeks](species-weeks.md) | Per-species weekly probability curves | Yes | No |
-| [Range Maps](range-maps.md) | Seasonal distribution maps per species | Yes | No |
+| [Range Maps](range-maps.md) | Seasonal distribution maps per species (PNG or animated GIF) | Yes | No |
 | [Richness Maps](richness.md) | Species richness heatmap for a given week | Yes | No |
 | [Variable Importance](variable-importance.md) | Spearman correlation bar charts | Yes | Yes |
 

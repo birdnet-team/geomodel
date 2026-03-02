@@ -208,7 +208,7 @@ geomodel/
 │   └── regions.py              # H3 region definitions
 ├── scripts/
 │   ├── plot_species_weeks.py   # Weekly probability charts
-│   ├── plot_range_maps.py      # Species distribution maps
+│   ├── plot_range_maps.py      # Species distribution maps (static PNG or animated GIF)
 │   ├── plot_richness.py        # Species richness heatmaps
 │   ├── plot_variable_importance.py  # Feature importance analysis
 │   └── plot_environmental.py   # Environmental feature visualization

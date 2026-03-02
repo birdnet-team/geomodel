@@ -139,29 +139,30 @@ def plot_richness(
     cmap = plt.cm.viridis.copy()
 
     if is_global:
-        marker_size = max(0.3, min(3.0, 360 / (resolution_deg * 40)))
-    else:
-        lon_span = bounds[2] - bounds[0]
-        marker_size = max(0.5, min(8.0, lon_span / (resolution_deg * 20)))
-
-    if is_global:
         ax.set_global()
     else:
         ax.set_extent([bounds[0], bounds[2], bounds[1], bounds[3]], crs=ccrs.PlateCarree())
 
+    # Background features
     ax.add_feature(cfeature.OCEAN, facecolor='#e6f0f7', zorder=0)
-    ax.add_feature(cfeature.LAND, facecolor='#f5f5f5', edgecolor='#cccccc', linewidth=0.3, zorder=0)
-    ax.add_feature(cfeature.COASTLINE, linewidth=0.4, color='#888888')
-    ax.add_feature(cfeature.BORDERS, linewidth=0.2, color='#bbbbbb')
+    ax.add_feature(cfeature.LAND, facecolor='#f5f5f5', edgecolor='none', zorder=0)
 
-    mask = counts > 0
-    if mask.any():
-        ax.scatter(
-            lons[mask], lats[mask],
-            c=counts[mask], cmap=cmap, norm=norm,
-            s=marker_size, marker='s', linewidths=0,
-            transform=ccrs.PlateCarree(), zorder=2,
-        )
+    # Filled grid cells via pcolormesh (gap-free)
+    lon_min_b, lat_min_b, lon_max_b, lat_max_b = bounds
+    n_lons = len(np.arange(lon_min_b + resolution_deg / 2, lon_max_b, resolution_deg))
+    n_lats = len(np.arange(lat_min_b + resolution_deg / 2, lat_max_b, resolution_deg))
+    lon_edges = np.linspace(lon_min_b, lon_min_b + n_lons * resolution_deg, n_lons + 1)
+    lat_edges = np.linspace(lat_min_b, lat_min_b + n_lats * resolution_deg, n_lats + 1)
+    count_grid = np.ma.masked_less_equal(counts.reshape(n_lats, n_lons), 0)
+    ax.pcolormesh(
+        lon_edges, lat_edges, count_grid,
+        cmap=cmap, norm=norm,
+        transform=ccrs.PlateCarree(), zorder=2,
+    )
+
+    # Continent outlines on top of data
+    ax.add_feature(cfeature.COASTLINE, linewidth=0.5, color='#888888', zorder=3)
+    ax.add_feature(cfeature.BORDERS, linewidth=0.2, color='#bbbbbb', zorder=3)
 
     fig.suptitle(
         f"Predicted species richness — week {week} (threshold ≥ {threshold})",

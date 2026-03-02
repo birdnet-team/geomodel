@@ -43,3 +43,7 @@ Richness maps reveal spatial patterns in biodiversity:
 
 !!! note
     Richness depends on the `--threshold` value. Lower thresholds include more marginal species and increase apparent richness. A threshold of 0.1 is a reasonable starting point.
+
+## Rendering Details
+
+Grid cells are drawn as gap-free filled rectangles using `pcolormesh`, so there are no visible gaps between adjacent cells. Coastlines and country borders are drawn **on top** of the data layer for clear geographic reference. The color scale uses **viridis**.
