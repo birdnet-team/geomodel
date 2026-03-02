@@ -59,8 +59,8 @@ def load_taxonomy(taxonomy_path):
     Load taxonomy CSV.
 
     Returns:
-        valid_names: set of all valid scientific names (including synonyms)
-        common_names: dict mapping sciName → common name (English)
+        valid_names (set): All valid scientific names (including synonyms).
+        common_names (dict): Mapping of sciName to common name (English).
     """
     df = pd.read_csv(taxonomy_path)
     valid_names = set()
