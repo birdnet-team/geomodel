@@ -1,124 +1,122 @@
-# BirdNET Geomodel
-Code to train a geomodel for post-filtering BirdNET acoustic detections based on environmental variables and species occurrence data.
+<p align="center">
+  <img src="birdnet-logo-circle.png" width="150" alt="BirdNET Logo">
+</p>
+
+<h1 align="center">BirdNET Geomodel</h1>
+
+<p align="center">
+  <a href="https://github.com/birdnet-team/geomodel/blob/main/LICENSE"><img src="https://img.shields.io/github/license/birdnet-team/geomodel?color=blue" alt="License"></a>
+  <a href="https://www.python.org/"><img src="https://img.shields.io/badge/python-3.11+-blue.svg" alt="Python 3.11+"></a>
+  <a href="https://pytorch.org/"><img src="https://img.shields.io/badge/PyTorch-2.0+-ee4c2c.svg" alt="PyTorch"></a>
+  <a href="https://birdnet-team.github.io/geomodel/"><img src="https://img.shields.io/badge/docs-mkdocs-blue.svg" alt="Documentation"></a>
+  <a href="https://github.com/birdnet-team/geomodel/actions/workflows/docs.yml"><img src="https://github.com/birdnet-team/geomodel/actions/workflows/docs.yml/badge.svg" alt="Docs"></a>
+</p>
+
+<p align="center">
+  Spatiotemporal species occurrence prediction for post-filtering BirdNET acoustic detections.<br>
+  Predicts which species are likely to occur at a given location and week of the year.
+</p>
+
+<p align="center">
+  <a href="https://birdnet-team.github.io/geomodel/"><b>Documentation</b></a> · <a href="CONTRIBUTING.md"><b>Contributing</b></a> · <a href="LICENSE"><b>License</b></a>
+</p>
 
 ## Setup
-
-1. Clone the repository and create a Python virtual environment (recommended):
 
 ```bash
 git clone https://github.com/birdnet-team/geomodel.git
 cd geomodel
-python3 -m venv .venv
-source .venv/bin/activate
-```
+python3 -m venv .venv && source .venv/bin/activate
 
-2. (Linux/Ubuntu) Install system libraries required for building geospatial packages:
+# Linux: install geospatial system libraries
+sudo apt install -y build-essential python3-dev gdal-bin libgdal-dev \
+    libproj-dev proj-data proj-bin libgeos-dev libspatialindex-dev
 
-```bash
-sudo apt update
-sudo apt install -y build-essential python3-dev gdal-bin libgdal-dev libproj-dev proj-data proj-bin libgeos-dev libspatialindex-dev
-
-# Upgrade pip/build tools
-python3 -m pip install --upgrade pip setuptools wheel
-```
-
-3. Install Python dependencies:
-
-```bash
 pip install -r requirements.txt
 ```
 
-Notes:
+Authenticate with Google Earth Engine: `earthengine authenticate`
 
-- Installing `geopandas` and related spatial libraries via pip on Linux often requires the GDAL/PROJ/GEOS development headers; step 2 installs commonly-needed packages.
-- If `pip install -r requirements.txt` fails for a package, install the package individually (for example: `pip install pyproj shapely fiona rtree pyarrow`) to reveal build errors.
-- Manylinux wheels typically provide pre-built binaries for packages such as `pyarrow` and `shapely` on common Python versions.
+## Pipeline
 
-4. Google Earth Engine (EE):
-
-- Sign up at https://earthengine.google.com/ if you don't have an account.
-- Authenticate once via `earthengine authenticate` (opens a browser).
-- In scripts, call `ee.Initialize()` (the provided `initialize_ee()` helper attempts client or service-account auth).
-
-5. Data sources (optional): iNaturalist and eBird observation archives are used by other scripts; see source links in the project if you need them. Set `WORKING_DIRECTORY` or other paths as needed in your environment.
-
-## Usage
-
-### `geoutils.py`
-
-`utils/geoutils.py` builds H3 hex grids and computes per-cell environmental summaries
-by sampling Earth Engine datasets. This repository:
-
-- uses centroid sampling for each H3 cell (fast, approximate).
-- processes the H3 set in fixed-size chunks (500 cells per chunk).
-
-Supported output (per H3 cell)
-
-- `water_fraction` — JRC Global Surface Water occurrence (0.0–1.0)
-- `elevation_m` — SRTM elevation (meters)
-- `precipitation_mm` / `temperature_c` — WorldClim bioclim variables
-- `landcover_class` — MODIS LC_Type1
-- `canopy_height_m` — canopy height (NASA/JPL)
-
-CLI
-
-- `--km` : Target diameter in km (e.g. 5, 10, 25)
-- `--out-dir` : Directory to write per-chunk parquet files (one file per chunk)
-- `--bounds` : Optional bbox (LON_MIN LAT_MIN LON_MAX LAT_MAX) or named region to limit processing
-- `--threads` : Number of worker threads to use for parallel chunk processing
-- `--fraction` : Optional sampling fraction (0.0–1.0) to process a random subset of H3 cells
-- `--combine` : If set, combines all chunk parquet files into one after processing
-- `--combined-out` : Output path for the combined parquet (if `--combine` is set)
-- `--fill-missing` : If set, fills missing data (e.g. ocean cells) with nearest neighbor values after combining
-
-Notes
-
-- The script processes H3 cells in fixed-size chunks (500 cells per chunk) and writes one parquet file per chunk into `--out-dir`.
-- To reduce Earth Engine client-side concurrency warnings, set the environment variable `EE_MAX_CONCURRENCY` to limit concurrent EE requests (default: 8). Values between 4–12 are commonly reasonable depending on your network and EE quotas.
-
-Example (regional run):
-
-```bash
-python utils/geoutils.py --km 25 --bounds -10.0 34.0 40.0 72.0 --out-dir outputs/europe_chunks --threads 8
+```
+1. geoutils.py   — Build H3 grid + sample Earth Engine environmental data
+2. gbifutils.py  — Process raw GBIF occurrence archive → filtered CSV
+3. combine.py    — Join geodata + GBIF → training parquet + taxonomy CSV
+4. train.py      — Train multi-task model → checkpoints
+5. predict.py    — Inference: (lat, lon, week) → species list
 ```
 
-Programmatic use
-
-Import `compute_environmental_data` or `run_global_in_chunks` from
-`utils.geoutils` to call the functions directly from notebooks or scripts.
-
-### `observations.py`
-
-TODO
-
-### Plotting
-
-Use the provided plotting utility to render PNG maps from GeoParquet outputs.
-
-- Script: `scripts/plot_environmental.py` (reads a GeoParquet and writes one PNG per variable)
-- Purpose: Reads a GeoParquet (output from `utils.geoutils.py`) and writes one PNG per variable.
-- Key options:
-  - `--input` (`-i`): Input GeoParquet file (required)
-  - `--outdir` (`-o`): Output directory for PNGs (default: `outputs/plots`)
-  - `--sample-limit`: Max cells to plot (random sample). Use `None` or `-1` to plot all (default: `200000`)
-  - `--columns`: Optional comma-separated list of columns to plot (defaults to common environmental variables)
-  - `--bounds`: Optional bbox (LON_MIN LAT_MIN LON_MAX LAT_MAX) to limit plotting area
-
-Example:
-
 ```bash
-python scripts/plot_environmental.py --input outputs/europe_chunks/chunk_000.parquet \
-        --outdir outputs/plots --sample-limit 100000
+# 1. Sample environmental data on H3 grid
+python utils/geoutils.py --km 350 --out-dir outputs/global_chunks \
+    --threads 8 --combine --combined-out data/global_350km_ee.parquet --fill-missing
+
+# 2. Process GBIF archive
+python utils/gbifutils.py --gbif /path/to/gbif_archive.zip --file occurrence.csv \
+    --output ./outputs/gbif_processed.csv.gz --taxonomy taxonomy.csv
+
+# 3. Combine
+python utils/combine.py --geodata data/global_350km_ee.parquet \
+    --gbif ./outputs/gbif_processed.csv.gz --output ./outputs/combined.parquet
+
+# 4. Train
+python train.py --data_path ./outputs/combined.parquet --model_size medium --num_epochs 100
+
+# 5. Predict
+python predict.py --lat 50.83 --lon 12.92 --week 22
 ```
 
-Notes:
+See the [documentation](https://birdnet-team.github.io/geomodel/) for detailed usage, model architecture, and visualization scripts.
 
-- The script downsamples large GeoDataFrames for plotting speed; set `--sample-limit None` to disable downsampling.
-- You can pass `--columns elevation_m,water_fraction` to plot a subset of variables.
+## Model
 
+A multi-task neural network that learns spatial-temporal patterns from coordinates alone:
+
+- **Input:** Raw (lat, lon, week) — circular encoding is handled inside the model
+- **Primary task:** Multi-label species classification (BCE or focal loss)
+- **Auxiliary task:** Environmental feature regression (training only, acts as regularizer)
+- **Sizes:** small (~860K), medium (~3.5M), large (~21.5M) parameters
+
+## Visualization
+
+```bash
+# Per-species weekly probability charts
+python scripts/plot_species_weeks.py --lat 50.83 --lon 12.92
+
+# Seasonal range maps
+python scripts/plot_range_maps.py --species "Barn Swallow" --bounds europe
+
+# Species richness heatmap
+python scripts/plot_richness.py --week 26
+
+# Variable importance (Spearman correlations)
+python scripts/plot_variable_importance.py --species "Great Tit" --data_path data.parquet
+
+# Environmental feature maps
+python scripts/plot_environmental.py --input data/global_350km_ee.parquet
+```
+
+## Project Structure
+
+```
+geomodel/
+├── train.py                 # Training (Stage 4)
+├── predict.py               # Inference (Stage 5)
+├── model/
+│   ├── model.py             # Neural network architecture
+│   └── loss.py              # Multi-task loss functions
+├── utils/
+│   ├── geoutils.py          # H3 grid + Earth Engine (Stage 1)
+│   ├── gbifutils.py         # GBIF processing (Stage 2)
+│   ├── combine.py           # Join geodata + GBIF (Stage 3)
+│   └── data.py              # Dataset / DataLoader / preprocessing
+├── scripts/                 # Plotting scripts
+├── docs/                    # MkDocs documentation source
+└── checkpoints/             # Model checkpoints + labels.txt
+```
 
 ## Citation
-If you use this code in your research, please cite as:
 
 ```bibtex
 @article{birdnet-geomodel,

@@ -10,3 +10,7 @@ h3
 geopandas
 shapely
 pyarrow
+scikit-learn
+torch
+torchvision
+torchaudio

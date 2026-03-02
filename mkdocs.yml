@@ -1,0 +1,112 @@
+site_name: BirdNET Geomodel
+site_description: Spatiotemporal species occurrence prediction for post-filtering BirdNET acoustic detections
+site_author: BirdNET-Team
+site_url: https://birdnet-team.github.io/geomodel/
+
+repo_name: birdnet-team/geomodel
+repo_url: https://github.com/birdnet-team/geomodel
+
+copyright: Copyright &copy; 2025 BirdNET-Team
+
+theme:
+  name: material
+  logo: birdnet-logo-circle.png
+  favicon: birdnet-logo-circle.png
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: blue
+      accent: light blue
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: blue
+      accent: light blue
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.top
+    - navigation.indexes
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+    - toc.follow
+
+plugins:
+  - search
+  - mkdocstrings:
+      handlers:
+        python:
+          paths: [.]
+          options:
+            docstring_style: google
+            show_root_heading: true
+            show_source: false
+            show_category_heading: true
+            heading_level: 3
+            members_order: source
+            show_if_no_docstring: false
+
+markdown_extensions:
+  - admonition
+  - pymdownx.details
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets:
+      base_path: ["."]
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.arithmatex:
+      generic: true
+  - attr_list
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+
+extra_javascript:
+  - https://unpkg.com/mathjax@3/es5/tex-mml-chtml.js
+
+nav:
+  - Home: index.md
+  - Getting Started:
+      - Installation: getting-started/installation.md
+      - Quick Start: getting-started/quickstart.md
+  - Data Pipeline:
+      - Overview: pipeline/overview.md
+      - Earth Engine Sampling: pipeline/geoutils.md
+      - GBIF Processing: pipeline/gbif.md
+      - Combining Data: pipeline/combine.md
+  - Model:
+      - Architecture: model/architecture.md
+      - Training: model/training.md
+      - Inference: model/inference.md
+  - Visualization:
+      - Plotting Overview: plotting/index.md
+      - Species Weeks: plotting/species-weeks.md
+      - Range Maps: plotting/range-maps.md
+      - Richness Maps: plotting/richness.md
+      - Variable Importance: plotting/variable-importance.md
+  - API Reference:
+      - model: api/model.md
+      - model.loss: api/loss.md
+      - utils.data: api/data.md
+      - utils.geoutils: api/geoutils.md
+      - utils.gbifutils: api/gbifutils.md
+      - utils.combine: api/combine.md
+  - Community:
+      - Contributing: community/contributing.md
+      - Code of Conduct: community/code-of-conduct.md
+      - Security: community/security.md
+      - Citation: community/citation.md

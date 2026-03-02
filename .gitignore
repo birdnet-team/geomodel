@@ -3,6 +3,11 @@
 
 # Exclude outputs dir
 outputs/
+checkpoints/
+
+# Exclude dev files
+commands.txt
+dev/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
@@ -178,3 +183,6 @@ cython_debug/
 
 # PyPI configuration file
 .pypirc
+
+
+checkpoints
