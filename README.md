@@ -137,11 +137,12 @@ python utils/combine.py \
 
 **Model architecture:**
 
-- **Inputs:** Sinusoidally encoded lat/lon (4 features) + week (2 features) = 6 total
+- **Inputs:** Raw latitude, longitude, and week number — circular encoding is handled inside the model
+- **Circular encoding:** Multi-harmonic `[sin(θ), cos(θ), sin(2θ), cos(2θ), …]` applied to lat (radians), lon (radians), and week (mapped to 2π cycle). Number of harmonics is configurable (`--coord_harmonics`, `--week_harmonics`)
 - **Shared encoder:** Residual blocks with pre-norm (LayerNorm → GELU → Linear + skip connections)
 - **Species head:** Multi-label classification with residual blocks (focal loss by default)
 - **Environmental head:** Regression on env features (MSE loss, auxiliary — training only)
-- **Sizes:** small (~860K params), medium (~3.9M, default), large (~21.5M)
+- **Sizes:** small (~860K params), medium (~3.5M, default), large (~21.5M)
 
 **Environmental feature encoding:**
 
@@ -166,6 +167,8 @@ The environmental targets are encoded according to their type:
 |---|---|---|
 | `--data_path` | `./outputs/global_350km_ee_gbif.parquet` | Combined parquet from Stage 3 |
 | `--model_size` | `medium` | `small`, `medium`, or `large` |
+| `--coord_harmonics` | `4` | Number of harmonics for lat/lon circular encoding |
+| `--week_harmonics` | `2` | Number of harmonics for week circular encoding |
 | `--batch_size` | `256` | Training batch size |
 | `--num_epochs` | `100` | Number of training epochs |
 | `--lr` | `0.001` | Learning rate |
@@ -245,7 +248,9 @@ geomodel/
 │   ├── combine.py             # Join geodata + GBIF (Stage 3)
 │   └── data.py                # PyTorch Dataset / DataLoader / preprocessing
 ├── scripts/
-│   ├── plot_species_weeks.py   # Per-species weekly probability charts
+│   ├── plot_species_weeks.py  # Per-species weekly probability charts
+│   ├── plot_range_maps.py     # Species range maps (2×2 seasonal grid)
+│   ├── plot_richness.py       # Species richness map per grid cell
 │   └── plot_environmental.py  # Environmental feature visualization
 ├── checkpoints/               # Model checkpoints + labels.txt
 ├── data/                      # Input GeoParquet files
@@ -266,6 +271,41 @@ python scripts/plot_species_weeks.py --lat 42.44 --lon -76.50 --top_k 20 --thres
 Outputs:
 - One PNG per species with weekly + yearly probability bars
 - A `summary.png` grid with the top species stacked vertically
+
+### Species Range Maps
+
+`scripts/plot_range_maps.py` generates a 2×2 map grid for each species, showing predicted occurrence probability across a lat/lon grid for weeks 1, 13, 26, and 39 (roughly Jan, Apr, Jul, Oct).
+
+```bash
+python scripts/plot_range_maps.py --species "Barn Swallow" "House Sparrow"
+python scripts/plot_range_maps.py --taxon_keys 9515886
+python scripts/plot_range_maps.py --species "Barn Swallow" --resolution 1.0 --bounds europe
+```
+
+| Flag | Default | Description |
+|---|---|---|
+| `--species` | — | Species names (substring match against common/scientific) |
+| `--taxon_keys` | — | GBIF taxonKeys |
+| `--resolution` | `2.0` | Grid resolution in degrees |
+| `--bounds` | `world` | Region name or 4 floats (lon_min lat_min lon_max lat_max) |
+| `--outdir` | `outputs/plots/range_maps` | Output directory |
+
+### Species Richness Map
+
+`scripts/plot_richness.py` plots the number of species above a probability threshold per grid cell for a single week.
+
+```bash
+python scripts/plot_richness.py
+python scripts/plot_richness.py --week 13 --threshold 0.1
+python scripts/plot_richness.py --bounds europe --resolution 1.0
+```
+
+| Flag | Default | Description |
+|---|---|---|
+| `--week` | `26` | Week number (1–48) |
+| `--threshold` | `0.1` | Probability threshold for counting a species as present |
+| `--resolution` | `0.5` | Grid resolution in degrees |
+| `--bounds` | `world` | Region name or 4 floats |
 
 ### Environmental Features
 
