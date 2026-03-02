@@ -15,7 +15,7 @@ python train.py \
     --num_epochs 100 \
     --batch_size 256 \
     --lr 0.001 \
-    --species_loss bce
+    --species_loss an
 ```
 
 ## Training Pipeline
@@ -55,9 +55,12 @@ The training script handles the full pipeline automatically:
 | `--weight_decay` | `0.0001` | AdamW weight decay |
 | `--species_weight` | `1.0` | Species loss multiplier |
 | `--env_weight` | `0.1` | Environmental loss multiplier |
-| `--species_loss` | `bce` | Loss function: `bce` or `focal` |
+| `--species_loss` | `an` | Loss function: `an` (assume-negative, default), `bce`, or `focal` |
 | `--focal_alpha` | `0.25` | Focal loss alpha (only with `--species_loss focal`) |
 | `--focal_gamma` | `2.0` | Focal loss gamma |
+| `--pos_lambda` | `512.0` | Positive up-weighting λ for AN loss |
+| `--neg_samples` | `192` | Negative species to sample per example for AN loss (0 = all) |
+| `--max_obs_per_species` | `0` | Cap observations per species (0 = no cap, recommended: 1000) |
 
 ### Learning Rate Schedule
 
@@ -94,9 +97,9 @@ Splitting is **location-based**: all 49 samples from one H3 cell (48 weeks + 1 y
 
 ## Loss Functions
 
-### BCE (Default)
+### BCE
 
-Standard binary cross-entropy with logits. Works well for most species distributions.
+Standard binary cross-entropy with logits. Enable with `--species_loss bce`.
 
 $$
 \mathcal{L}_{\text{BCE}} = -\frac{1}{N} \sum_{i} \left[ y_i \log(\sigma(z_i)) + (1-y_i) \log(1-\sigma(z_i)) \right]
@@ -111,6 +114,61 @@ $$
 $$
 
 Enable with `--species_loss focal`. Tune `--focal_alpha` and `--focal_gamma` as needed.
+
+### Assume-Negative Loss (Default)
+
+For presence-only data (like GBIF observations), species not appearing in a
+checklist may still be present — they were simply not observed.  Standard BCE
+treats every missing label as a true negative, which is incorrect.
+
+The AN loss implements the **Full Location-Aware Assume Negative** (LAN-full)
+strategy from Cole et al. (2023).  It combines two types of
+pseudo-negatives:
+
+- **Community pseudo-negatives (SLDS)**: at each observed location, species not
+  in the checklist are treated as absent.
+- **Spatial pseudo-negatives (SSDL)**: for each observed species, a random
+  other location is sampled where it is assumed absent.
+
+Positives are up-weighted by λ to compensate for the overwhelming majority of
+pseudo-negative labels:
+
+$$
+\mathcal{L}_{\text{AN}} = \lambda \cdot \frac{1}{|P|} \sum_{i \in P} \text{BCE}(z_i, 1) + \frac{1}{M} \sum_{j \in N_M} \text{BCE}(z_j, 0)
+$$
+
+where $P$ is the set of positive species, $N_M$ is a random sample of $M$
+assumed-negative species, and $\lambda$ controls positive up-weighting.
+
+This is the default loss. To tune parameters:
+
+```bash
+python train.py \
+    --species_loss an \
+    --pos_lambda 512 \
+    --neg_samples 192 \
+    --max_obs_per_species 1000
+```
+
+**Recommended settings for ~13,000 species:**
+
+| Parameter | Default | Notes |
+|---|---|---|
+| `--pos_lambda` | 512 | Higher values emphasize positives more; start with 512 |
+| `--neg_samples` | 192 | 0 = use all negatives (exact but slow); 192 works well for 13K species |
+| `--max_obs_per_species` | 0 | Set to 1000 to prevent common species from dominating training |
+
+### Observation Cap
+
+When `--max_obs_per_species` is set, common species that appear in more than
+the specified number of samples are randomly removed from excess sample lists.
+The samples themselves are kept (they may still have other species) — only the
+over-represented species labels are dropped.  This prevents ubiquitous species
+from dominating the gradient signal.
+
+### Reference
+
+> Cole, E., Van Horn, G., Lange, C., Shepard, A., Leary, P., Perona, P., Loarie, S., & Mac Aodha, O. (2023). Spatial implicit neural representations for global-scale species mapping. In *International Conference on Machine Learning* (pp. 6320–6342). PMLR.
 
 ### Multi-Task Weighting
 

@@ -295,11 +295,31 @@ class H3DataPreprocessor:
         species_lists: List[List[int]],
         env_features: pd.DataFrame,
         fit: bool = True,
+        max_obs_per_species: int = 0,
     ) -> Tuple[Dict[str, np.ndarray], Dict[str, Any]]:
-        """Run full preprocessing: encode inputs, normalize targets, build vocab."""
+        """Run full preprocessing: encode inputs, normalize targets, build vocab.
+
+        Args:
+            max_obs_per_species: If >0, cap observations so no single species
+                contributes more than this many positive samples.  Reduces the
+                influence of hyper-common species on training.  Samples are
+                dropped randomly.  Default 0 (no cap).
+        """
         normalized_env = self.normalize_environmental_features(env_features, fit=fit)
         if fit:
             self.build_species_vocabulary(species_lists)
+
+        # --- observation cap per species ---
+        if max_obs_per_species > 0 and fit:
+            species_lists, keep_mask = self._cap_observations(
+                species_lists, max_obs_per_species,
+            )
+            lats = lats[keep_mask]
+            lons = lons[keep_mask]
+            weeks = weeks[keep_mask]
+            normalized_env = normalized_env[keep_mask]
+            print(f"   Observation cap: {max_obs_per_species} per species → "
+                  f"{int(keep_mask.sum()):,} / {len(keep_mask):,} samples kept")
 
         n_samples = len(species_lists)
         n_species = len(self.species_vocab)
@@ -321,6 +341,55 @@ class H3DataPreprocessor:
         }
         targets = {'species': species_enc, 'env_features': normalized_env}
         return inputs, targets
+
+    def _cap_observations(
+        self,
+        species_lists: List[List[int]],
+        max_obs: int,
+    ) -> Tuple[List[List[int]], np.ndarray]:
+        """Cap per-species observations to reduce dominance of common species.
+
+        For each species, if total positive samples exceed *max_obs*, a random
+        subset of samples containing that species is kept and the species is
+        removed from the remaining samples' lists.  Samples that end up empty
+        are still kept (they remain valid "all-negative" training examples).
+
+        Args:
+            species_lists: List of species-index lists per sample.
+            max_obs: Maximum positive samples per species.
+
+        Returns:
+            Tuple of (modified species_lists, boolean keep_mask).
+        """
+        from collections import Counter
+
+        rng = np.random.default_rng(42)
+
+        # Count occurrences per species across all samples
+        species_samples: Dict[int, List[int]] = {}
+        for i, sl in enumerate(species_lists):
+            for sid in sl:
+                species_samples.setdefault(sid, []).append(i)
+
+        # Build set of (sample_idx, species) pairs to remove
+        remove_pairs: set = set()
+        for sid, sample_idxs in species_samples.items():
+            if len(sample_idxs) > max_obs:
+                drop = rng.choice(sample_idxs, size=len(sample_idxs) - max_obs, replace=False)
+                for idx in drop:
+                    remove_pairs.add((idx, sid))
+
+        # Apply removals
+        if remove_pairs:
+            new_lists = []
+            for i, sl in enumerate(species_lists):
+                filtered = [sid for sid in sl if (i, sid) not in remove_pairs]
+                new_lists.append(filtered)
+            species_lists = new_lists
+
+        # Keep all samples (even if their species list became empty)
+        keep_mask = np.ones(len(species_lists), dtype=bool)
+        return species_lists, keep_mask
 
     def split_data(
         self,

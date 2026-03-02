@@ -113,10 +113,13 @@ Species identifiers from the Global Biodiversity Information Facility (GBIF) tax
 - Large: ~3.4M parameters, encoder: 256→512→1024
 
 **loss.py** - Loss Functions:
-- `MultiTaskLoss`: Weighted combination of species BCE and environmental MSE
-  - Total Loss = species_weight × BCE + env_weight × MSE
-  - Supports positive class weighting for imbalanced species
-  - Default weights: species=1.0, env=0.5
+- `AssumeNegativeLoss`: Default loss — LAN-full strategy (Cole et al., 2023) for presence-only data
+  - Up-weights positives by λ, samples M negatives per example
+  - Default: λ=512, M=192
+- `MultiTaskLoss`: Weighted combination of species loss + environmental MSE
+  - Total Loss = species_weight × species_loss + env_weight × MSE
+  - Species loss: `an` (assume-negative, default), `bce`, or `focal`
+  - Default weights: species=1.0, env=0.1
 - `compute_pos_weights()`: Calculate class weights from training data
 - `focal_loss()`: Alternative loss for severe class imbalance
 

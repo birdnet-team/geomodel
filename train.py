@@ -293,10 +293,16 @@ def main():
     parser.add_argument('--weight_decay', type=float, default=1e-4)
     parser.add_argument('--species_weight', type=float, default=1.0)
     parser.add_argument('--env_weight', type=float, default=0.1)
-    parser.add_argument('--species_loss', type=str, default='bce', choices=['bce', 'focal'],
-                        help='Species loss function (default: bce)')
+    parser.add_argument('--species_loss', type=str, default='an', choices=['bce', 'focal', 'an'],
+                        help='Species loss function: an (assume-negative, default), bce, or focal')
     parser.add_argument('--focal_alpha', type=float, default=0.25)
     parser.add_argument('--focal_gamma', type=float, default=2.0)
+    parser.add_argument('--pos_lambda', type=float, default=512.0,
+                        help='Positive up-weighting λ for assume-negative loss (default: 512)')
+    parser.add_argument('--neg_samples', type=int, default=192,
+                        help='Number of negative species to sample per example for AN loss (default: 192, 0=all)')
+    parser.add_argument('--max_obs_per_species', type=int, default=0,
+                        help='Cap observations per species to reduce common-species dominance (default: 0=no cap, recommended: 1000)')
 
     # LR schedule
     parser.add_argument('--lr_schedule', type=str, default='cosine', choices=['cosine', 'none'],
@@ -340,7 +346,14 @@ def main():
     print(f"  Epochs:     {args.num_epochs}")
     print(f"  Batch size: {args.batch_size}")
     print(f"  LR:         {args.lr}  (schedule: {args.lr_schedule})")
-    print(f"  Loss:       {args.species_loss}")
+    loss_desc = args.species_loss
+    if args.species_loss == 'an':
+        loss_desc += f"  (λ={args.pos_lambda}, M={args.neg_samples})"
+    elif args.species_loss == 'focal':
+        loss_desc += f"  (α={args.focal_alpha}, γ={args.focal_gamma})"
+    print(f"  Loss:       {loss_desc}")
+    if args.max_obs_per_species > 0:
+        print(f"  Obs cap:    {args.max_obs_per_species} per species")
     print(f"  Device:     {device}")
 
     # -- Data loading & preprocessing ---
@@ -354,7 +367,8 @@ def main():
     print("3. Preprocessing...")
     preprocessor = H3DataPreprocessor()
     inputs, targets = preprocessor.prepare_training_data(
-        lats, lons, weeks, species_lists, env_features, fit=True
+        lats, lons, weeks, species_lists, env_features, fit=True,
+        max_obs_per_species=args.max_obs_per_species,
     )
 
     info = preprocessor.get_preprocessing_info()
@@ -443,6 +457,7 @@ def main():
         species_weight=args.species_weight, env_weight=args.env_weight,
         species_loss=args.species_loss,
         focal_alpha=args.focal_alpha, focal_gamma=args.focal_gamma,
+        pos_lambda=args.pos_lambda, neg_samples=args.neg_samples,
     )
     optimizer = torch.optim.AdamW(
         model.parameters(), lr=args.lr, weight_decay=args.weight_decay,
