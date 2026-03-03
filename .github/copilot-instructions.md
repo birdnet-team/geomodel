@@ -146,10 +146,10 @@ Species identifiers from the Global Biodiversity Information Facility (GBIF) tax
 - Automatic mixed precision (AMP) on CUDA
 - Gradient clipping (max_norm=1.0) to prevent exploding gradients
 - Linear LR warmup (3 epochs) + CosineAnnealingWarmRestarts schedule
-- Early stopping with configurable patience (default 15)
+- Early stopping with configurable patience (default 15), based on validation mAP
 - Checkpoint management:
   - `checkpoint_latest.pt`: Latest model state
-  - `checkpoint_best.pt`: Best validation loss
+  - `checkpoint_best.pt`: Best validation mAP
 - `labels.txt`: Species vocabulary (taxonKey → scientific name → common name)
 - `training_history.json`: Per-epoch loss, LR, and evaluation metrics
 - Evaluation metrics computed during validation:

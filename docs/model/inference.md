@@ -60,7 +60,7 @@ A checkpoint `.pt` file contains:
 | `model_config` | Dict with `model_size`, `n_species`, `n_env_features`, `coord_harmonics`, `week_harmonics` |
 | `species_vocab` | Dict with `species_to_idx` and `idx_to_species` mappings |
 | `epoch` | Training epoch at save time |
-| `best_val_loss` | Best validation loss seen |
+| `best_val_map` | Best validation mAP seen |
 | `history` | Full training history |
 | `scheduler_state_dict` | LR scheduler state (if used) |
 | `scaler_state_dict` | AMP scaler state (if CUDA) |

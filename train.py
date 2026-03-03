@@ -72,7 +72,7 @@ class Trainer:
             'val_map': [], 'val_top10_recall': [], 'val_top30_recall': [],
             'lr': [],
         }
-        self.best_val_loss = float('inf')
+        self.best_val_map = 0.0
         self.current_epoch = 0
         self._epochs_no_improve = 0
 
@@ -220,7 +220,7 @@ class Trainer:
             'epoch': self.current_epoch,
             'model_state_dict': self.model.state_dict(),
             'optimizer_state_dict': self.optimizer.state_dict(),
-            'best_val_loss': self.best_val_loss,
+            'best_val_map': self.best_val_map,
             'history': self.history,
             'model_config': self.model_config,
             'species_vocab': self.species_vocab,
@@ -233,7 +233,7 @@ class Trainer:
         torch.save(checkpoint, self.checkpoint_dir / 'checkpoint_latest.pt')
         if is_best:
             torch.save(checkpoint, self.checkpoint_dir / 'checkpoint_best.pt')
-            print(f"  Saved best model (val_loss: {self.best_val_loss:.4f})")
+            print(f"  Saved best model (mAP: {self.best_val_map:.4f})")
 
     def load_checkpoint(self, checkpoint_path: Path):
         """Restore training state from a checkpoint file.
@@ -248,7 +248,7 @@ class Trainer:
         self.model.load_state_dict(ckpt['model_state_dict'])
         self.optimizer.load_state_dict(ckpt['optimizer_state_dict'])
         self.current_epoch = ckpt['epoch']
-        self.best_val_loss = ckpt['best_val_loss']
+        self.best_val_map = ckpt.get('best_val_map', 0.0)
         self.history = ckpt['history']
         self.model_config = ckpt.get('model_config', {})
         self.species_vocab = ckpt.get('species_vocab', {})
@@ -303,9 +303,9 @@ class Trainer:
                       f"top-10={val_m['top10_recall']:.4f}  "
                       f"top-30={val_m['top30_recall']:.4f}")
 
-                is_best = val_m['loss'] < self.best_val_loss
+                is_best = val_m['map'] > self.best_val_map
                 if is_best:
-                    self.best_val_loss = val_m['loss']
+                    self.best_val_map = val_m['map']
                     self._epochs_no_improve = 0
                 else:
                     self._epochs_no_improve += 1
@@ -326,7 +326,7 @@ class Trainer:
         with open(self.checkpoint_dir / 'training_history.json', 'w') as f:
             json.dump(self.history, f, indent=2)
 
-        print(f"\nTraining complete \u2014 best val loss: {self.best_val_loss:.4f}")
+        print(f"\nTraining complete \u2014 best mAP: {self.best_val_map:.4f}")
         print(f"Checkpoints: {self.checkpoint_dir}")
 
 

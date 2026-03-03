@@ -77,7 +77,7 @@ The training script handles the full pipeline automatically:
 
 | Flag | Default | Description |
 |---|---|---|
-| `--patience` | `15` | Stop after N epochs without validation improvement (0 = disabled) |
+| `--patience` | `15` | Stop after N epochs without mAP improvement (0 = disabled) |
 
 ### Data Split
 
@@ -204,7 +204,7 @@ Gradients are clipped to max norm 1.0 to prevent training instability from occas
 The trainer saves:
 
 - `checkpoint_latest.pt` — after every save interval and on early stopping
-- `checkpoint_best.pt` — whenever validation loss improves
+- `checkpoint_best.pt` — whenever validation mAP improves
 - `labels.txt` — species vocabulary (taxonKey → scientific name → common name)
 - `training_history.json` — per-epoch losses, learning rate, and evaluation metrics
 
