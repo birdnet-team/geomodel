@@ -229,3 +229,35 @@ python train.py --resume checkpoints/checkpoint_latest.pt --num_epochs 50
 ```
 
 This loads the model, optimizer, scheduler, and scaler states and continues training for 50 more epochs.
+
+## Hyperparameter Autotune
+
+Automatically search for optimal hyperparameters using [Optuna](https://optuna.org/) (Bayesian optimisation with TPE sampler and median pruning).
+
+```bash
+python train.py --data_path data.parquet --autotune                  # tune all params
+python train.py --data_path data.parquet --autotune lr pos_lambda    # tune specific params
+```
+
+### Tunable Parameters
+
+| Parameter | Search space |
+|---|---|
+| `lr` | 1e-4 → 1e-2 (log scale) |
+| `batch_size` | {128, 256, 512, 1024} |
+| `pos_lambda` | 2 → 64 (log scale) |
+| `neg_samples` | {128, 256, 512, 1024, 2048} |
+| `label_smoothing` | 0 → 0.1 |
+| `weight_decay` | 1e-5 → 1e-2 (log scale) |
+| `env_weight` | 0.01 → 1.0 (log scale) |
+| `lr_T0` | {5, 10, 20} |
+
+### Autotune CLI
+
+| Flag | Default | Description |
+|---|---|---|
+| `--autotune` | — | Enable autotune. Without args: tune all. With args: tune listed params only. |
+| `--autotune_trials` | `20` | Number of Optuna trials |
+| `--autotune_epochs` | `15` | Epochs per trial |
+
+Each trial trains a fresh model and optimises towards validation mAP.  Optuna's `MedianPruner` kills unpromising trials early (after 3 warmup epochs).  Results are saved to `checkpoints/autotune/autotune_results.json`, and a suggested `train.py` command with the best parameters is printed.

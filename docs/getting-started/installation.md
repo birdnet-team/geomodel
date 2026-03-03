@@ -48,6 +48,21 @@ Earth Engine access is only needed for **Stage 1** (environmental data sampling)
 2. Authenticate: `earthengine authenticate`
 3. The provided `initialize_ee()` helper handles authentication in scripts
 
+## Optional Dependencies
+
+These are only needed for specific features:
+
+```bash
+# Hyperparameter autotune (--autotune)
+pip install optuna
+
+# Model export (convert.py)
+pip install onnx onnxruntime onnxscript onnxconverter-common
+
+# TFLite / TF SavedModel export
+pip install tensorflow onnx2tf
+```
+
 ## Verifying the Installation
 
 After installing, you can verify everything works:

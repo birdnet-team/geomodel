@@ -6,15 +6,18 @@ Pipeline: load parquet → preprocess → train multi-task model → save checkp
 Features:
   - AdamW optimizer with linear LR warmup + CosineAnnealingWarmRestarts
   - Automatic mixed-precision (AMP) on CUDA for ~2× speed-up
-  - Early stopping based on validation-loss plateau
+  - Early stopping based on validation mAP plateau
   - Assume-negative (AN) loss (default); BCE and focal also available
   - Label smoothing and observation cap for regularization
   - Gradient clipping
+  - Optuna-based hyperparameter autotune (--autotune)
 
 Usage:
     python train.py --data_path ./outputs/global_350km_ee_gbif.parquet
     python train.py --data_path data.parquet --model_size large --num_epochs 100
     python train.py --resume checkpoints/checkpoint_best.pt
+    python train.py --data_path data.parquet --autotune
+    python train.py --data_path data.parquet --autotune lr pos_lambda --autotune_trials 30
 """
 
 import argparse
@@ -31,6 +34,16 @@ from tqdm import tqdm
 from model.model import create_model
 from model.loss import MultiTaskLoss
 from utils.data import H3DataLoader, H3DataPreprocessor, create_dataloaders, get_class_weights
+
+
+# ---------------------------------------------------------------------------
+# Tunable hyperparameters for --autotune
+# ---------------------------------------------------------------------------
+
+TUNABLE_PARAMS = [
+    'lr', 'batch_size', 'pos_lambda', 'neg_samples',
+    'label_smoothing', 'weight_decay', 'env_weight', 'lr_T0',
+]
 
 
 class Trainer:
@@ -330,6 +343,243 @@ class Trainer:
         print(f"Checkpoints: {self.checkpoint_dir}")
 
 
+        print(f"\nTraining complete \u2014 best mAP: {self.best_val_map:.4f}")
+        print(f"Checkpoints: {self.checkpoint_dir}")
+
+
+# ---------------------------------------------------------------------------
+# Autotune — Optuna-based hyperparameter search
+# ---------------------------------------------------------------------------
+
+def _suggest_param(trial, name: str, args):
+    """Suggest a value for *name* using the Optuna trial, falling back to CLI default."""
+    import optuna
+    if name == 'lr':
+        return trial.suggest_float('lr', 1e-4, 1e-2, log=True)
+    if name == 'batch_size':
+        return trial.suggest_categorical('batch_size', [128, 256, 512, 1024])
+    if name == 'pos_lambda':
+        return trial.suggest_float('pos_lambda', 2.0, 64.0, log=True)
+    if name == 'neg_samples':
+        return trial.suggest_categorical('neg_samples', [128, 256, 512, 1024, 2048])
+    if name == 'label_smoothing':
+        return trial.suggest_float('label_smoothing', 0.0, 0.1)
+    if name == 'weight_decay':
+        return trial.suggest_float('weight_decay', 1e-5, 1e-2, log=True)
+    if name == 'env_weight':
+        return trial.suggest_float('env_weight', 0.01, 1.0, log=True)
+    if name == 'lr_T0':
+        return trial.suggest_categorical('lr_T0', [5, 10, 20])
+    raise ValueError(f"Unknown tunable param: {name}")
+
+
+def run_autotune(args, device: torch.device):
+    """Run Optuna hyperparameter search and print best parameters.
+
+    Data is loaded once and reused across all trials.  Each trial builds a
+    fresh model+optimizer, trains for ``--autotune_epochs`` epochs, and reports
+    best validation mAP.  Optuna's MedianPruner kills unpromising trials early.
+    """
+    try:
+        import optuna
+    except ImportError:
+        print("ERROR: autotune requires optuna — pip install optuna")
+        return
+
+    tune_params = args.autotune if args.autotune else list(TUNABLE_PARAMS)
+    invalid = [p for p in tune_params if p not in TUNABLE_PARAMS]
+    if invalid:
+        print(f"ERROR: unknown tunable params: {invalid}")
+        print(f"Available: {TUNABLE_PARAMS}")
+        return
+
+    n_trials = args.autotune_trials
+    n_epochs = args.autotune_epochs
+
+    print("=" * 70)
+    print("  BirdNET Geomodel — Hyperparameter Autotune")
+    print("=" * 70)
+    print(f"  Tuning:     {', '.join(tune_params)}")
+    print(f"  Trials:     {n_trials}")
+    print(f"  Epochs:     {n_epochs} per trial")
+    print(f"  Objective:  validation mAP (maximize)")
+    print(f"  Device:     {device}")
+
+    # -- Load data once ---------------------------------------------------
+    print("\n1. Loading data...")
+    loader = H3DataLoader(args.data_path)
+    loader.load_data()
+
+    print("2. Flattening to samples...")
+    lats, lons, weeks, species_lists, env_features = loader.flatten_to_samples(
+        ocean_sample_rate=args.ocean_sample_rate,
+    )
+
+    print("3. Preprocessing...")
+    preprocessor = H3DataPreprocessor()
+    inputs, targets = preprocessor.prepare_training_data(
+        lats, lons, weeks, species_lists, env_features, fit=True,
+        max_obs_per_species=args.max_obs_per_species,
+    )
+    info = preprocessor.get_preprocessing_info()
+    n_species = info['n_species']
+    n_env = info['n_env_features']
+    print(f"   Samples: {len(inputs['lat']):,}  |  Species: {n_species:,}  |  Env features: {n_env}")
+
+    print("4. Splitting data...")
+    train_in, val_in, _, train_tgt, val_tgt, _ = preprocessor.split_data(
+        inputs, targets, test_size=args.test_size, val_size=args.val_size,
+        random_state=42, split_by_location=True,
+    )
+    print(f"   Train: {len(train_in['lat']):,}  |  Val: {len(val_in['lat']):,}")
+
+    # -- Objective --------------------------------------------------------
+    def objective(trial: 'optuna.Trial') -> float:
+        # Resolve each param: suggest if tuning, else use CLI default
+        p = {}
+        for name in TUNABLE_PARAMS:
+            if name in tune_params:
+                p[name] = _suggest_param(trial, name, args)
+            else:
+                p[name] = getattr(args, name)
+
+        batch_size = int(p['batch_size'])
+
+        # DataLoaders (batch_size may vary per trial)
+        t_loader, v_loader = create_dataloaders(
+            train_in, train_tgt, val_in, val_tgt,
+            batch_size=batch_size, num_workers=args.num_workers,
+            pin_memory=(device.type == 'cuda'),
+            n_species=n_species,
+        )
+
+        # Fresh model
+        model = create_model(
+            n_species=n_species, n_env_features=n_env,
+            model_size=args.model_size,
+            coord_harmonics=args.coord_harmonics,
+            week_harmonics=args.week_harmonics,
+        )
+
+        criterion = MultiTaskLoss(
+            species_weight=args.species_weight,
+            env_weight=float(p['env_weight']),
+            species_loss=args.species_loss,
+            focal_alpha=args.focal_alpha, focal_gamma=args.focal_gamma,
+            pos_lambda=float(p['pos_lambda']),
+            neg_samples=int(p['neg_samples']),
+            label_smoothing=float(p['label_smoothing']),
+        )
+        optimizer = torch.optim.AdamW(
+            model.parameters(), lr=float(p['lr']),
+            weight_decay=float(p['weight_decay']),
+        )
+
+        lr_T0 = int(p['lr_T0'])
+        scheduler = None
+        if args.lr_schedule == 'cosine':
+            cosine = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
+                optimizer, T_0=lr_T0, eta_min=args.lr_min,
+            )
+            if args.lr_warmup > 0:
+                warmup = torch.optim.lr_scheduler.LinearLR(
+                    optimizer, start_factor=1e-2, end_factor=1.0,
+                    total_iters=args.lr_warmup,
+                )
+                scheduler = torch.optim.lr_scheduler.SequentialLR(
+                    optimizer, schedulers=[warmup, cosine],
+                    milestones=[args.lr_warmup],
+                )
+            else:
+                scheduler = cosine
+
+        trainer = Trainer(
+            model=model, criterion=criterion, optimizer=optimizer,
+            scheduler=scheduler, device=device,
+            checkpoint_dir=Path(args.checkpoint_dir) / 'autotune',
+            patience=0,  # no early stopping within trials — Optuna prunes
+        )
+
+        # Train for n_epochs, report mAP after each epoch for pruning
+        best_map = 0.0
+        for epoch in range(n_epochs):
+            trainer.current_epoch = epoch
+            trainer.train_epoch(t_loader)
+            val_m = trainer.validate(v_loader)
+
+            if scheduler is not None:
+                scheduler.step()
+
+            val_map = val_m['map']
+            best_map = max(best_map, val_map)
+            trial.report(val_map, epoch)
+
+            if trial.should_prune():
+                raise optuna.TrialPruned()
+
+        return best_map
+
+    # -- Run study --------------------------------------------------------
+    print(f"\n{'=' * 70}")
+    print(f"  Starting Optuna study — {n_trials} trials")
+    print(f"{'=' * 70}\n")
+
+    study = optuna.create_study(
+        direction='maximize',
+        study_name='geomodel_autotune',
+        pruner=optuna.pruners.MedianPruner(n_startup_trials=5, n_warmup_steps=3),
+    )
+    study.optimize(objective, n_trials=n_trials, show_progress_bar=True)
+
+    # -- Report -----------------------------------------------------------
+    best = study.best_trial
+    print(f"\n{'=' * 70}")
+    print(f"  Autotune Complete")
+    print(f"{'=' * 70}")
+    print(f"  Best mAP:   {best.value:.4f}  (trial {best.number})")
+    print(f"\n  Best hyperparameters:")
+    for k, v in best.params.items():
+        if isinstance(v, float):
+            print(f"    --{k:20s} {v:.6g}")
+        else:
+            print(f"    --{k:20s} {v}")
+
+    # Save results
+    results_dir = Path(args.checkpoint_dir) / 'autotune'
+    results_dir.mkdir(parents=True, exist_ok=True)
+    results_path = results_dir / 'autotune_results.json'
+    results = {
+        'best_map': best.value,
+        'best_params': best.params,
+        'n_trials': n_trials,
+        'epochs_per_trial': n_epochs,
+        'tuned_params': tune_params,
+        'all_trials': [
+            {
+                'number': t.number,
+                'value': t.value if t.value is not None else None,
+                'params': t.params,
+                'state': str(t.state),
+            }
+            for t in study.trials
+        ],
+    }
+    with open(results_path, 'w') as f:
+        json.dump(results, f, indent=2)
+    print(f"\n  Results saved to {results_path}")
+
+    # Print suggested command
+    print(f"\n  Suggested training command:")
+    cmd_parts = [f"python train.py --data_path {args.data_path}"]
+    for k, v in best.params.items():
+        if isinstance(v, float):
+            cmd_parts.append(f"--{k} {v:.6g}")
+        else:
+            cmd_parts.append(f"--{k} {v}")
+    print(f"    {' '.join(cmd_parts)}")
+    print()
+
+
 def main():
     """Entry point: parse CLI args, load data, build model, and run training."""
     parser = argparse.ArgumentParser(description='Train BirdNET Geomodel')
@@ -395,12 +645,27 @@ def main():
     parser.add_argument('--device', type=str, default='auto', choices=['auto', 'cuda', 'cpu'])
     parser.add_argument('--num_workers', type=int, default=0)
 
+    # Autotune
+    parser.add_argument('--autotune', nargs='*', default=None, metavar='PARAM',
+                        help='Run hyperparameter search. Without args: tune all. '
+                             'With args: tune only the listed params. '
+                             f'Available: {", ".join(TUNABLE_PARAMS)}')
+    parser.add_argument('--autotune_trials', type=int, default=20,
+                        help='Number of Optuna trials (default: 20)')
+    parser.add_argument('--autotune_epochs', type=int, default=15,
+                        help='Epochs per trial (default: 15)')
+
     args = parser.parse_args()
 
     device = torch.device(
         'cuda' if args.device == 'auto' and torch.cuda.is_available()
         else 'cpu' if args.device == 'auto' else args.device
     )
+
+    # -- Autotune mode ----------------------------------------------------
+    if args.autotune is not None:
+        run_autotune(args, device)
+        return
 
     print("=" * 70)
     print("  BirdNET Geomodel Training")
