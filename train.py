@@ -43,7 +43,11 @@ from utils.data import H3DataLoader, H3DataPreprocessor, create_dataloaders, get
 TUNABLE_PARAMS = [
     'lr', 'batch_size', 'pos_lambda', 'neg_samples',
     'label_smoothing', 'weight_decay', 'env_weight', 'lr_T0',
+    'jitter', 'max_obs_per_species', 'no_yearly',
 ]
+
+# Params that affect data preprocessing — when tuned, data is re-processed per trial
+_DATA_PARAMS = {'max_obs_per_species', 'no_yearly'}
 
 
 
@@ -372,6 +376,12 @@ def _suggest_param(trial, name: str, args):
         return trial.suggest_float('env_weight', 0.01, 1.0, log=True)
     if name == 'lr_T0':
         return trial.suggest_categorical('lr_T0', [5, 10, 20])
+    if name == 'jitter':
+        return trial.suggest_categorical('jitter', [True, False])
+    if name == 'max_obs_per_species':
+        return trial.suggest_categorical('max_obs_per_species', [0, 500, 1000, 2000, 5000])
+    if name == 'no_yearly':
+        return trial.suggest_categorical('no_yearly', [True, False])
     raise ValueError(f"Unknown tunable param: {name}")
 
 
@@ -407,43 +417,44 @@ def run_autotune(args, device: torch.device):
     print(f"  Objective:  validation mAP (maximize)")
     print(f"  Device:     {device}")
 
-    # -- Load data once ---------------------------------------------------
+    # -- Load data --------------------------------------------------------
     print("\n1. Loading data...")
     loader = H3DataLoader(args.data_path)
     loader.load_data()
 
-    print("2. Flattening to samples...")
-    lats, lons, weeks, species_lists, env_features = loader.flatten_to_samples(
-        ocean_sample_rate=args.ocean_sample_rate,
-        include_yearly=not args.no_yearly,
-    )
+    # Jitter scale is fixed by H3 resolution, compute once
+    _jitter_std = loader.compute_jitter_std(loader.get_h3_cells())
 
-    # Coordinate jitter
-    jitter_std = 0.0
-    if args.jitter:
-        jitter_std = loader.compute_jitter_std(loader.get_h3_cells())
-        print(f"   Coordinate jitter: ±{jitter_std:.4f}° std")
+    # Check whether any data-affecting params are being tuned
+    tuning_data_params = bool(set(tune_params) & _DATA_PARAMS)
 
-    print("3. Preprocessing...")
-    preprocessor = H3DataPreprocessor()
-    inputs, targets = preprocessor.prepare_training_data(
-        lats, lons, weeks, species_lists, env_features, fit=True,
-        max_obs_per_species=args.max_obs_per_species,
-    )
-    info = preprocessor.get_preprocessing_info()
-    n_species = info['n_species']
-    n_env = info['n_env_features']
-    print(f"   Samples: {len(inputs['lat']):,}  |  Species: {n_species:,}  |  Env features: {n_env}")
-
-    print("4. Splitting data...")
-    train_in, val_in, _, train_tgt, val_tgt, _ = preprocessor.split_data(
-        inputs, targets, test_size=args.test_size, val_size=args.val_size,
-        random_state=42, split_by_location=True,
-    )
-    print(f"   Train: {len(train_in['lat']):,}  |  Val: {len(val_in['lat']):,}")
-    if args.sample_fraction < 1.0:
-        k = max(1, int(len(train_in['lat']) * args.sample_fraction))
-        print(f"   Sampling {args.sample_fraction:.0%} of train per epoch: ~{k:,} samples")
+    # Pre-process data once when no data-affecting params are tuned
+    if not tuning_data_params:
+        print("2. Flattening to samples...")
+        lats, lons, weeks, species_lists, env_features = loader.flatten_to_samples(
+            ocean_sample_rate=args.ocean_sample_rate,
+            include_yearly=not args.no_yearly,
+        )
+        print("3. Preprocessing...")
+        preprocessor = H3DataPreprocessor()
+        inputs, targets = preprocessor.prepare_training_data(
+            lats, lons, weeks, species_lists, env_features, fit=True,
+            max_obs_per_species=args.max_obs_per_species,
+        )
+        info = preprocessor.get_preprocessing_info()
+        n_species = info['n_species']
+        n_env = info['n_env_features']
+        print(f"   Samples: {len(inputs['lat']):,}  |  Species: {n_species:,}  |  Env features: {n_env}")
+        print("4. Splitting data...")
+        train_in, val_in, _, train_tgt, val_tgt, _ = preprocessor.split_data(
+            inputs, targets, test_size=args.test_size, val_size=args.val_size,
+            random_state=42, split_by_location=True,
+        )
+        print(f"   Train: {len(train_in['lat']):,}  |  Val: {len(val_in['lat']):,}")
+    else:
+        print("   (Data will be re-processed per trial — tuning data params)")
+        n_species = None  # resolved per trial
+        n_env = None
 
     # -- Objective --------------------------------------------------------
     def objective(trial: 'optuna.Trial') -> float:
@@ -456,10 +467,37 @@ def run_autotune(args, device: torch.device):
                 p[name] = getattr(args, name)
 
         batch_size = int(p['batch_size'])
+        use_jitter = bool(p.get('jitter', args.jitter))
+        jitter_std = _jitter_std if use_jitter else 0.0
+
+        # Re-process data when data-affecting params are tuned
+        nonlocal n_species, n_env
+        if tuning_data_params:
+            include_yearly = not bool(p.get('no_yearly', args.no_yearly))
+            max_obs = int(p.get('max_obs_per_species', args.max_obs_per_species))
+            _lats, _lons, _weeks, _sp, _env = loader.flatten_to_samples(
+                ocean_sample_rate=args.ocean_sample_rate,
+                include_yearly=include_yearly,
+            )
+            _prep = H3DataPreprocessor()
+            _inputs, _targets = _prep.prepare_training_data(
+                _lats, _lons, _weeks, _sp, _env, fit=True,
+                max_obs_per_species=max_obs,
+            )
+            _info = _prep.get_preprocessing_info()
+            n_species = _info['n_species']
+            n_env = _info['n_env_features']
+            t_in, v_in, _, t_tgt, v_tgt, _ = _prep.split_data(
+                _inputs, _targets, test_size=args.test_size,
+                val_size=args.val_size, random_state=42,
+                split_by_location=True,
+            )
+        else:
+            t_in, v_in, t_tgt, v_tgt = train_in, val_in, train_tgt, val_tgt
 
         # DataLoaders (batch_size may vary per trial)
         t_loader, v_loader = create_dataloaders(
-            train_in, train_tgt, val_in, val_tgt,
+            t_in, t_tgt, v_in, v_tgt,
             batch_size=batch_size, num_workers=args.num_workers,
             pin_memory=(device.type == 'cuda'),
             n_species=n_species,
@@ -586,7 +624,10 @@ def run_autotune(args, device: torch.device):
     print(f"\n  Suggested training command:")
     cmd_parts = [f"python train.py --data_path {args.data_path}"]
     for k, v in best.params.items():
-        if isinstance(v, float):
+        if isinstance(v, bool):
+            if v:
+                cmd_parts.append(f"--{k}")
+        elif isinstance(v, float):
             cmd_parts.append(f"--{k} {v:.6g}")
         else:
             cmd_parts.append(f"--{k} {v}")
@@ -615,13 +656,13 @@ def main():
     parser.add_argument('--weight_decay', type=float, default=1e-4)
     parser.add_argument('--species_weight', type=float, default=1.0)
     parser.add_argument('--env_weight', type=float, default=0.25)
-    parser.add_argument('--species_loss', type=str, default='an', choices=['bce', 'focal', 'an'],
-                        help='Species loss function: an (assume-negative, default), bce, or focal')
+    parser.add_argument('--species_loss', type=str, default='bce', choices=['bce', 'focal', 'an'],
+                        help='Species loss function: an (binary cross-entropy, default), bce, or focal')
     parser.add_argument('--focal_alpha', type=float, default=0.25)
     parser.add_argument('--focal_gamma', type=float, default=2.0)
-    parser.add_argument('--pos_lambda', type=float, default=2.0,
+    parser.add_argument('--pos_lambda', type=float, default=8.0,
                         help='Positive up-weighting λ for assume-negative loss (default: 2)')
-    parser.add_argument('--neg_samples', type=int, default=512,
+    parser.add_argument('--neg_samples', type=int, default=1024,
                         help='Number of negative species to sample per example for AN loss (default: 128, 0=all)')
     parser.add_argument('--label_smoothing', type=float, default=0.0,
                         help='Smooth binary targets to prevent overconfident predictions (default: 0.0, 0=off)')
@@ -647,7 +688,7 @@ def main():
                         help='Linear LR warmup epochs before cosine schedule (default: 3, 0=off)')
 
     # Early stopping
-    parser.add_argument('--patience', type=int, default=15,
+    parser.add_argument('--patience', type=int, default=10,
                         help='Early stopping patience (0 = disabled)')
 
     # Data split

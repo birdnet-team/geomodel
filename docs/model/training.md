@@ -270,6 +270,12 @@ python train.py --data_path data.parquet --autotune lr pos_lambda    # tune spec
 | `weight_decay` | 1e-5 → 1e-2 (log scale) |
 | `env_weight` | 0.01 → 1.0 (log scale) |
 | `lr_T0` | {5, 10, 20} |
+| `jitter` | {true, false} |
+| `max_obs_per_species` | {0, 500, 1000, 2000, 5000} |
+| `no_yearly` | {true, false} |
+
+!!! note "Data-affecting parameters"
+    When `max_obs_per_species` or `no_yearly` are included in the tuning set, data is re-preprocessed each trial.  This is slower but necessary because these parameters change the training samples.
 
 ### Autotune CLI
 
