@@ -46,6 +46,8 @@ TUNABLE_PARAMS = [
 ]
 
 
+
+
 class Trainer:
     """Training loop with validation, checkpointing, LR scheduling, AMP, and early stopping."""
 
@@ -432,6 +434,9 @@ def run_autotune(args, device: torch.device):
         random_state=42, split_by_location=True,
     )
     print(f"   Train: {len(train_in['lat']):,}  |  Val: {len(val_in['lat']):,}")
+    if args.sample_fraction < 1.0:
+        k = max(1, int(len(train_in['lat']) * args.sample_fraction))
+        print(f"   Sampling {args.sample_fraction:.0%} of train per epoch: ~{k:,} samples")
 
     # -- Objective --------------------------------------------------------
     def objective(trial: 'optuna.Trial') -> float:
@@ -451,6 +456,7 @@ def run_autotune(args, device: torch.device):
             batch_size=batch_size, num_workers=args.num_workers,
             pin_memory=(device.type == 'cuda'),
             n_species=n_species,
+            sample_fraction=args.sample_fraction,
         )
 
         # Fresh model
@@ -633,6 +639,8 @@ def main():
     # Data split
     parser.add_argument('--test_size', type=float, default=0.2)
     parser.add_argument('--val_size', type=float, default=0.1)
+    parser.add_argument('--sample_fraction', type=float, default=1.0,
+                        help='Fraction of training data to use (default: 1.0 = all, 0.1 = 10%% random subset)')
 
     # Checkpoints
     parser.add_argument('--checkpoint_dir', type=str, default='./checkpoints')
@@ -652,8 +660,8 @@ def main():
                              f'Available: {", ".join(TUNABLE_PARAMS)}')
     parser.add_argument('--autotune_trials', type=int, default=20,
                         help='Number of Optuna trials (default: 20)')
-    parser.add_argument('--autotune_epochs', type=int, default=15,
-                        help='Epochs per trial (default: 15)')
+    parser.add_argument('--autotune_epochs', type=int, default=10,
+                        help='Epochs per trial (default: 10)')
 
     args = parser.parse_args()
 
@@ -715,6 +723,9 @@ def main():
         random_state=42, split_by_location=True,
     )
     print(f"   Train: {len(train_in['lat']):,}  |  Val: {len(val_in['lat']):,}  |  Test: {len(test_in['lat']):,}")
+    if args.sample_fraction < 1.0:
+        k = max(1, int(len(train_in['lat']) * args.sample_fraction))
+        print(f"   Sampling {args.sample_fraction:.0%} of train per epoch: ~{k:,} samples")
 
     print("5. Creating DataLoaders...")
     train_loader, val_loader = create_dataloaders(
@@ -722,6 +733,7 @@ def main():
         batch_size=args.batch_size, num_workers=args.num_workers,
         pin_memory=(device.type == 'cuda'),
         n_species=n_species,
+        sample_fraction=args.sample_fraction,
     )
 
     # -- Model ---

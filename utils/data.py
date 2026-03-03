@@ -16,7 +16,7 @@ import torch
 from pathlib import Path
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import Dataset, DataLoader, Sampler
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 
@@ -549,6 +549,32 @@ class BirdSpeciesDataset(Dataset):
         )
 
 
+class FractionalRandomSampler(Sampler):
+    """Sampler that yields a random fraction of training indices each epoch.
+
+    Every call to ``__iter__`` (i.e. every epoch) draws a fresh random
+    subset of ``int(fraction * n)`` indices from ``[0, n)``.  The subset
+    is deterministic: epoch *e* uses seed ``base_seed + e``, so results
+    are reproducible across runs.
+    """
+
+    def __init__(self, n: int, fraction: float = 1.0, seed: int = 42):
+        self.n = n
+        self.k = max(1, int(n * fraction))
+        self.seed = seed
+        self.epoch = 0
+
+    def __iter__(self):
+        g = torch.Generator()
+        g.manual_seed(self.seed + self.epoch)
+        idx = torch.randperm(self.n, generator=g)[: self.k]
+        self.epoch += 1
+        return iter(idx.tolist())
+
+    def __len__(self) -> int:
+        return self.k
+
+
 def create_dataloaders(
     train_inputs: Dict[str, np.ndarray],
     train_targets: Dict[str, Any],
@@ -558,12 +584,27 @@ def create_dataloaders(
     num_workers: int = 0,
     pin_memory: bool = True,
     n_species: int = 0,
+    sample_fraction: float = 1.0,
 ) -> Tuple[DataLoader, DataLoader]:
-    """Create training and validation DataLoaders."""
+    """Create training and validation DataLoaders.
+
+    Args:
+        sample_fraction: Fraction of training samples to use per epoch
+            (0–1]. Each epoch draws a fresh random subset.
+    """
     train_ds = BirdSpeciesDataset(train_inputs, train_targets, n_species=n_species)
     val_ds = BirdSpeciesDataset(val_inputs, val_targets, n_species=n_species)
-    train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True,
-                              num_workers=num_workers, pin_memory=pin_memory, drop_last=True)
+
+    if sample_fraction < 1.0:
+        sampler = FractionalRandomSampler(len(train_ds), sample_fraction)
+        train_loader = DataLoader(train_ds, batch_size=batch_size, sampler=sampler,
+                                  num_workers=num_workers, pin_memory=pin_memory,
+                                  drop_last=True)
+    else:
+        train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True,
+                                  num_workers=num_workers, pin_memory=pin_memory,
+                                  drop_last=True)
+
     val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False,
                             num_workers=num_workers, pin_memory=pin_memory)
     return train_loader, val_loader

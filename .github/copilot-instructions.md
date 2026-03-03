@@ -81,7 +81,11 @@ Species identifiers from the Global Biodiversity Information Facility (GBIF) tax
 
 **data.py** - PyTorch Dataset:
 - `BirdSpeciesDataset`: PyTorch Dataset wrapper with sparse-to-dense conversion
+- `FractionalRandomSampler`: Sampler that draws a deterministic random subset of
+  training indices each epoch (seed `42 + epoch`). Used when `sample_fraction < 1`.
 - `create_dataloaders()`: Creates training and validation DataLoaders
+  - Accepts `sample_fraction` (0–1]; uses `FractionalRandomSampler` when < 1
+  - Val loader always uses all validation samples
 
 **geoutils.py**: Google Earth Engine feature extraction for H3 cells
 **gbifutils.py**: GBIF species occurrence data retrieval

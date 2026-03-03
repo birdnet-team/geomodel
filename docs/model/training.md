@@ -85,8 +85,17 @@ The training script handles the full pipeline automatically:
 |---|---|---|
 | `--test_size` | `0.2` | Test set fraction |
 | `--val_size` | `0.1` | Validation set fraction |
+| `--sample_fraction` | `1.0` | Fraction of training samples per epoch (0–1) |
 
-Splitting is **location-based**: all 49 samples from one H3 cell (48 weeks + 1 yearly) go to the same split, preventing spatial data leakage.
+Splitting is **location-based**: all 49 samples from one H3 cell (48 weeks + 1 yearly) go to the same split, preventing spatial data leakage.  The split uses a fixed random seed (`42`) for reproducibility.
+
+#### Sample fraction
+
+When `--sample_fraction` is less than 1.0, a `FractionalRandomSampler` is used on the **training** DataLoader.  Each epoch draws a fresh random subset of training indices (e.g. `0.25` → 25% of training samples per epoch).  Key properties:
+
+- **Validation and test sets are unaffected** — they always use all samples.
+- **Different subset each epoch** — the model sees different data every epoch, improving coverage over time.
+- **Deterministic** — epoch *e* uses seed `42 + e`, so results are reproducible across runs.
 
 ### Checkpoints
 
