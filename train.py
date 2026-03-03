@@ -619,9 +619,9 @@ def main():
                         help='Species loss function: an (assume-negative, default), bce, or focal')
     parser.add_argument('--focal_alpha', type=float, default=0.25)
     parser.add_argument('--focal_gamma', type=float, default=2.0)
-    parser.add_argument('--pos_lambda', type=float, default=8.0,
-                        help='Positive up-weighting λ for assume-negative loss (default: 8)')
-    parser.add_argument('--neg_samples', type=int, default=128,
+    parser.add_argument('--pos_lambda', type=float, default=2.0,
+                        help='Positive up-weighting λ for assume-negative loss (default: 2)')
+    parser.add_argument('--neg_samples', type=int, default=512,
                         help='Number of negative species to sample per example for AN loss (default: 128, 0=all)')
     parser.add_argument('--label_smoothing', type=float, default=0.0,
                         help='Smooth binary targets to prevent overconfident predictions (default: 0.0, 0=off)')
