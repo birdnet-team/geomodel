@@ -43,7 +43,8 @@ from utils.data import H3DataLoader, H3DataPreprocessor, create_dataloaders, get
 TUNABLE_PARAMS = [
     'lr', 'batch_size', 'pos_lambda', 'neg_samples',
     'label_smoothing', 'weight_decay', 'env_weight', 'lr_T0',
-    'jitter', 'max_obs_per_species', 'no_yearly',
+    'jitter', 'max_obs_per_species', 'no_yearly', 'species_loss',
+    'model_size', 'coord_harmonics', 'week_harmonics',
 ]
 
 # Params that affect data preprocessing — when tuned, data is re-processed per trial
@@ -365,9 +366,9 @@ def _suggest_param(trial, name: str, args):
     if name == 'batch_size':
         return trial.suggest_categorical('batch_size', [128, 256, 512, 1024])
     if name == 'pos_lambda':
-        return trial.suggest_float('pos_lambda', 2.0, 64.0, log=True)
+        return trial.suggest_float('pos_lambda', 1.0, 64.0, log=True)
     if name == 'neg_samples':
-        return trial.suggest_categorical('neg_samples', [128, 256, 512, 1024, 2048])
+        return trial.suggest_categorical('neg_samples', [128, 256, 512, 1024, 2048, 4096])
     if name == 'label_smoothing':
         return trial.suggest_float('label_smoothing', 0.0, 0.1)
     if name == 'weight_decay':
@@ -375,13 +376,21 @@ def _suggest_param(trial, name: str, args):
     if name == 'env_weight':
         return trial.suggest_float('env_weight', 0.01, 1.0, log=True)
     if name == 'lr_T0':
-        return trial.suggest_categorical('lr_T0', [5, 10, 20])
+        return trial.suggest_categorical('lr_T0', [1, 5, 10, 20])
     if name == 'jitter':
         return trial.suggest_categorical('jitter', [True, False])
     if name == 'max_obs_per_species':
         return trial.suggest_categorical('max_obs_per_species', [0, 500, 1000, 2000, 5000])
     if name == 'no_yearly':
         return trial.suggest_categorical('no_yearly', [True, False])
+    if name == 'species_loss':
+        return trial.suggest_categorical('species_loss', ['an', 'bce', 'focal'])
+    if name == 'model_size':
+        return trial.suggest_categorical('model_size', ['small', 'medium', 'large'])
+    if name == 'coord_harmonics':
+        return trial.suggest_int('coord_harmonics', 2, 8)
+    if name == 'week_harmonics':
+        return trial.suggest_int('week_harmonics', 2, 8)
     raise ValueError(f"Unknown tunable param: {name}")
 
 
@@ -458,13 +467,22 @@ def run_autotune(args, device: torch.device):
 
     # -- Objective --------------------------------------------------------
     def objective(trial: 'optuna.Trial') -> float:
-        # Resolve each param: suggest if tuning, else use CLI default
+        # Resolve each param: suggest if tuning, else use CLI default.
+        # Resolve species_loss first — pos_lambda and neg_samples are only
+        # relevant for the assume-negative loss and should not be tuned
+        # (or suggested to Optuna) when a different loss is selected.
         p = {}
         for name in TUNABLE_PARAMS:
             if name in tune_params:
                 p[name] = _suggest_param(trial, name, args)
             else:
                 p[name] = getattr(args, name)
+
+        loss_type = str(p.get('species_loss', args.species_loss))
+        if loss_type != 'an':
+            # AN-specific params: use defaults, don't let Optuna vary them
+            p['pos_lambda'] = args.pos_lambda
+            p['neg_samples'] = args.neg_samples
 
         batch_size = int(p['batch_size'])
         use_jitter = bool(p.get('jitter', args.jitter))
@@ -508,15 +526,15 @@ def run_autotune(args, device: torch.device):
         # Fresh model
         model = create_model(
             n_species=n_species, n_env_features=n_env,
-            model_size=args.model_size,
-            coord_harmonics=args.coord_harmonics,
-            week_harmonics=args.week_harmonics,
+            model_size=str(p.get('model_size', args.model_size)),
+            coord_harmonics=int(p.get('coord_harmonics', args.coord_harmonics)),
+            week_harmonics=int(p.get('week_harmonics', args.week_harmonics)),
         )
 
         criterion = MultiTaskLoss(
             species_weight=args.species_weight,
             env_weight=float(p['env_weight']),
-            species_loss=args.species_loss,
+            species_loss=str(p.get('species_loss', args.species_loss)),
             focal_alpha=args.focal_alpha, focal_gamma=args.focal_gamma,
             pos_lambda=float(p['pos_lambda']),
             neg_samples=int(p['neg_samples']),
@@ -581,7 +599,18 @@ def run_autotune(args, device: torch.device):
         study_name='geomodel_autotune',
         pruner=optuna.pruners.MedianPruner(n_startup_trials=5, n_warmup_steps=3),
     )
-    study.optimize(objective, n_trials=n_trials, show_progress_bar=True)
+
+    def _after_trial(study, trial):
+        """Print best params so far after each completed trial."""
+        if trial.state != optuna.trial.TrialState.COMPLETE:
+            return
+        b = study.best_trial
+        parts = [f"{k}={v:.4g}" if isinstance(v, float) else f"{k}={v}"
+                 for k, v in b.params.items()]
+        print(f"  Best so far: mAP={b.value:.4f} (trial {b.number})  {', '.join(parts)}")
+
+    study.optimize(objective, n_trials=n_trials, show_progress_bar=True,
+                   callbacks=[_after_trial])
 
     # -- Report -----------------------------------------------------------
     best = study.best_trial
@@ -657,17 +686,17 @@ def main():
     parser.add_argument('--species_weight', type=float, default=1.0)
     parser.add_argument('--env_weight', type=float, default=0.25)
     parser.add_argument('--species_loss', type=str, default='bce', choices=['bce', 'focal', 'an'],
-                        help='Species loss function: an (binary cross-entropy, default), bce, or focal')
+                        help='Species loss function: an (cross-entropy, default), bce, or focal')
     parser.add_argument('--focal_alpha', type=float, default=0.25)
     parser.add_argument('--focal_gamma', type=float, default=2.0)
     parser.add_argument('--pos_lambda', type=float, default=8.0,
-                        help='Positive up-weighting λ for assume-negative loss (default: 2)')
+                        help='Positive up-weighting λ for assume-negative loss (default: 8)')
     parser.add_argument('--neg_samples', type=int, default=1024,
-                        help='Number of negative species to sample per example for AN loss (default: 128, 0=all)')
-    parser.add_argument('--label_smoothing', type=float, default=0.0,
-                        help='Smooth binary targets to prevent overconfident predictions (default: 0.0, 0=off)')
-    parser.add_argument('--max_obs_per_species', type=int, default=0,
-                        help='Cap observations per species to reduce common-species dominance (default: 0, 0=no cap)')
+                        help='Number of negative species to sample per example for AN loss (default: 1024, 0=all)')
+    parser.add_argument('--label_smoothing', type=float, default=0.01,
+                        help='Smooth binary targets to prevent overconfident predictions (default: 0.01, 0=off)')
+    parser.add_argument('--max_obs_per_species', type=int, default=5000,
+                        help='Cap observations per species to reduce common-species dominance (default: 5000, 0=no cap)')
     parser.add_argument('--ocean_sample_rate', type=float, default=0.1,
                         help='Fraction of ocean cells (water_fraction > 0.9) to keep (default: 0.1, 1.0=keep all)')
     parser.add_argument('--no_yearly', action='store_true',
@@ -713,8 +742,8 @@ def main():
                         help='Run hyperparameter search. Without args: tune all. '
                              'With args: tune only the listed params. '
                              f'Available: {", ".join(TUNABLE_PARAMS)}')
-    parser.add_argument('--autotune_trials', type=int, default=20,
-                        help='Number of Optuna trials (default: 20)')
+    parser.add_argument('--autotune_trials', type=int, default=50,
+                        help='Number of Optuna trials (default: 50)')
     parser.add_argument('--autotune_epochs', type=int, default=10,
                         help='Epochs per trial (default: 10)')
 

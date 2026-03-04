@@ -5,7 +5,11 @@ records into a clean CSV suitable for downstream H3 aggregation.
 """
 
 import ast
+import gzip
+import io
 import logging
+import multiprocessing as mp
+import os
 import zipfile
 import numpy as np
 import pandas as pd
@@ -17,6 +21,9 @@ OUTPUT_COLUMNS = ['latitude', 'longitude', 'taxonKey', 'verbatimScientificName',
 
 # Required source columns (must all be non-null)
 REQUIRED_COLUMNS = ['decimalLatitude', 'decimalLongitude', 'day', 'month', 'taxonKey', 'verbatimScientificName', 'class']
+
+# Block size for parallel reading (64 MB of uncompressed text per block)
+_BLOCK_SIZE = 64 * 1024 * 1024
 
 
 def date_to_week(day, month):
@@ -104,65 +111,168 @@ def load_taxonomy(taxonomy_path):
     return valid_names, common_names
 
 
-def process_gbif_file(gbif_zip_path, file, output_csv_path, valid_classes=None, taxonomy_path=None, max_rows=None):
-    """
-    Process a GBIF Darwin Core Archive zip, filter and transform records,
-    and write the result to a (optionally gzipped) CSV.
+def _read_blocks(stream, block_size):
+    """Yield byte blocks from *stream*, each ending on a newline boundary."""
+    remainder = b''
+    while True:
+        raw = stream.read(block_size)
+        if not raw:
+            if remainder:
+                yield remainder
+            break
+        data = remainder + raw
+        last_nl = data.rfind(b'\n')
+        if last_nl == -1:
+            remainder = data
+            continue
+        yield data[:last_nl + 1]
+        remainder = data[last_nl + 1:]
 
-    If taxonomy_path is provided, only species listed in the taxonomy are kept.
-    """
-    # Write CSV header
-    pd.DataFrame(columns=OUTPUT_COLUMNS).to_csv(output_csv_path, index=False, encoding='utf-8')
 
-    valid_classes_set = set(valid_classes) if valid_classes else None
+# ---------------------------------------------------------------------------
+# Worker pool helpers  (module-level for pickling)
+# ---------------------------------------------------------------------------
+
+_wctx: dict = {}
+
+
+def _init_worker(header_bytes, valid_species_list, valid_classes_list, common_names_dict):
+    """Populate per-worker read-only state (called once per pool process)."""
+    _wctx['header'] = header_bytes
+    _wctx['valid_species'] = set(valid_species_list) if valid_species_list else None
+    _wctx['valid_classes'] = set(valid_classes_list) if valid_classes_list else None
+    _wctx['common_names'] = dict(common_names_dict) if common_names_dict else {}
+
+
+def _filter_block(block_bytes):
+    """Parse a raw TSV byte block, filter rows, return (csv_str, n_rows, block_len)."""
+    header = _wctx['header']
+    valid_species = _wctx['valid_species']
+    valid_classes_set = _wctx['valid_classes']
+    common_names = _wctx['common_names']
+
+    block_len = len(block_bytes)
+
+    data = header + b'\n' + block_bytes
+    try:
+        chunk = pd.read_csv(io.BytesIO(data), sep='\t', dtype=str,
+                            usecols=REQUIRED_COLUMNS, on_bad_lines='skip')
+    except Exception:
+        return '', 0, block_len
+
+    n_rows = len(chunk)
+
+    chunk = chunk.dropna(subset=REQUIRED_COLUMNS)
+
+    # Filter to species in taxonomy (most selective — do first)
+    if valid_species is not None and not chunk.empty:
+        chunk = chunk[chunk['verbatimScientificName'].isin(valid_species)]
+
+    # Filter to valid taxonomic classes
+    if valid_classes_set and not chunk.empty:
+        chunk = chunk[chunk['class'].str.lower().isin(valid_classes_set)]
+
+    # Keep only full species (exactly one space → binomial name)
+    if not chunk.empty:
+        chunk = chunk[chunk['verbatimScientificName'].str.count(' ') == 1]
+
+    if not chunk.empty:
+        lat = pd.to_numeric(chunk['decimalLatitude'], errors='coerce')
+        lon = pd.to_numeric(chunk['decimalLongitude'], errors='coerce')
+        valid_coords = lat.notna() & lon.notna()
+        chunk = chunk.loc[valid_coords].copy()
+        chunk['latitude'] = lat[valid_coords].round(3)
+        chunk['longitude'] = lon[valid_coords].round(3)
+
+    if not chunk.empty:
+        chunk['week'] = date_to_week(chunk['day'], chunk['month'])
+        chunk['commonName'] = chunk['verbatimScientificName'].map(
+            lambda n: common_names.get(n, n)
+        )
+        return chunk[OUTPUT_COLUMNS].to_csv(index=False, header=False), n_rows, block_len
+
+    return '', n_rows, block_len
+
+
+# ---------------------------------------------------------------------------
+# Main processing entry point
+# ---------------------------------------------------------------------------
+
+def process_gbif_file(gbif_zip_path, file, output_csv_path, valid_classes=None,
+                      taxonomy_path=None, max_rows=None, n_workers=None):
+    """Process a GBIF Darwin Core Archive zip using parallel workers.
+
+    Reads raw byte blocks from the zip sequentially, then distributes
+    parsing and filtering across *n_workers* processes.
+
+    Args:
+        gbif_zip_path (str): Path to the GBIF Darwin Core Archive zip file.
+        file (str): Name of the CSV/TSV file inside the zip.
+        output_csv_path (str): Output path for the processed CSV.
+        valid_classes (list[str] | None): List of taxonomic classes to keep.
+        taxonomy_path (str | None): Path to taxonomy CSV for filtering.
+        max_rows (int | None): Maximum number of rows to process.
+        n_workers (int | None): Number of parallel worker processes.
+            Default: ``min(cpu_count - 1, 8)``.
+    """
+    if n_workers is None:
+        n_workers = min(max(1, os.cpu_count() - 1), 8)
+
+    valid_classes_list = [c.lower() for c in valid_classes] if valid_classes else None
     if taxonomy_path:
         valid_species, common_names = load_taxonomy(taxonomy_path)
     else:
         valid_species, common_names = None, {}
-    rows_processed = 0
+
+    use_gzip = str(output_csv_path).endswith('.gz')
 
     with zipfile.ZipFile(gbif_zip_path, 'r') as z:
-        estimated_rows = estimate_rows(z, file)
+        file_size = z.getinfo(file).file_size
+
         with z.open(file) as f:
-            with tqdm(total=estimated_rows, desc="Processing GBIF data") as pbar:
-                for chunk in pd.read_csv(f, sep='\t', chunksize=100000, on_bad_lines='warn',
-                                        usecols=REQUIRED_COLUMNS):
-                    chunk_size = len(chunk)
+            header_line = f.readline().rstrip(b'\n\r')
 
-                    # Drop rows missing any required field
-                    chunk = chunk.dropna(subset=REQUIRED_COLUMNS)
+            # Open output stream
+            if use_gzip:
+                out = gzip.open(output_csv_path, 'wt', encoding='utf-8', compresslevel=6)
+            else:
+                out = open(output_csv_path, 'w', encoding='utf-8')
+            out.write(','.join(OUTPUT_COLUMNS) + '\n')
 
-                    # Filter to valid taxonomic classes
-                    if valid_classes_set and not chunk.empty:
-                        chunk = chunk[chunk['class'].str.lower().isin(valid_classes_set)]
+            init_args = (
+                header_line,
+                list(valid_species) if valid_species else None,
+                valid_classes_list,
+                common_names,
+            )
 
-                    # Keep only full species (2 word names, skip subspecies / higher taxa)
-                    if not chunk.empty:
-                        chunk = chunk[chunk['verbatimScientificName'].str.split().str.len() == 2]
+            total_rows = 0
+            rows_written = 0
 
-                    # Filter to species in taxonomy
-                    if valid_species is not None and not chunk.empty:
-                        chunk = chunk[chunk['verbatimScientificName'].isin(valid_species)]
+            try:
+                with mp.Pool(n_workers, initializer=_init_worker,
+                             initargs=init_args) as pool:
+                    blocks = _read_blocks(f, _BLOCK_SIZE)
+                    results = pool.imap(_filter_block, blocks, chunksize=1)
 
-                    if not chunk.empty:
-                        chunk = chunk.copy()
-                        chunk['latitude'] = chunk['decimalLatitude'].astype(float).round(3)
-                        chunk['longitude'] = chunk['decimalLongitude'].astype(float).round(3)
-                        chunk = chunk.dropna(subset=['latitude', 'longitude'])
+                    with tqdm(total=file_size,
+                              desc=f"Processing GBIF ({n_workers} workers)",
+                              unit='B', unit_scale=True) as pbar:
+                        for csv_str, n_rows, block_len in results:
+                            if csv_str:
+                                out.write(csv_str)
+                                rows_written += csv_str.count('\n')
+                            total_rows += n_rows
+                            pbar.update(block_len)
 
-                    if not chunk.empty:
-                        chunk['week'] = date_to_week(chunk['day'], chunk['month'])
-                        chunk['commonName'] = chunk['verbatimScientificName'].map(
-                            lambda n: common_names.get(n, n)
-                        )
-                        chunk[OUTPUT_COLUMNS].to_csv(
-                            output_csv_path, mode='a', header=False, index=False, encoding='utf-8'
-                        )
+                            if max_rows and total_rows >= max_rows:
+                                pool.terminate()
+                                break
+            finally:
+                out.close()
 
-                    pbar.update(chunk_size)
-                    rows_processed += chunk_size
-                    if max_rows is not None and rows_processed >= max_rows:
-                        break
+    logging.info(f"Processed {total_rows:,} rows, wrote {rows_written:,} records "
+                 f"to {output_csv_path}")
 
 
 if __name__ == '__main__':
@@ -178,6 +288,8 @@ if __name__ == '__main__':
     parser.add_argument('--taxonomy', type=str, default=None,
                         help='Path to taxonomy CSV — only species in the taxonomy are kept')
     parser.add_argument('--max_rows', type=int, default=None, help='Maximum number of rows to process (for testing)')
+    parser.add_argument('--workers', type=int, default=None,
+                        help='Number of parallel workers (default: min(cpu_count-1, 8))')
     args = parser.parse_args()
 
     process_gbif_file(
@@ -185,4 +297,5 @@ if __name__ == '__main__':
         valid_classes=[cls.lower() for cls in args.valid_classes],
         taxonomy_path=args.taxonomy,
         max_rows=args.max_rows,
+        n_workers=args.workers,
     )

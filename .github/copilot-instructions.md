@@ -93,7 +93,7 @@ Species identifiers from the Global Biodiversity Information Facility (GBIF) tax
   - Val loader always uses all validation samples
 
 **geoutils.py**: Google Earth Engine feature extraction for H3 cells
-**gbifutils.py**: GBIF species occurrence data retrieval
+**gbifutils.py**: GBIF species occurrence data retrieval (parallel processing with multiprocessing pool)
 **combine.py**: Merges Earth Engine features with GBIF observations into a single parquet
 
 ### Model Architecture (`model/`)
@@ -167,7 +167,7 @@ Species identifiers from the Global Biodiversity Information Facility (GBIF) tax
 - Progress tracking with tqdm
 - GPU/CPU support with automatic device selection
 - Optuna-based hyperparameter autotune (`--autotune`)
-  - Tunes: lr, batch_size, pos_lambda, neg_samples, label_smoothing, weight_decay, env_weight, lr_T0, jitter, max_obs_per_species, no_yearly
+  - Tunes: lr, batch_size, pos_lambda, neg_samples, label_smoothing, weight_decay, env_weight, lr_T0, jitter, max_obs_per_species, no_yearly, species_loss, model_size, coord_harmonics, week_harmonics
   - Bayesian optimization with TPE sampler and MedianPruner
   - `--autotune_trials` (default 20), `--autotune_epochs` (default 15)
   - Results saved to `checkpoints/autotune/autotune_results.json`

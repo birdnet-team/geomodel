@@ -273,6 +273,10 @@ python train.py --data_path data.parquet --autotune lr pos_lambda    # tune spec
 | `jitter` | {true, false} |
 | `max_obs_per_species` | {0, 500, 1000, 2000, 5000} |
 | `no_yearly` | {true, false} |
+| `species_loss` | {an, bce, focal} |
+| `model_size` | {small, medium, large} |
+| `coord_harmonics` | 2 → 8 (integer) |
+| `week_harmonics` | 2 → 8 (integer) |
 
 !!! note "Data-affecting parameters"
     When `max_obs_per_species` or `no_yearly` are included in the tuning set, data is re-preprocessed each trial.  This is slower but necessary because these parameters change the training samples.
