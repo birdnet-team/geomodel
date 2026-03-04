@@ -74,9 +74,9 @@ See the [documentation](https://birdnet-team.github.io/geomodel/) for detailed u
 A multi-task neural network that learns spatial-temporal patterns from coordinates alone:
 
 - **Input:** Raw (lat, lon, week) — circular encoding is handled inside the model
-- **Primary task:** Multi-label species classification (assume-negative loss)
+- **Primary task:** Multi-label species classification (asymmetric loss)
 - **Auxiliary task:** Environmental feature regression (training only, acts as regularizer)
-- **Sizes:** small (~860K), medium (~3.5M), large (~21.5M) parameters
+- **Scalable:** ~1.5M (scale=0.5) to ~47M (scale=2.0) parameters (default scale=1.0 ≈ 7M)
 
 ## Visualization
 

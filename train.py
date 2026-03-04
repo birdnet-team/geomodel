@@ -23,6 +23,7 @@ Usage:
 import argparse
 import csv
 import json
+import os
 from pathlib import Path
 from typing import Dict, Optional
 
@@ -33,7 +34,7 @@ from tqdm import tqdm
 
 from model.model import create_model
 from model.loss import MultiTaskLoss
-from utils.data import H3DataLoader, H3DataPreprocessor, create_dataloaders, get_class_weights
+from utils.data import H3DataLoader, H3DataPreprocessor, create_dataloaders
 
 
 # ---------------------------------------------------------------------------
@@ -350,9 +351,6 @@ class Trainer:
         print(f"\nTraining complete \u2014 best mAP: {self.best_val_map:.4f}")
         print(f"Checkpoints: {self.checkpoint_dir}")
 
-
-        print(f"\nTraining complete \u2014 best mAP: {self.best_val_map:.4f}")
-        print(f"Checkpoints: {self.checkpoint_dir}")
 
 
 # ---------------------------------------------------------------------------

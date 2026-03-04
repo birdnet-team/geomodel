@@ -76,14 +76,14 @@ def predict(
         n_species=model_config['n_species'],
         n_env_features=model_config['n_env_features'],
         model_scale=model_config.get('model_scale', 1.0),
-        coord_harmonics=model_config.get('coord_harmonics', 4),
+        coord_harmonics=model_config.get('coord_harmonics', 8),
         week_harmonics=model_config.get('week_harmonics', 4),
     )
     model.load_state_dict(ckpt['model_state_dict'])
     model.to(dev)
     model.eval()
 
-    # Yearly (week 0): average predictions across all 48 weeks
+    # Yearly (week 0): max predictions across all 48 weeks
     if week == 0:
         import numpy as np
         lat_batch = torch.full((48,), lat, dtype=torch.float32, device=dev)

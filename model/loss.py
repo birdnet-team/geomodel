@@ -158,8 +158,8 @@ class AssumeNegativeLoss(nn.Module):
 
     def __init__(
         self,
-        pos_lambda: float = 32.0,
-        neg_samples: int = 192,
+        pos_lambda: float = 8.0,
+        neg_samples: int = 1024,
         label_smoothing: float = 0.05,
     ):
         super().__init__()
@@ -252,13 +252,13 @@ class MultiTaskLoss(nn.Module):
     def __init__(
         self,
         species_weight: float = 1.0,
-        env_weight: float = 0.1,
+        env_weight: float = 0.05,
         pos_weight: Optional[torch.Tensor] = None,
         species_loss: str = 'asl',
         focal_alpha: float = 0.25,
         focal_gamma: float = 2.0,
-        pos_lambda: float = 32.0,
-        neg_samples: int = 192,
+        pos_lambda: float = 8.0,
+        neg_samples: int = 1024,
         label_smoothing: float = 0.05,
         asl_gamma_pos: float = 0.0,
         asl_gamma_neg: float = 4.0,

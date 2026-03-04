@@ -65,11 +65,11 @@ $$
 \text{encode}(\theta) = [\sin(\theta), \cos(\theta), \sin(2\theta), \cos(2\theta), \ldots, \sin(n\theta), \cos(n\theta)]
 $$
 
-- **Latitude**: degrees → radians, then encoded with `coord_harmonics` harmonics (default 4 → 8 features)
-- **Longitude**: same as latitude (8 features)
+- **Latitude**: degrees → radians, then encoded with `coord_harmonics` harmonics (default 8 → 16 features)
+- **Longitude**: same as latitude (16 features)
 - **Week**: mapped to $[0, 2\pi)$ over 48 weeks, then encoded with `week_harmonics` harmonics (default 4 → 8 features)
 
-Spatial input features: $2 \times 2 \times \text{coord\_harmonics}$ = 16 by default.  Week features (8) are used for FiLM conditioning rather than concatenated.
+Spatial input features: $2 \times 2 \times \text{coord\_harmonics}$ = 32 by default.  Week features (8) are used for FiLM conditioning rather than concatenated.
 
 Year-round predictions (week 0) are computed at inference time as the **max** across all 48 weekly predictions — no special week-0 encoding is needed.
 
@@ -122,11 +122,11 @@ The "+ species" part scales with the number of species in the vocabulary (bottle
 
 | Parameter | Default | Effect |
 |---|---|---|
-| `--coord_harmonics` | 4 | Higher values capture finer spatial patterns (more harmonics) |
+| `--coord_harmonics` | 8 | Higher values capture finer spatial patterns (more harmonics) |
 | `--week_harmonics` | 4 | Higher values capture sharper weekly transitions |
 
 !!! tip "Choosing harmonics"
-    The default values (4 coordinate, 4 week) work well for global models. Higher harmonics add capacity for finer-grained patterns but increase input dimensionality and risk overfitting on small datasets.
+    The default values (8 coordinate, 4 week) work well for global models. Higher harmonics add capacity for finer-grained patterns but increase input dimensionality and risk overfitting on small datasets.
 
 ## References
 

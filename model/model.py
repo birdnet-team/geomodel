@@ -450,7 +450,7 @@ def create_model(
     n_species: int,
     n_env_features: int,
     model_scale: float = 1.0,
-    coord_harmonics: int = 4,
+    coord_harmonics: int = 8,
     week_harmonics: int = 4,
 ) -> BirdNETGeoModel:
     """Create model with a continuous size scaling factor.

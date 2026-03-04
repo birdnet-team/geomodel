@@ -109,7 +109,7 @@ Species identifiers from the Global Biodiversity Information Facility (GBIF) tax
    - LayerNorm → GELU → Linear → LayerNorm → GELU → Dropout → Linear + skip connection
 
 3. **SpatioTemporalEncoder**: Shared encoder with FiLM temporal conditioning
-   - Spatial: lat→8, lon→8 = 16 features → Linear projection to embed_dim
+   - Spatial: lat→16, lon→16 = 32 features → Linear projection to embed_dim
    - Temporal: week→8 features → per-block FiLM generators produce (γ, β)
    - Residual blocks modulated by FiLM: block(x) * γ + β
    - Output: embed_dim-dimensional embedding (default 512)
@@ -121,7 +121,7 @@ Species identifiers from the Global Biodiversity Information Facility (GBIF) tax
 
 5. **EnvironmentalPredictionHead**: Regression head (auxiliary task)
    - Residual blocks + linear output
-   - Default: 512 → residual blocks × 1 → n_env_features
+   - Default: 256 → residual blocks × 1 → n_env_features
    - Output: Predicted environmental feature values (training only)
 
 6. **BirdNETGeoModel**: Complete multi-task model
@@ -206,13 +206,13 @@ the PyTorch reference model.  Default format is ONNX FP16.
 3. Build species vocabulary → Multi-label sparse encoding
 4. Downsample ocean cells (default: keep 10% of cells with water_fraction > 0.9)
 5. Cap observations per species (if configured) → Reduce common-species dominance
-5. Normalize environmental features → Auxiliary targets
-6. Split by location → Train/Val/Test sets
-7. Create PyTorch DataLoaders → Batched sampling
+6. Normalize environmental features → Auxiliary targets
+7. Split by location → Train/Val/Test sets
+8. Create PyTorch DataLoaders → Batched sampling
    - `--jitter` adds Gaussian noise to training lat/lon (scale from H3 cell size)
 8. Training loop:
    - Forward pass: raw (lat, lon, week) → spatial encoding + FiLM temporal conditioning → (species_logits, env_pred)
-   - Compute multi-task loss (AN + MSE)
+   - Compute multi-task loss (ASL + MSE)
    - Backward pass with AMP and gradient clipping
    - Update model parameters
 9. Save checkpoints periodically and when validation improves
@@ -248,7 +248,6 @@ geomodel/
 │   ├── plot_variable_importance.py  # Feature importance analysis
 │   └── plot_environmental.py   # Environmental feature visualization
 ├── docs/                       # MkDocs documentation
-├── dev/                        # Development/debug scripts
 ├── checkpoints/                # Saved model checkpoints
 └── outputs/                    # Generated data and plots
 ```

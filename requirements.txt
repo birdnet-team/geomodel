@@ -10,14 +10,14 @@ tqdm
 
 # Deep learning
 torch
-torchvision
-torchaudio
 
 # Visualization
 matplotlib
 cartopy
 Pillow
-global-land-mask
+
+# Analysis (optional — only for scripts/)
+scipy
 
 # Data collection (optional — only for building datasets)
 earthengine-api

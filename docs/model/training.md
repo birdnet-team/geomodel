@@ -139,7 +139,7 @@ $$
 
 Enable with `--species_loss focal`. Tune `--focal_alpha` and `--focal_gamma` as needed.
 
-### Assume-Negative Loss (Default)
+### Assume-Negative Loss
 
 For presence-only data (like GBIF observations), species not appearing in a
 checklist may still be present — they were simply not observed.  Standard BCE
@@ -164,25 +164,21 @@ $$
 where $P$ is the set of positive species, $N_M$ is a random sample of $M$
 assumed-negative species, and $\lambda$ controls positive up-weighting.
 
-This is the default loss. To tune parameters:
+Enable with `--species_loss an`:
 
 ```bash
 python train.py \
     --species_loss an \
-    --pos_lambda 16 \
-    --neg_samples 512 \
-    --label_smoothing 0.01
+    --pos_lambda 8 \
+    --neg_samples 1024 \
+    --label_smoothing 0.05
 ```
-
-**Recommended settings for ~13,000 species:**
 
 | Parameter | Default | Notes |
 |---|---|---|
-| `--pos_lambda` | 16 | Balances positive/negative gradient; increase if recall too low |
-| `--neg_samples` | 512 | 0 = use all negatives (exact but slow); 512 works well for 13K species |
-| `--label_smoothing` | 0.01 | Prevents overconfident predictions; set 0 to disable |
-| `--max_obs_per_species` | 0 | Cap observations per species; 0 = no cap |
-| `--ocean_sample_rate` | 0.1 | Downsample high-water cells; 1.0 = keep all |
+| `--pos_lambda` | `8` | Balances positive/negative gradient; increase if recall too low |
+| `--neg_samples` | `1024` | 0 = use all negatives (exact but slow) |
+| `--label_smoothing` | `0.05` | Prevents overconfident predictions; set 0 to disable |
 
 ### Observation Cap
 
@@ -270,12 +266,12 @@ python train.py --data_path data.parquet --autotune lr pos_lambda    # tune spec
 |---|---|
 | `lr` | 1e-4 → 1e-2 (log scale) |
 | `batch_size` | {128, 256, 512, 1024} |
-| `pos_lambda` | 2 → 64 (log scale) |
-| `neg_samples` | {128, 256, 512, 1024, 2048} |
+| `pos_lambda` | 1.0 → 64 (log scale) |
+| `neg_samples` | {128, 256, 512, 1024, 2048, 4096} |
 | `label_smoothing` | 0 → 0.1 |
 | `weight_decay` | 1e-5 → 1e-2 (log scale) |
 | `env_weight` | 0.01 → 1.0 (log scale) |
-| `lr_T0` | {5, 10, 20} |
+| `lr_T0` | {1, 5, 10, 20} |
 | `jitter` | {true, false} |
 | `max_obs_per_species` | {0, 500, 1000, 2000, 5000} |
 | `no_yearly` | {true, false} |

@@ -127,7 +127,7 @@ def load_model_and_labels(checkpoint_path: str, device: torch.device):
         n_species=model_config['n_species'],
         n_env_features=model_config['n_env_features'],
         model_scale=model_config.get('model_scale', 1.0),
-        coord_harmonics=model_config.get('coord_harmonics', 4),
+        coord_harmonics=model_config.get('coord_harmonics', 8),
         week_harmonics=model_config.get('week_harmonics', 4),
     )
     model.load_state_dict(ckpt['model_state_dict'])
@@ -295,8 +295,8 @@ def plot_range_map(
 # ---------------------------------------------------------------------------
 
 MONTH_STARTS = {
-    1: "Jan", 5: "Feb", 9: "Mar", 13: "Apr", 17: "May", 22: "Jun",
-    26: "Jul", 31: "Aug", 35: "Sep", 39: "Oct", 44: "Nov", 48: "Dec",
+    1: "Jan", 5: "Feb", 9: "Mar", 13: "Apr", 17: "May", 21: "Jun",
+    25: "Jul", 29: "Aug", 33: "Sep", 37: "Oct", 41: "Nov", 45: "Dec",
 }
 
 
