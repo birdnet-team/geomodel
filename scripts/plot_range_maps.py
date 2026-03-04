@@ -21,6 +21,9 @@ Usage:
 
     # Custom grid resolution and region:
     python scripts/plot_range_maps.py --species "Barn Swallow" --resolution 2.0 --bounds europe
+
+    # With ground truth overlay from training data:
+    python scripts/plot_range_maps.py --species "Barn Swallow" --data_path outputs/combined.parquet
 """
 
 import argparse
@@ -113,6 +116,45 @@ def _plot_cells(
         lon_edges, lat_edges, prob_grid,
         cmap=cmap, norm=norm,
         transform=ccrs.PlateCarree(), zorder=2,
+    )
+
+
+def load_ground_truth_data(data_path: str):
+    """Load ground truth data from training parquet.
+
+    Returns:
+        gt_df: DataFrame with week columns (species lists converted to sets)
+        cell_lats: 1-D array of H3 cell latitudes
+        cell_lons: 1-D array of H3 cell longitudes
+    """
+    import h3
+    import pandas as pd
+
+    df = pd.read_parquet(data_path)
+    coords = np.array([h3.cell_to_latlng(c) for c in df['h3_index'].values])
+    cell_lats = coords[:, 0]
+    cell_lons = coords[:, 1]
+
+    # Convert week columns to sets for fast membership testing
+    for col in [c for c in df.columns if c.startswith('week_')]:
+        df[col] = df[col].apply(
+            lambda x: {int(s) for s in x} if isinstance(x, (list, np.ndarray)) else set()
+        )
+    return df, cell_lats, cell_lons
+
+
+def _plot_gt_cells(ax, gt_df, cell_lats, cell_lons, taxon_key: int, week: int):
+    """Overlay ground truth presence dots (green) on a map axis."""
+    col = f'week_{week}'
+    if col not in gt_df.columns:
+        return
+    mask = gt_df[col].apply(lambda x: taxon_key in x).values
+    if not mask.any():
+        return
+    ax.scatter(
+        cell_lons[mask], cell_lats[mask],
+        s=4, c='#2ca02c', marker='o', alpha=0.6,
+        transform=ccrs.PlateCarree(), zorder=4,
     )
 
 
@@ -229,6 +271,7 @@ def plot_range_map(
     resolution_deg: float,
     bounds: Tuple[float, float, float, float],
     vmax: Optional[float] = None,
+    gt_data=None,
 ):
     """
     Plot a 2×2 grid of range maps for one species across 4 weeks.
@@ -269,11 +312,14 @@ def plot_range_map(
 
         _add_map_features(ax)
         _plot_cells(ax, probs, resolution_deg, bounds, cmap, norm)
+        if gt_data is not None:
+            _plot_gt_cells(ax, *gt_data, taxon_key, week)
 
         ax.set_title(WEEK_LABELS[week], fontsize=12, fontweight='bold')
 
+    gt_note = "\n(● = observed in training data)" if gt_data is not None else ""
     fig.suptitle(
-        f"{com_name} ({sci_name})",
+        f"{com_name} ({sci_name}){gt_note}",
         fontsize=15, fontweight='bold', y=0.98,
     )
 
@@ -320,6 +366,7 @@ def _render_gif_frame(
     bounds: Tuple[float, float, float, float],
     n_cols: int,
     vmax_per_species: List[float],
+    gt_data=None,
 ) -> Image.Image:
     """Render a single GIF frame with gridded species subplots.
 
@@ -369,6 +416,8 @@ def _render_gif_frame(
 
         _add_map_features(ax)
         _plot_cells(ax, sp_probs, resolution_deg, bounds, cmap, norm)
+        if gt_data is not None:
+            _plot_gt_cells(ax, *gt_data, int(sp_info[1]), week)
 
         ax.set_title(f"{com_name}", fontsize=11, fontweight='bold')
 
@@ -377,7 +426,8 @@ def _render_gif_frame(
         row, col = divmod(idx, n_cols)
         axes[row][col].set_visible(False)
 
-    fig.suptitle(_week_label(week), fontsize=16, fontweight='bold', y=0.98)
+    gt_note = "  (● = observed)" if gt_data is not None else ""
+    fig.suptitle(f"{_week_label(week)}{gt_note}", fontsize=16, fontweight='bold', y=0.98)
 
     # Shared colorbar
     norm = mpl.colors.Normalize(vmin=0.0, vmax=global_vmax)
@@ -406,6 +456,7 @@ def _plot_gif(
     outdir: str,
     cols: int,
     fps: int,
+    gt_data=None,
 ):
     """Predict all 48 weeks and assemble an animated GIF."""
     n_species = len(species_list)
@@ -441,6 +492,7 @@ def _plot_gif(
         img = _render_gif_frame(
             lats, lons, all_probs[week], species_list, week,
             resolution_deg, bounds, n_cols, vmax_per_species,
+            gt_data=gt_data,
         )
         frames.append(img)
     print(f"  Rendered all 48 frames.                      ")
@@ -472,6 +524,7 @@ def plot_range_maps(
     gif: bool = False,
     cols: int = 0,
     fps: int = 4,
+    data_path: Optional[str] = None,
 ):
     """Generate species range maps for the given species.
 
@@ -508,9 +561,17 @@ def plot_range_maps(
     # Collect model indices for batched inference
     model_indices = [sp[0] for sp in species_list]
 
+    # Load ground truth if requested
+    gt_data = None
+    if data_path:
+        print("Loading ground truth data...")
+        gt_data = load_ground_truth_data(data_path)
+        print(f"Ground truth: {len(gt_data[0])} H3 cells loaded")
+
     if gif:
         _plot_gif(model, lats, lons, model_indices, species_list,
-                  dev, batch_size, resolution_deg, bounds, outdir, cols, fps)
+                  dev, batch_size, resolution_deg, bounds, outdir, cols, fps,
+                  gt_data=gt_data)
     else:
         # Default mode: predict 4 seasonal weeks, one PNG per species
         probs_by_week = {}
@@ -521,7 +582,8 @@ def plot_range_maps(
 
         for sp_idx, sp_info in enumerate(species_list):
             sp_probs_per_week = {w: probs_by_week[w][:, sp_idx] for w in PLOT_WEEKS}
-            plot_range_map(lats, lons, sp_probs_per_week, sp_info, outdir, resolution_deg, bounds)
+            plot_range_map(lats, lons, sp_probs_per_week, sp_info, outdir, resolution_deg, bounds,
+                           gt_data=gt_data)
 
         print(f"\nDone. {len(species_list)} range maps saved to {outdir}/")
 
@@ -557,6 +619,8 @@ def main():
                         help='Number of columns for the species grid in GIF mode (default: auto)')
     parser.add_argument('--fps', type=int, default=4,
                         help='Frames per second for the GIF (default: 4)')
+    parser.add_argument('--data_path', type=str, default=None,
+                        help='Path to training parquet for ground truth overlay')
     args = parser.parse_args()
 
     bounds = resolve_bounds_arg(args.bounds)
@@ -576,6 +640,7 @@ def main():
         gif=args.gif,
         cols=args.cols,
         fps=args.fps,
+        data_path=args.data_path,
     )
 
 

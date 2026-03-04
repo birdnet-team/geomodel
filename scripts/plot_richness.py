@@ -10,6 +10,7 @@ Usage:
     python scripts/plot_richness.py --week 13 --threshold 0.1 --resolution 2.0
     python scripts/plot_richness.py --bounds europe --resolution 1.0
     python scripts/plot_richness.py --week 1 --threshold 0.2 --outdir outputs/plots
+    python scripts/plot_richness.py --week 26 --data_path outputs/combined.parquet
 """
 
 import argparse
@@ -98,6 +99,33 @@ def count_species_above_threshold(
     return np.concatenate(all_counts, axis=0)
 
 
+def load_ground_truth_richness(data_path: str, week: int):
+    """Load observed species counts per H3 cell for a given week.
+
+    Returns:
+        cell_lats: 1-D array of H3 cell latitudes
+        cell_lons: 1-D array of H3 cell longitudes
+        counts: number of unique species per cell in *week*
+    """
+    import h3
+    import pandas as pd
+
+    df = pd.read_parquet(data_path)
+    coords = np.array([h3.cell_to_latlng(c) for c in df['h3_index'].values])
+    cell_lats = coords[:, 0]
+    cell_lons = coords[:, 1]
+
+    col = f'week_{week}'
+    if col not in df.columns:
+        return cell_lats, cell_lons, np.zeros(len(cell_lats), dtype=int)
+
+    counts = df[col].apply(
+        lambda x: len(x) if isinstance(x, (list, np.ndarray)) else 0
+    ).values.astype(int)
+
+    return cell_lats, cell_lons, counts
+
+
 def plot_richness(
     checkpoint_path: str = 'checkpoints/checkpoint_best.pt',
     week: int = 26,
@@ -107,6 +135,7 @@ def plot_richness(
     outdir: str = 'outputs/plots',
     batch_size: int = 4096,
     device: str = 'auto',
+    data_path: Optional[str] = None,
 ):
     """Generate a species richness map for a single week."""
     if device == 'auto':
@@ -129,25 +158,43 @@ def plot_richness(
     vmax = float(np.percentile(counts[counts > 0], 99)) if (counts > 0).any() else 1.0
     vmax = max(vmax, 1.0)
 
+    # Load ground truth if requested
+    gt_lats, gt_lons, gt_counts = None, None, None
+    if data_path:
+        gt_lats, gt_lons, gt_counts = load_ground_truth_richness(data_path, week)
+        print(f"Ground truth: {len(gt_lats)} H3 cells, "
+              f"max {int(gt_counts.max())} species observed")
+        # Shared vmax across both panels
+        gt_positive = gt_counts[gt_counts > 0]
+        if len(gt_positive) > 0:
+            gt_vmax = float(np.percentile(gt_positive, 99))
+            vmax = max(vmax, gt_vmax)
+
     is_global = bounds == (-180.0, -90.0, 180.0, 90.0)
     proj = ccrs.Robinson() if is_global else ccrs.PlateCarree()
 
     warnings.filterwarnings('ignore', message='facecolor will have no effect', category=UserWarning)
-    fig, ax = plt.subplots(1, 1, figsize=(16, 9), subplot_kw=dict(projection=proj))
+
+    n_panels = 2 if data_path else 1
+    fig_width = 16 if n_panels == 1 else 28
+    fig, axes_arr = plt.subplots(1, n_panels, figsize=(fig_width, 9),
+                                  subplot_kw=dict(projection=proj))
+    if n_panels == 1:
+        axes_arr = [axes_arr]
 
     norm = mpl.colors.Normalize(vmin=0, vmax=vmax)
     cmap = plt.cm.viridis.copy()
 
+    # --- Predicted panel ---
+    ax = axes_arr[0]
     if is_global:
         ax.set_global()
     else:
         ax.set_extent([bounds[0], bounds[2], bounds[1], bounds[3]], crs=ccrs.PlateCarree())
 
-    # Background features
     ax.add_feature(cfeature.OCEAN, facecolor='#e6f0f7', zorder=0)
     ax.add_feature(cfeature.LAND, facecolor='#f5f5f5', edgecolor='none', zorder=0)
 
-    # Filled grid cells via pcolormesh (gap-free)
     lon_min_b, lat_min_b, lon_max_b, lat_max_b = bounds
     n_lons = len(np.arange(lon_min_b + resolution_deg / 2, lon_max_b, resolution_deg))
     n_lats = len(np.arange(lat_min_b + resolution_deg / 2, lat_max_b, resolution_deg))
@@ -160,18 +207,43 @@ def plot_richness(
         transform=ccrs.PlateCarree(), zorder=2,
     )
 
-    # Continent outlines on top of data
     ax.add_feature(cfeature.COASTLINE, linewidth=0.5, color='#888888', zorder=3)
     ax.add_feature(cfeature.BORDERS, linewidth=0.2, color='#bbbbbb', zorder=3)
+    if data_path:
+        ax.set_title(f"Predicted (threshold \u2265 {threshold})", fontsize=13, fontweight='bold')
 
+    # --- Observed panel ---
+    if gt_lats is not None:
+        ax_gt = axes_arr[1]
+        if is_global:
+            ax_gt.set_global()
+        else:
+            ax_gt.set_extent([bounds[0], bounds[2], bounds[1], bounds[3]], crs=ccrs.PlateCarree())
+
+        ax_gt.add_feature(cfeature.OCEAN, facecolor='#e6f0f7', zorder=0)
+        ax_gt.add_feature(cfeature.LAND, facecolor='#f5f5f5', edgecolor='none', zorder=0)
+
+        gt_mask = gt_counts > 0
+        if gt_mask.any():
+            ax_gt.scatter(
+                gt_lons[gt_mask], gt_lats[gt_mask], c=gt_counts[gt_mask],
+                s=3, cmap=cmap, norm=norm,
+                transform=ccrs.PlateCarree(), zorder=2,
+            )
+
+        ax_gt.add_feature(cfeature.COASTLINE, linewidth=0.5, color='#888888', zorder=3)
+        ax_gt.add_feature(cfeature.BORDERS, linewidth=0.2, color='#bbbbbb', zorder=3)
+        ax_gt.set_title("Observed (training data)", fontsize=13, fontweight='bold')
+
+    title_prefix = "Species richness" if data_path else "Predicted species richness"
     fig.suptitle(
-        f"Predicted species richness — week {week} (threshold ≥ {threshold})",
+        f"{title_prefix} \u2014 week {week} (threshold \u2265 {threshold})",
         fontsize=15, fontweight='bold', y=0.98,
     )
 
     sm = plt.cm.ScalarMappable(norm=norm, cmap=cmap)
-    cbar = fig.colorbar(sm, ax=ax, orientation='horizontal', fraction=0.04, pad=0.06, shrink=0.6)
-    cbar.set_label('Number of species above threshold', fontsize=11)
+    cbar = fig.colorbar(sm, ax=axes_arr, orientation='horizontal', fraction=0.04, pad=0.06, shrink=0.6)
+    cbar.set_label('Number of species', fontsize=11)
 
     os.makedirs(outdir, exist_ok=True)
     out_path = os.path.join(outdir, f"richness_w{week}_t{threshold}.png")
@@ -205,6 +277,8 @@ def main():
     parser.add_argument('--batch_size', type=int, default=4096,
                         help='Batch size for inference')
     parser.add_argument('--device', type=str, default='auto', choices=['auto', 'cuda', 'cpu'])
+    parser.add_argument('--data_path', type=str, default=None,
+                        help='Path to training parquet for ground truth side-by-side')
     args = parser.parse_args()
 
     bounds = resolve_bounds_arg(args.bounds)
@@ -221,6 +295,7 @@ def main():
         outdir=args.outdir,
         batch_size=args.batch_size,
         device=args.device,
+        data_path=args.data_path,
     )
 
 

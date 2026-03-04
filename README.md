@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="birdnet-logo-circle.png" width="150" alt="BirdNET Logo">
+  <img src="birdnet-logo-circle.png" width="250" alt="BirdNET Logo">
 </p>
 
 <h1 align="center">BirdNET Geomodel</h1>

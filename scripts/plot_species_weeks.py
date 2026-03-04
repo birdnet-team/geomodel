@@ -11,13 +11,14 @@ Usage:
     python scripts/plot_species_weeks.py --lat 50.83 --lon 12.92 --outdir outputs/plots
     python scripts/plot_species_weeks.py --lat 50.83 --lon 12.92 --species "Common Swift" "Great Tit"
     python scripts/plot_species_weeks.py --lat 50.83 --lon 12.92 --species "Common Swift" "Great Tit" --combine
+    python scripts/plot_species_weeks.py --lat 50.83 --lon 12.92 --data_path outputs/combined.parquet
 """
 
 import argparse
 import os
 import sys
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -106,6 +107,60 @@ def resolve_species_by_name(
     return results
 
 
+def load_ground_truth(data_path: str, lat: float, lon: float) -> Dict[int, Set[int]]:
+    """Load ground truth species observations for the H3 cell at (lat, lon).
+
+    Returns:
+        gt_by_week: dict mapping week (1–48) → set of taxonKeys observed.
+        Empty dict if the cell is not found in the data.
+    """
+    import h3
+    import pandas as pd
+
+    df = pd.read_parquet(data_path)
+    resolution = h3.get_resolution(df['h3_index'].iloc[0])
+    target_cell = h3.latlng_to_cell(lat, lon, resolution)
+
+    cell_data = df[df['h3_index'] == target_cell]
+    if cell_data.empty:
+        print(f"Warning: H3 cell {target_cell} (res {resolution}) at "
+              f"lat={lat}, lon={lon} not found in training data")
+        return {}
+
+    row = cell_data.iloc[0]
+    gt: Dict[int, Set[int]] = {}
+    for w in range(1, NUM_WEEKS + 1):
+        col = f'week_{w}'
+        if col in df.columns:
+            species = row[col]
+            if isinstance(species, (list, np.ndarray)):
+                gt[w] = {int(s) for s in species}
+            else:
+                gt[w] = set()
+        else:
+            gt[w] = set()
+    return gt
+
+
+def _add_gt_markers(
+    ax, taxon_key: int, gt_by_week: Dict[int, Set[int]],
+    weeks: np.ndarray, yearly_x: float,
+):
+    """Overlay ground truth presence markers (green ◆) on a species subplot."""
+    if not gt_by_week:
+        return
+    present_weeks = [w for w in weeks if taxon_key in gt_by_week.get(int(w), set())]
+    yearly_present = any(
+        taxon_key in gt_by_week.get(w, set()) for w in range(1, NUM_WEEKS + 1)
+    )
+    xs = list(present_weeks)
+    if yearly_present:
+        xs.append(yearly_x)
+    if xs:
+        ax.scatter(xs, [0.97] * len(xs), marker='D', color='#2ca02c',
+                   s=18, zorder=5, clip_on=False)
+
+
 def plot_species_weeks(
     lat: float,
     lon: float,
@@ -116,9 +171,18 @@ def plot_species_weeks(
     device: str = 'auto',
     species_names: Optional[List[str]] = None,
     combine: bool = False,
+    data_path: Optional[str] = None,
 ):
     """Generate per-species bar charts of probability across 48 weeks."""
     idx_to_species, labels, probs = predict_all_weeks(checkpoint_path, lat, lon, device)
+
+    # Load ground truth if data_path is provided
+    gt_by_week: Dict[int, Set[int]] = {}
+    if data_path:
+        gt_by_week = load_ground_truth(data_path, lat, lon)
+        if gt_by_week:
+            total_obs = sum(len(s) for s in gt_by_week.values())
+            print(f"Ground truth: {total_obs} species-week observations loaded")
 
     # probs shape: (48, n_species) — rows 0–47 = weeks 1–48
     weekly_probs = probs                          # (48, n_species)
@@ -196,6 +260,8 @@ def plot_species_weeks(
             ax.bar(yearly_x, sp['yearly_prob'], width=1.5, color=yearly_color,
                    edgecolor='black', linewidth=0.5)
 
+            _add_gt_markers(ax, sp['taxon_key'], gt_by_week, weeks, yearly_x)
+
             ax.set_xlim(0.5, yearly_x + 1.5)
             ax.set_ylim(0, 1.0)
             ax.set_ylabel('Prob', fontsize=8)
@@ -208,7 +274,8 @@ def plot_species_weeks(
         axes[-1].set_xticks(month_ticks + [yearly_x])
         axes[-1].set_xticklabels(month_labels + ['Year'], fontsize=8)
 
-        fig.suptitle(f"Species occurrence — lat={lat}, lon={lon}", fontsize=13, fontweight='bold', y=1.01)
+        gt_note = "\n(◆ = observed in training data)" if gt_by_week else ""
+        fig.suptitle(f"Species occurrence — lat={lat}, lon={lon}{gt_note}", fontsize=13, fontweight='bold', y=1.01)
         fig.tight_layout()
         combined_path = os.path.join(outdir, "combined.png")
         fig.savefig(combined_path, dpi=150, bbox_inches='tight')
@@ -228,6 +295,8 @@ def plot_species_weeks(
         ax.bar(yearly_x, sp['yearly_prob'], width=1.5, color=yearly_color,
                edgecolor='black', linewidth=0.5)
 
+        _add_gt_markers(ax, sp['taxon_key'], gt_by_week, weeks, yearly_x)
+
         ax.set_xlim(0.5, yearly_x + 1.5)
         ax.set_ylim(0, 1.0)
         xticks = month_ticks + [yearly_x]
@@ -236,6 +305,10 @@ def plot_species_weeks(
         ax.set_xticklabels(xlabels, fontsize=9)
         ax.set_ylabel('Probability', fontsize=10)
         ax.set_title(f"{sp['com_name']} ({sp['sci_name']})", fontsize=12, fontweight='bold')
+        if gt_by_week:
+            ax.annotate('◆ = observed in training data', xy=(0.99, 0.99),
+                        xycoords='axes fraction', fontsize=7, ha='right', va='top',
+                        color='#2ca02c')
 
         ax.axhline(y=threshold, color='gray', linestyle='--', linewidth=0.8, alpha=0.5)
         ax.spines['top'].set_visible(False)
@@ -268,6 +341,8 @@ def plot_species_weeks(
             ax.bar(yearly_x, sp['yearly_prob'], width=1.5, color=yearly_color,
                    edgecolor='black', linewidth=0.5)
 
+            _add_gt_markers(ax, sp['taxon_key'], gt_by_week, weeks, yearly_x)
+
             ax.set_xlim(0.5, yearly_x + 1.5)
             ax.set_ylim(0, 1.0)
             ax.set_ylabel('Prob', fontsize=8)
@@ -280,7 +355,8 @@ def plot_species_weeks(
         axes[-1].set_xticks(month_ticks + [yearly_x])
         axes[-1].set_xticklabels(month_labels + ['Year'], fontsize=8)
 
-        fig.suptitle(f"Species occurrence — lat={lat}, lon={lon}", fontsize=13, fontweight='bold', y=1.01)
+        gt_note = "\n(◆ = observed in training data)" if gt_by_week else ""
+        fig.suptitle(f"Species occurrence — lat={lat}, lon={lon}{gt_note}", fontsize=13, fontweight='bold', y=1.01)
         fig.tight_layout()
         summary_path = os.path.join(outdir, "summary.png")
         fig.savefig(summary_path, dpi=150, bbox_inches='tight')
@@ -300,6 +376,8 @@ def main():
     parser.add_argument('--threshold', type=float, default=0.05, help='Min probability threshold')
     parser.add_argument('--combine', action='store_true',
                         help='Combine all species into a single chart instead of individual PNGs')
+    parser.add_argument('--data_path', type=str, default=None,
+                        help='Path to training parquet for ground truth overlay')
     parser.add_argument('--outdir', type=str, default='outputs/plots', help='Output directory for PNGs')
     parser.add_argument('--device', type=str, default='auto', choices=['auto', 'cuda', 'cpu'])
     args = parser.parse_args()
@@ -310,6 +388,7 @@ def main():
         top_k=args.top_k, threshold=args.threshold,
         outdir=args.outdir, device=args.device,
         species_names=args.species, combine=args.combine,
+        data_path=args.data_path,
     )
 
 
