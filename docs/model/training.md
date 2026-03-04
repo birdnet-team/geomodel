@@ -64,6 +64,7 @@ The training script handles the full pipeline automatically:
 | `--neg_samples` | `1024` | Negative species to sample per example for AN loss (0 = all) |
 | `--label_smoothing` | `0.05` | Smooth binary targets to prevent overconfidence (0 = off) |
 | `--max_obs_per_species` | `100000` | Cap observations per species (0 = no cap) |
+| `--min_obs_per_species` | `100` | Exclude species with fewer than N observations (0 = keep all) |
 | `--ocean_sample_rate` | `0.1` | Fraction of high-water cells to keep (1.0 = keep all) |
 | `--no_yearly` | off | Exclude week-0 (yearly) samples from training |
 | `--jitter` | off | Jitter training coordinates within H3 cells each epoch |
@@ -207,6 +208,14 @@ the specified number of samples are randomly removed from excess sample lists.
 The samples themselves are kept (they may still have other species) — only the
 over-represented species labels are dropped.  This prevents ubiquitous species
 from dominating the gradient signal.
+
+### Minimum Observation Filter
+
+When `--min_obs_per_species` is set (default: 100), species that appear in
+fewer than the specified number of samples are excluded from the vocabulary
+entirely.  This removes extremely rare species that the model cannot
+meaningfully learn from small sample counts and reduces the output dimension.
+Set to 0 to keep all species regardless of observation count.
 
 ### References
 

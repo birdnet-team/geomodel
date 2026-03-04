@@ -44,13 +44,13 @@ from utils.data import H3DataLoader, H3DataPreprocessor, create_dataloaders
 TUNABLE_PARAMS = [
     'lr', 'batch_size', 'pos_lambda', 'neg_samples',
     'label_smoothing', 'weight_decay', 'env_weight', 'lr_T0',
-    'jitter', 'max_obs_per_species', 'no_yearly', 'species_loss',
+    'jitter', 'max_obs_per_species', 'min_obs_per_species', 'no_yearly', 'species_loss',
     'model_scale', 'coord_harmonics', 'week_harmonics',
     'asl_gamma_neg', 'asl_clip',
 ]
 
 # Params that affect data preprocessing — when tuned, data is re-processed per trial
-_DATA_PARAMS = {'max_obs_per_species', 'no_yearly'}
+_DATA_PARAMS = {'max_obs_per_species', 'min_obs_per_species', 'no_yearly'}
 
 
 
@@ -380,6 +380,8 @@ def _suggest_param(trial, name: str, args):
         return trial.suggest_categorical('jitter', [True, False])
     if name == 'max_obs_per_species':
         return trial.suggest_categorical('max_obs_per_species', [0, 500, 1000, 2000, 5000])
+    if name == 'min_obs_per_species':
+        return trial.suggest_categorical('min_obs_per_species', [0, 10, 50, 100, 200, 500])
     if name == 'no_yearly':
         return trial.suggest_categorical('no_yearly', [True, False])
     if name == 'species_loss':
@@ -452,6 +454,7 @@ def run_autotune(args, device: torch.device):
         inputs, targets = preprocessor.prepare_training_data(
             lats, lons, weeks, species_lists, env_features, fit=True,
             max_obs_per_species=args.max_obs_per_species,
+            min_obs_per_species=args.min_obs_per_species,
         )
         info = preprocessor.get_preprocessing_info()
         n_species = info['n_species']
@@ -500,6 +503,7 @@ def run_autotune(args, device: torch.device):
         if tuning_data_params:
             include_yearly = not bool(p.get('no_yearly', args.no_yearly))
             max_obs = int(p.get('max_obs_per_species', args.max_obs_per_species))
+            min_obs = int(p.get('min_obs_per_species', args.min_obs_per_species))
             _lats, _lons, _weeks, _sp, _env = loader.flatten_to_samples(
                 ocean_sample_rate=args.ocean_sample_rate,
                 include_yearly=include_yearly,
@@ -508,6 +512,7 @@ def run_autotune(args, device: torch.device):
             _inputs, _targets = _prep.prepare_training_data(
                 _lats, _lons, _weeks, _sp, _env, fit=True,
                 max_obs_per_species=max_obs,
+                min_obs_per_species=min_obs,
             )
             _info = _prep.get_preprocessing_info()
             n_species = _info['n_species']
@@ -714,6 +719,8 @@ def main():
                         help='Smooth binary targets to prevent overconfident predictions (default: 0.05, 0=off)')
     parser.add_argument('--max_obs_per_species', type=int, default=100000,
                         help='Cap observations per species to reduce common-species dominance (default: 100000, 0=no cap)')
+    parser.add_argument('--min_obs_per_species', type=int, default=100,
+                        help='Exclude species with fewer than N observations (default: 100, 0=keep all)')
     parser.add_argument('--ocean_sample_rate', type=float, default=1.0,
                         help='Fraction of ocean cells (water_fraction > 0.9) to keep (default: 1.0, 1.0=keep all)')
     parser.add_argument('--no_yearly', action='store_true',
@@ -795,6 +802,8 @@ def main():
     print(f"  Loss:       {loss_desc}")
     if args.max_obs_per_species > 0:
         print(f"  Obs cap:    {args.max_obs_per_species} per species")
+    if args.min_obs_per_species > 0:
+        print(f"  Min obs:    {args.min_obs_per_species} per species")
     if args.ocean_sample_rate < 1.0:
         print(f"  Ocean:      keep {args.ocean_sample_rate:.0%} of high-water cells")
     if args.jitter:
@@ -823,6 +832,7 @@ def main():
     inputs, targets = preprocessor.prepare_training_data(
         lats, lons, weeks, species_lists, env_features, fit=True,
         max_obs_per_species=args.max_obs_per_species,
+        min_obs_per_species=args.min_obs_per_species,
     )
 
     info = preprocessor.get_preprocessing_info()

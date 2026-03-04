@@ -290,15 +290,39 @@ class H3DataPreprocessor:
 
     # -- Species vocabulary -----------------------------------------------
 
-    def build_species_vocabulary(self, species_lists: List[List[int]]) -> None:
-        """Build vocabulary of all unique GBIF taxonKeys."""
-        all_species: Set[int] = set()
+    def build_species_vocabulary(
+        self,
+        species_lists: List[List[int]],
+        min_obs_per_species: int = 0,
+    ) -> None:
+        """Build vocabulary of all unique GBIF taxonKeys.
+
+        Args:
+            species_lists: Per-sample lists of taxonKeys.
+            min_obs_per_species: If >0, exclude species observed in fewer
+                than this many samples.  Default 0 (keep all).
+        """
+        from collections import Counter
+
+        counts: Counter = Counter()
         for sl in species_lists:
             if hasattr(sl, 'size'):
                 if sl.size > 0:
-                    all_species.update(sl)
+                    counts.update(sl)
             elif len(sl) > 0:
-                all_species.update(sl)
+                counts.update(sl)
+
+        if min_obs_per_species > 0:
+            n_before = len(counts)
+            all_species = {s for s, c in counts.items() if c >= min_obs_per_species}
+            n_removed = n_before - len(all_species)
+            if n_removed > 0:
+                print(f"   Min-obs filter: removed {n_removed:,} species with "
+                      f"< {min_obs_per_species} observations "
+                      f"({len(all_species):,} species kept)")
+        else:
+            all_species = set(counts.keys())
+
         self.species_vocab = all_species
         self.species_to_idx = {s: i for i, s in enumerate(sorted(all_species))}
         self.idx_to_species = {i: s for s, i in self.species_to_idx.items()}
@@ -352,6 +376,7 @@ class H3DataPreprocessor:
         env_features: pd.DataFrame,
         fit: bool = True,
         max_obs_per_species: int = 0,
+        min_obs_per_species: int = 0,
     ) -> Tuple[Dict[str, np.ndarray], Dict[str, Any]]:
         """Run full preprocessing: encode inputs, normalize targets, build vocab.
 
@@ -360,10 +385,15 @@ class H3DataPreprocessor:
                 contributes more than this many positive samples.  Reduces the
                 influence of hyper-common species on training.  Samples are
                 dropped randomly.  Default 0 (no cap).
+            min_obs_per_species: If >0, exclude species observed in fewer than
+                this many samples from the vocabulary.  Default 0 (keep all).
         """
         normalized_env = self.normalize_environmental_features(env_features, fit=fit)
         if fit:
-            self.build_species_vocabulary(species_lists)
+            self.build_species_vocabulary(
+                species_lists,
+                min_obs_per_species=min_obs_per_species,
+            )
 
         # --- observation cap per species ---
         if max_obs_per_species > 0 and fit:
