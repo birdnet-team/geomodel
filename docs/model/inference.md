@@ -11,10 +11,12 @@ python predict.py --lat 52.5 --lon 13.4 --week 22
 Output (sorted by probability):
 
 ```
-Species                         Common Name                     Probability
-Turdus merula                   Eurasian Blackbird              0.9824
-Parus major                     Great Tit                       0.9651
-Sylvia atricapilla              Eurasian Blackcap               0.9203
+Predictions for lat=52.5, lon=13.4, week=22
+Rank  TaxonKey     Probability  Common Name                    Scientific Name
+----------------------------------------------------------------------------------------------------
+1     2488027      0.9824       Eurasian Blackbird             Turdus merula
+2     9596869      0.9651       Great Tit                      Parus major
+3     5231191      0.9203       Eurasian Blackcap              Sylvia atricapilla
 ...
 ```
 

@@ -105,16 +105,20 @@ Model capacity is controlled by a continuous scaling factor (`--model_scale`).
 All dimensions scale linearly from the reference point at `1.0`; block counts
 are rounded to the nearest integer (minimum 1).
 
+Approximate parameter counts assume ~12K species (the species head's final
+layer adds `bottleneck × n_species` parameters, so the total varies with
+vocabulary size):
+
 | Scale | Embed Dim | Encoder Blocks | Species Head      | Bottleneck | Approx. Parameters |
 |-------|-----------|----------------|-------------------|------------|-------------------|
 | 0.25  | 128       | 1              | 128, 1 block      | 32         | ~0.5M             |
-| 0.50  | 256       | 2              | 256, 1 block      | 64         | ~1.5M             |
+| 0.50  | 256       | 2              | 256, 1 block      | 64         | ~1.8M             |
 | 0.75  | 384       | 3              | 384, 2 blocks     | 96         | ~3.8M             |
 | 1.00  | 512       | 4              | 512, 2 blocks     | 128        | ~7.2M             |
 | 1.25  | 640       | 5              | 640, 2 blocks     | 160        | ~12.4M            |
 | 1.50  | 768       | 6              | 768, 3 blocks     | 192        | ~21.2M            |
 | 1.75  | 896       | 7              | 896, 4 blocks     | 224        | ~33.2M            |
-| 2.00  | 1024      | 8              | 1024, 4 blocks    | 256        | ~47.1M            |
+| 2.00  | 1024      | 8              | 1024, 4 blocks    | 256        | ~36M              |
 
 The "+ species" part scales with the number of species in the vocabulary (bottleneck × n_species parameters).
 

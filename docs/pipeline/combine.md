@@ -17,7 +17,8 @@ python utils/combine.py \
     --geodata data/global_50km_ee.parquet \
     --gbif ./outputs/gbif_processed.csv.gz \
     --output ./outputs/combined.parquet \
-    --valid_classes Aves Mammalia Amphibia
+    --valid_classes Aves Mammalia Amphibia \
+    --workers 16
 ```
 
 | Flag | Description |
@@ -26,6 +27,7 @@ python utils/combine.py \
 | `--gbif` | Processed GBIF CSV from `gbifutils.py` |
 | `--output` | Output path for combined parquet |
 | `--valid_classes` | Taxonomic classes to include (default: all) |
+| `--workers` | Parallel worker processes for H3 cell computation (default: 1) |
 
 ## Output Files
 

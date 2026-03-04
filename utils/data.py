@@ -290,15 +290,39 @@ class H3DataPreprocessor:
 
     # -- Species vocabulary -----------------------------------------------
 
-    def build_species_vocabulary(self, species_lists: List[List[int]]) -> None:
-        """Build vocabulary of all unique GBIF taxonKeys."""
-        all_species: Set[int] = set()
+    def build_species_vocabulary(
+        self,
+        species_lists: List[List[int]],
+        min_obs_per_species: int = 0,
+    ) -> None:
+        """Build vocabulary of all unique GBIF taxonKeys.
+
+        Args:
+            species_lists: Per-sample lists of taxonKeys.
+            min_obs_per_species: If >0, exclude species observed in fewer
+                than this many samples.  Default 0 (keep all).
+        """
+        from collections import Counter
+
+        counts: Counter = Counter()
         for sl in species_lists:
             if hasattr(sl, 'size'):
                 if sl.size > 0:
-                    all_species.update(sl)
+                    counts.update(sl)
             elif len(sl) > 0:
-                all_species.update(sl)
+                counts.update(sl)
+
+        if min_obs_per_species > 0:
+            n_before = len(counts)
+            all_species = {s for s, c in counts.items() if c >= min_obs_per_species}
+            n_removed = n_before - len(all_species)
+            if n_removed > 0:
+                print(f"   Min-obs filter: removed {n_removed:,} species with "
+                      f"< {min_obs_per_species} observations "
+                      f"({len(all_species):,} species kept)")
+        else:
+            all_species = set(counts.keys())
+
         self.species_vocab = all_species
         self.species_to_idx = {s: i for i, s in enumerate(sorted(all_species))}
         self.idx_to_species = {i: s for s, i in self.species_to_idx.items()}
@@ -352,6 +376,7 @@ class H3DataPreprocessor:
         env_features: pd.DataFrame,
         fit: bool = True,
         max_obs_per_species: int = 0,
+        min_obs_per_species: int = 0,
     ) -> Tuple[Dict[str, np.ndarray], Dict[str, Any]]:
         """Run full preprocessing: encode inputs, normalize targets, build vocab.
 
@@ -360,10 +385,15 @@ class H3DataPreprocessor:
                 contributes more than this many positive samples.  Reduces the
                 influence of hyper-common species on training.  Samples are
                 dropped randomly.  Default 0 (no cap).
+            min_obs_per_species: If >0, exclude species observed in fewer than
+                this many samples from the vocabulary.  Default 0 (keep all).
         """
         normalized_env = self.normalize_environmental_features(env_features, fit=fit)
         if fit:
-            self.build_species_vocabulary(species_lists)
+            self.build_species_vocabulary(
+                species_lists,
+                min_obs_per_species=min_obs_per_species,
+            )
 
         # --- observation cap per species ---
         if max_obs_per_species > 0 and fit:
@@ -392,7 +422,86 @@ class H3DataPreprocessor:
             'week': weeks.astype(np.float32),
         }
         targets = {'species': species_enc, 'env_features': normalized_env}
+
+        # Frequency-based label weights (computed here, applied in Dataset)
+        self.species_freq_weights = None
+
         return inputs, targets
+
+    def compute_species_freq_weights(
+        self,
+        species_lists: List[List[int]],
+        min_weight: float = 0.1,
+    ) -> np.ndarray:
+        """Compute per-species label weights based on observation frequency.
+
+        Geographic range (number of occupied cells) is treated as a proxy for
+        local abundance.  This is not ecologically exact — range and abundance
+        are different quantities — but it provides a practical approximation
+        that turns hard binary labels into soft weights, yielding well-ordered
+        ranked species lists for a given location and week.
+
+        Species are weighted by how often they occur across all samples:
+
+        - >= 95th percentile of counts -> weight 1.0 (common)
+        - <= 5th percentile of counts  -> *min_weight* (rare)
+        - In between -> sigmoid-shaped interpolation that creates a long-tail
+          distribution (most species stay near *min_weight*, only the most
+          common ramp up sharply toward 1.0)
+
+        The sigmoid shaping uses ``t' = t^3 / (t^3 + (1-t)^3)`` where
+        ``t`` is the linear 0-1 position between the 5th and 95th
+        percentile.  This keeps the mapping monotonic and smooth while
+        concentrating most of the weight mass at the upper end.
+
+        The returned array has shape ``(n_species,)`` and is stored as
+        ``self.species_freq_weights`` for use in the Dataset.
+        """
+        from collections import Counter
+
+        counts: Counter = Counter()
+        for sl in species_lists:
+            for sid in sl:
+                if sid in self.species_to_idx:
+                    counts[self.species_to_idx[sid]] += 1
+
+        n_species = len(self.species_vocab)
+        count_arr = np.array([counts.get(i, 0) for i in range(n_species)],
+                             dtype=np.float64)
+
+        nonzero = count_arr[count_arr > 0]
+        if len(nonzero) == 0:
+            self.species_freq_weights = np.ones(n_species, dtype=np.float32)
+            return self.species_freq_weights
+
+        p5 = np.percentile(nonzero, 5)
+        p95 = np.percentile(nonzero, 95)
+
+        weights = np.ones(n_species, dtype=np.float32)
+        if p95 > p5:
+            for i in range(n_species):
+                c = count_arr[i]
+                if c >= p95:
+                    weights[i] = 1.0
+                elif c <= p5:
+                    weights[i] = min_weight
+                else:
+                    # Linear position in [0, 1]
+                    t = (c - p5) / (p95 - p5)
+                    # Sigmoid-shaped remapping: long tail, sharp rise at top
+                    t3 = t ** 3
+                    t = t3 / (t3 + (1.0 - t) ** 3)
+                    weights[i] = min_weight + t * (1.0 - min_weight)
+        # If p95 == p5 all species have similar counts: uniform weight 1.0
+
+        self.species_freq_weights = weights
+
+        # Print distribution summary
+        print(f"   Freq label weights: min={weights.min():.3f}, "
+              f"median={np.median(weights):.3f}, max={weights.max():.3f}  "
+              f"(p5={int(p5):,}, p95={int(p95):,} observations)")
+
+        return weights
 
     def _cap_observations(
         self,
@@ -438,6 +547,63 @@ class H3DataPreprocessor:
             species_lists = new_lists
 
         return species_lists, len(remove_pairs)
+
+    def subsample_by_location(
+        self,
+        inputs: Dict[str, np.ndarray],
+        targets: Dict[str, Any],
+        fraction: float = 1.0,
+        random_state: int = 42,
+    ) -> Tuple[Dict[str, np.ndarray], Dict[str, Any]]:
+        """Randomly subsample a fraction of *locations* (and all their samples).
+
+        Subsampling is location-based: unique (lat, lon) positions are
+        sampled, then all rows belonging to the selected locations are
+        retained.  This preserves the temporal structure within each
+        H3 cell and keeps the data suitable for a subsequent
+        location-based train/val/test split.
+
+        Args:
+            inputs: Dict with 'lat', 'lon', 'week' arrays.
+            targets: Dict with 'species' and 'env_features'.
+            fraction: Fraction of locations to keep (0 < fraction <= 1).
+            random_state: Random seed for reproducibility.
+
+        Returns:
+            (inputs, targets) subsets with only the selected locations.
+        """
+        if fraction >= 1.0:
+            return inputs, targets
+
+        coord_tuples = list(zip(inputs['lat'].tolist(), inputs['lon'].tolist()))
+        unique_map: Dict[tuple, int] = {}
+        loc_ids = np.array([unique_map.setdefault(c, len(unique_map))
+                            for c in coord_tuples])
+        unique_locs = np.unique(loc_ids)
+
+        rng = np.random.RandomState(random_state)
+        k = max(1, int(len(unique_locs) * fraction))
+        selected = rng.choice(unique_locs, size=k, replace=False)
+        mask = np.isin(loc_ids, selected)
+
+        def _subset(d: Dict[str, Any], m: np.ndarray) -> Dict[str, Any]:
+            out = {}
+            for key, v in d.items():
+                if isinstance(v, np.ndarray):
+                    out[key] = v[m]
+                elif isinstance(v, list):
+                    idxs = np.where(m)[0]
+                    out[key] = [v[i] for i in idxs]
+                else:
+                    out[key] = v
+            return out
+
+        sub_in = _subset(inputs, mask)
+        sub_tgt = _subset(targets, mask)
+        print(f"   Subsampled {fraction:.0%} of locations: "
+              f"{len(unique_locs):,} -> {k:,} locations, "
+              f"{len(inputs['lat']):,} -> {int(mask.sum()):,} samples")
+        return sub_in, sub_tgt
 
     def split_data(
         self,
@@ -509,6 +675,34 @@ class H3DataPreprocessor:
 # PyTorch Dataset / DataLoader
 # ---------------------------------------------------------------------------
 
+
+class FractionalRandomSampler(Sampler):
+    """Draw a deterministic random subset of training indices each epoch.
+
+    The seed changes every epoch (``42 + epoch``) so each epoch sees a
+    different subset while remaining reproducible.
+    """
+
+    def __init__(self, data_source: Dataset, fraction: float = 1.0):
+        self.data_source = data_source
+        self.fraction = fraction
+        self.epoch = 0
+
+    def set_epoch(self, epoch: int) -> None:
+        self.epoch = epoch
+
+    def __iter__(self):
+        n = len(self.data_source)
+        k = max(1, int(n * self.fraction))
+        rng = np.random.RandomState(42 + self.epoch)
+        indices = rng.choice(n, size=k, replace=False)
+        rng.shuffle(indices)
+        return iter(indices.tolist())
+
+    def __len__(self) -> int:
+        return max(1, int(len(self.data_source) * self.fraction))
+
+
 class BirdSpeciesDataset(Dataset):
     """PyTorch Dataset for bird species occurrence prediction.
 
@@ -522,7 +716,8 @@ class BirdSpeciesDataset(Dataset):
     """
 
     def __init__(self, inputs: Dict[str, np.ndarray], targets: Dict[str, Any],
-                 n_species: int = 0, jitter_std: float = 0.0):
+                 n_species: int = 0, jitter_std: float = 0.0,
+                 species_freq_weights: Optional[np.ndarray] = None):
         """Wrap preprocessed arrays as a PyTorch Dataset.
 
         Args:
@@ -533,12 +728,21 @@ class BirdSpeciesDataset(Dataset):
                 to lat/lon coordinates each time a sample is drawn.  Set to
                 0.0 to disable (default).  Typically derived from H3 cell
                 resolution via ``H3DataLoader.compute_jitter_std``.
+            species_freq_weights: Optional 1-D array of per-species label
+                weights.  When provided, positive labels use the weight
+                instead of 1.0.
         """
         self.lat = torch.from_numpy(inputs['lat']).float()
         self.lon = torch.from_numpy(inputs['lon']).float()
         self.week = torch.from_numpy(inputs['week']).float()
         self.env_features = torch.from_numpy(targets['env_features']).float()
         self.jitter_std = jitter_std
+
+        # Per-species label weights (frequency-based)
+        if species_freq_weights is not None:
+            self.species_freq_weights = torch.from_numpy(species_freq_weights).float()
+        else:
+            self.species_freq_weights = None
 
         species = targets['species']
         if isinstance(species, np.ndarray):
@@ -569,42 +773,24 @@ class BirdSpeciesDataset(Dataset):
 
         if self.species_dense is not None:
             sp = self.species_dense[idx]
+            if self.species_freq_weights is not None:
+                # Only weight positive labels (1s); 0s stay 0
+                mask = sp > 0
+                sp = sp.clone()
+                sp[mask] = self.species_freq_weights[mask]
         else:
             # Materialise dense vector from sparse indices
             sp = torch.zeros(self.n_species, dtype=torch.float32)
             indices = self.species_sparse[idx]
             if len(indices) > 0:
-                sp[indices] = 1.0
+                if self.species_freq_weights is not None:
+                    sp[indices] = self.species_freq_weights[indices]
+                else:
+                    sp[indices] = 1.0
         return (
             {'lat': lat, 'lon': lon, 'week': self.week[idx]},
             {'species': sp, 'env_features': self.env_features[idx]},
         )
-
-
-class FractionalRandomSampler(Sampler):
-    """Sampler that yields a random fraction of training indices each epoch.
-
-    Every call to ``__iter__`` (i.e. every epoch) draws a fresh random
-    subset of ``int(fraction * n)`` indices from ``[0, n)``.  The subset
-    is deterministic: epoch *e* uses seed ``base_seed + e``, so results
-    are reproducible across runs.
-    """
-
-    def __init__(self, n: int, fraction: float = 1.0, seed: int = 42):
-        self.n = n
-        self.k = max(1, int(n * fraction))
-        self.seed = seed
-        self.epoch = 0
-
-    def __iter__(self):
-        g = torch.Generator()
-        g.manual_seed(self.seed + self.epoch)
-        idx = torch.randperm(self.n, generator=g)[: self.k]
-        self.epoch += 1
-        return iter(idx.tolist())
-
-    def __len__(self) -> int:
-        return self.k
 
 
 def create_dataloaders(
@@ -618,29 +804,37 @@ def create_dataloaders(
     n_species: int = 0,
     sample_fraction: float = 1.0,
     jitter_std: float = 0.0,
+    species_freq_weights: Optional[np.ndarray] = None,
 ) -> Tuple[DataLoader, DataLoader]:
     """Create training and validation DataLoaders.
 
     Args:
-        sample_fraction: Fraction of training samples to use per epoch
-            (0–1]. Each epoch draws a fresh random subset.
+        sample_fraction: Fraction of training samples to use per epoch.
+            When < 1, a ``FractionalRandomSampler`` draws a different
+            random subset each epoch (seed ``42 + epoch``).  Validation
+            always uses all samples.
         jitter_std: Gaussian noise std (degrees) added to training
             coordinates each time a sample is drawn.  Validation
             coordinates are never jittered.
+        species_freq_weights: Optional per-species label weights.
+            Applied to training set only; validation uses binary labels.
     """
     train_ds = BirdSpeciesDataset(train_inputs, train_targets,
-                                  n_species=n_species, jitter_std=jitter_std)
+                                  n_species=n_species, jitter_std=jitter_std,
+                                  species_freq_weights=species_freq_weights)
     val_ds = BirdSpeciesDataset(val_inputs, val_targets, n_species=n_species)
 
     if sample_fraction < 1.0:
-        sampler = FractionalRandomSampler(len(train_ds), sample_fraction)
-        train_loader = DataLoader(train_ds, batch_size=batch_size, sampler=sampler,
-                                  num_workers=num_workers, pin_memory=pin_memory,
-                                  drop_last=True)
+        sampler = FractionalRandomSampler(train_ds, fraction=sample_fraction)
+        train_loader = DataLoader(train_ds, batch_size=batch_size,
+                                  sampler=sampler,
+                                  num_workers=num_workers,
+                                  pin_memory=pin_memory, drop_last=True)
     else:
-        train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True,
-                                  num_workers=num_workers, pin_memory=pin_memory,
-                                  drop_last=True)
+        train_loader = DataLoader(train_ds, batch_size=batch_size,
+                                  shuffle=True,
+                                  num_workers=num_workers,
+                                  pin_memory=pin_memory, drop_last=True)
 
     val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False,
                             num_workers=num_workers, pin_memory=pin_memory)

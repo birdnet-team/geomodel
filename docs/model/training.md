@@ -48,7 +48,7 @@ The training script handles the full pipeline automatically:
 
 | Flag | Default | Description |
 |---|---|---|
-| `--batch_size` | `1024` | Batch size |
+| `--batch_size` | `512` | Batch size |
 | `--num_epochs` | `50` | Maximum epochs |
 | `--lr` | `0.001` | Initial learning rate |
 | `--weight_decay` | `0.001` | AdamW (Loshchilov & Hutter, 2019) weight decay |
@@ -64,9 +64,12 @@ The training script handles the full pipeline automatically:
 | `--neg_samples` | `1024` | Negative species to sample per example for AN loss (0 = all) |
 | `--label_smoothing` | `0.05` | Smooth binary targets to prevent overconfidence (0 = off) |
 | `--max_obs_per_species` | `100000` | Cap observations per species (0 = no cap) |
-| `--ocean_sample_rate` | `0.1` | Fraction of high-water cells to keep (1.0 = keep all) |
+| `--min_obs_per_species` | `100` | Exclude species with fewer than N observations (0 = keep all) |
+| `--ocean_sample_rate` | `1.0` | Fraction of ocean cells (water > 90%) to keep (1.0 = keep all) |
 | `--no_yearly` | off | Exclude week-0 (yearly) samples from training |
 | `--jitter` | off | Jitter training coordinates within H3 cells each epoch |
+| `--label_freq_weight` | off | Weight positive labels by species frequency |
+| `--label_freq_weight_min` | `0.1` | Minimum label weight for rare species |
 
 ### Learning Rate Schedule
 
@@ -89,17 +92,22 @@ The training script handles the full pipeline automatically:
 |---|---|---|
 | `--test_size` | `0.1` | Test set fraction |
 | `--val_size` | `0.1` | Validation set fraction |
-| `--sample_fraction` | `1.0` | Fraction of training samples per epoch (0–1) |
+| `--sample_fraction` | `1.0` | Fraction of data to use (0–1) |
 
 Splitting is **location-based**: all samples from one H3 cell go to the same split, preventing spatial data leakage.  The split uses a fixed random seed (`42`) for reproducibility.
 
 #### Sample fraction
 
-When `--sample_fraction` is less than 1.0, a `FractionalRandomSampler` is used on the **training** DataLoader.  Each epoch draws a fresh random subset of training indices (e.g. `0.25` → 25% of training samples per epoch).  Key properties:
+When `--sample_fraction` is less than 1.0 it reduces the effective dataset size in two complementary ways:
 
-- **Validation and test sets are unaffected** — they always use all samples.
-- **Different subset each epoch** — the model sees different data every epoch, improving coverage over time.
-- **Deterministic** — epoch *e* uses seed `42 + e`, so results are reproducible across runs.
+- **Validation / test**: a random fraction of *locations* is sampled once (before training starts) and stays fixed, giving consistent evaluation metrics.
+- **Training**: a `FractionalRandomSampler` draws a fresh random subset of training *samples* each epoch (e.g. `0.25` → 25 % of training samples per epoch), so the model sees different data every epoch.
+
+Key properties:
+
+- **Deterministic** — the val/test location subsample uses a fixed seed (`42`); training epoch *e* uses seed `42 + e`.
+- **Different training subset each epoch** — improves coverage over time while keeping per-epoch cost low.
+- **Val/test stay consistent** — evaluation is comparable across epochs and runs.
 
 #### Coordinate jitter
 
@@ -208,6 +216,81 @@ The samples themselves are kept (they may still have other species) — only the
 over-represented species labels are dropped.  This prevents ubiquitous species
 from dominating the gradient signal.
 
+### Minimum Observation Filter
+
+When `--min_obs_per_species` is set (default: 100), species that appear in
+fewer than the specified number of samples are excluded from the vocabulary
+entirely.  This removes extremely rare species that the model cannot
+meaningfully learn from small sample counts and reduces the output dimension.
+Set to 0 to keep all species regardless of observation count.
+
+### Label Frequency Weighting
+
+Our training data contains only hard presence/absence labels (1s and 0s) — a
+species was either observed at a location/week or it was not.  However, for
+producing useful ranked species lists the model should ideally score common
+species higher than rare ones.  Label frequency weighting addresses this by
+treating **geographic range as a proxy for local abundance**: a species observed
+across many cells is likely more common at any given location than one recorded
+in only a handful of cells.
+
+This is not ecologically exact — range and local abundance are different
+quantities — but it provides a practical approximation that yields
+well-ordered predictions without requiring actual abundance counts.
+
+When `--label_freq_weight` is passed, positive species labels are scaled by
+observation frequency.  Common species (>= 95th percentile of observation
+counts) receive weight 1.0, rare species (<= 5th percentile) receive
+`--label_freq_weight_min` (default 0.1), with a **sigmoid-shaped**
+interpolation in between that creates a long-tail distribution — most species
+stay near the minimum weight and only the most common ramp up sharply toward
+1.0.
+
+The mapping uses $t' = \frac{t^3}{t^3 + (1-t)^3}$ where $t$ is the linear
+position between the 5th and 95th percentile, then
+$w = w_{\min} + t' \cdot (1 - w_{\min})$.  Only positive labels (1s) are
+affected — zeros stay at 0, so this does **not** act as label smoothing.
+
+#### Weight curve
+
+The table below shows the resulting label weight at various positions between
+the 5th and 95th percentile (with default `min_weight=0.1`).  For example, if
+the 5th percentile is 50 observations and the 95th is 5,000, a species with
+1,025 observations sits at the 20% mark and receives weight 0.11.
+
+| Position between p5–p95 | Sigmoid $t'$ | Label weight | Category |
+|---|---|---|---|
+| 0% (≤ p5) | 0.000 | **0.10** | Rare — minimal gradient contribution |
+| 10% | 0.001 | 0.10 | Uncommon — near-minimum weight |
+| 20% | 0.015 | 0.11 | Uncommon |
+| 30% | 0.073 | 0.17 | Below average |
+| 40% | 0.229 | 0.31 | Below average |
+| 50% | 0.500 | 0.55 | Average — midpoint |
+| 60% | 0.771 | 0.79 | Above average |
+| 70% | 0.927 | 0.93 | Common |
+| 80% | 0.985 | 0.99 | Common — near-maximum weight |
+| 90% | 0.999 | 1.00 | Very common |
+| 100% (≥ p95) | 1.000 | **1.00** | Abundant — full gradient contribution |
+
+The S-shaped curve means roughly the **bottom 40% of species by frequency
+receive weights below 0.3**, while the **top 30% are effectively at full
+weight**.  This concentrates gradient signal on well-observed species whose
+labels are most reliable, while still allowing the model to learn from rarer
+species at reduced intensity.
+
+| Parameter | Default | Description |
+|---|---|---|
+| `--label_freq_weight` | off | Enable frequency-based label weighting |
+| `--label_freq_weight_min` | `0.1` | Minimum weight assigned to rare species |
+
+```bash
+python train.py --label_freq_weight --label_freq_weight_min 0.1
+```
+
+!!! note
+    Label frequency weighting applies to the **training set only** — validation
+    uses standard binary labels for unbiased evaluation.
+
 ### References
 
 > Ridnik, T., Ben-Baruch, E., Zamir, N., Noy, A., Friedman, I., Protter, M., & Zelnik-Manor, L. (2021). Asymmetric Loss For Multi-Label Classification. In *IEEE/CVF International Conference on Computer Vision* (pp. 82–91).
@@ -235,6 +318,10 @@ the ground truth is unknown.
 ### Automatic Mixed Precision (AMP)
 
 On CUDA GPUs, training automatically uses float16 for forward/backward passes (with float32 master weights). This roughly doubles throughput with negligible accuracy impact.
+
+### GPU Memory Management
+
+On CUDA devices, training configures PyTorch's memory allocator to use **expandable segments** (`PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`).  This lets the allocator grow and shrink memory blocks dynamically instead of reserving large contiguous chunks upfront, reducing fragmentation and allowing the GPU to share memory more cleanly with other processes.
 
 ### Gradient Clipping
 
@@ -289,11 +376,10 @@ python train.py --data_path data.parquet --autotune lr pos_lambda    # tune spec
 | `pos_lambda` | 1.0 → 64 (log scale) |
 | `neg_samples` | {128, 256, 512, 1024, 2048, 4096} |
 | `label_smoothing` | 0 → 0.1 |
-| `weight_decay` | 1e-5 → 1e-2 (log scale) |
 | `env_weight` | 0.01 → 1.0 (log scale) |
-| `lr_T0` | {1, 5, 10, 20} |
 | `jitter` | {true, false} |
 | `max_obs_per_species` | {0, 500, 1000, 2000, 5000} |
+| `min_obs_per_species` | {0, 10, 50, 100, 200, 500} |
 | `no_yearly` | {true, false} |
 | `species_loss` | {asl, an, bce, focal} |
 | `asl_gamma_neg` | 1.0 → 8.0 |
@@ -301,9 +387,10 @@ python train.py --data_path data.parquet --autotune lr pos_lambda    # tune spec
 | `model_scale` | 0.25 → 3.0 (log scale) |
 | `coord_harmonics` | 2 → 8 (integer) |
 | `week_harmonics` | 2 → 8 (integer) |
+| `label_freq_weight` | {true, false} |
 
 !!! note "Data-affecting parameters"
-    When `max_obs_per_species` or `no_yearly` are included in the tuning set, data is re-preprocessed each trial.  This is slower but necessary because these parameters change the training samples.
+    When `max_obs_per_species`, `min_obs_per_species`, or `no_yearly` are included in the tuning set, data is re-preprocessed each trial.  This is slower but necessary because these parameters change the training samples or vocabulary.
 
 ### Autotune CLI
 

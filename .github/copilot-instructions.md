@@ -69,28 +69,37 @@ Species identifiers from the Global Biodiversity Information Facility (GBIF) tax
 - Extracts environmental features and species lists
 
 **data.py** - H3DataPreprocessor class:
-- `encode_coordinates()`: Stores raw lat/lon (encoding done inside the model)
-- `encode_weeks()`: Stores raw week numbers (encoding done inside the model)
 - `normalize_environmental_features()`: Normalizes env features with StandardScaler
   - Categorical columns → one-hot encoded (NaN → all-zero row)
   - Fraction columns → passed through as-is (NaN → 0)
   - Continuous columns → StandardScaler (NaN positions preserved for masked MSE loss)
 - `build_species_vocabulary()`: Creates vocabulary of all unique GBIF taxonKeys
-- `encode_species_multilabel()`: Converts species lists to multi-label sparse format
+- `encode_species_multilabel()`: Converts species lists to multi-label dense binary matrix
+- `encode_species_sparse()`: Converts species lists to sparse index arrays (used when dense would exceed 8 GiB)
 - `prepare_training_data()`: Complete preprocessing pipeline
   - Supports `max_obs_per_species` to cap common species observations
+  - Supports `min_obs_per_species` to exclude rare species (default 100)
+- `compute_species_freq_weights()`: Per-species label weights based on observation frequency
+  - Treats range (number of occupied cells) as a proxy for abundance
+  - Common species (>=95th percentile) -> weight 1.0; rare (<=5th pct) -> min_weight (default 0.1)
+  - Sigmoid-shaped interpolation between percentiles; stored as `self.species_freq_weights`
 - `split_data()`: Location-based train/val/test splitting to prevent data leakage
+- `subsample_by_location()`: Randomly subsample a fraction of locations (and all
+  their samples). Used to reduce val/test size before training starts.
 
 **data.py** - PyTorch Dataset:
 - `BirdSpeciesDataset`: PyTorch Dataset wrapper with sparse-to-dense conversion
   - Optional `jitter_std` (degrees) adds Gaussian noise to lat/lon on each draw
+  - Optional `species_freq_weights` applies per-species label weights (training only)
   - Lat clamped to [-90, 90], lon wrapped at ±180°
 - `FractionalRandomSampler`: Sampler that draws a deterministic random subset of
   training indices each epoch (seed `42 + epoch`). Used when `sample_fraction < 1`.
 - `create_dataloaders()`: Creates training and validation DataLoaders
   - Accepts `sample_fraction` (0–1]; uses `FractionalRandomSampler` when < 1
   - Accepts `jitter_std`; applied to training set only (val is never jittered)
-  - Val loader always uses all validation samples
+  - Accepts `species_freq_weights`; applied to training set only
+  - Val/test are subsampled by location once before training (consistent)
+  - Training is subsampled per-epoch via FractionalRandomSampler (varying)
 
 **geoutils.py**: Google Earth Engine feature extraction for H3 cells
 **gbifutils.py**: GBIF species occurrence data retrieval (parallel processing with multiprocessing pool)
@@ -133,9 +142,9 @@ Species identifiers from the Global Biodiversity Information Facility (GBIF) tax
 
 **Model Scaling:**
 - Continuous `model_scale` factor (default 1.0)
-- scale=0.5 → ~1.5M parameters, embed_dim=256, encoder: 2 blocks
+- scale=0.5 → ~1.8M parameters, embed_dim=256, encoder: 2 blocks
 - scale=1.0 → ~7.2M parameters, embed_dim=512, encoder: 4 blocks (default)
-- scale=2.0 → ~47M parameters, embed_dim=1024, encoder: 8 blocks
+- scale=2.0 → ~36M parameters, embed_dim=1024, encoder: 8 blocks
 
 **loss.py** - Loss Functions:
 - `asymmetric_loss()`: Default loss — ASL (Ridnik et al., 2021) for multi-label classification
@@ -171,7 +180,7 @@ Species identifiers from the Global Biodiversity Information Facility (GBIF) tax
 - Progress tracking with tqdm
 - GPU/CPU support with automatic device selection
 - Optuna-based hyperparameter autotune (`--autotune`)
-  - Tunes: lr, batch_size, pos_lambda, neg_samples, label_smoothing, weight_decay, env_weight, lr_T0, jitter, max_obs_per_species, no_yearly, species_loss, model_scale, coord_harmonics, week_harmonics, asl_gamma_neg, asl_clip
+  - Tunes: lr, batch_size, pos_lambda, neg_samples, label_smoothing, env_weight, jitter, max_obs_per_species, min_obs_per_species, no_yearly, species_loss, model_scale, coord_harmonics, week_harmonics, asl_gamma_neg, asl_clip, label_freq_weight
   - Bayesian optimization with TPE sampler and MedianPruner
   - `--autotune_trials` (default 50), `--autotune_epochs` (default 10)
   - Results saved to `checkpoints/autotune/autotune_results.json`
@@ -189,7 +198,7 @@ python train.py \
 ### Inference (`predict.py`)
 
 Loads a checkpoint and predicts species probabilities for arbitrary (lat, lon, week) inputs.
-Supports CSV output, top-k filtering, and global grid prediction with chunked output.
+Supports top-k filtering and probability thresholding.
 
 ### Model Export (`convert.py`)
 
@@ -204,7 +213,7 @@ the PyTorch reference model.  Default format is ONNX FP16.
 2. Flatten to (cell, week) samples → Extract lat/lon, species, env features
    - `--no_yearly` excludes week-0 samples (recommended for temporal learning)
 3. Build species vocabulary → Multi-label sparse encoding
-4. Downsample ocean cells (default: keep 10% of cells with water_fraction > 0.9)
+4. Downsample ocean cells (if configured; default: keep all)
 5. Cap observations per species (if configured) → Reduce common-species dominance
 6. Normalize environmental features → Auxiliary targets
 7. Split by location → Train/Val/Test sets
@@ -241,9 +250,9 @@ geomodel/
 │   ├── combine.py              # Merge EE features + GBIF observations
 │   └── regions.py              # H3 region definitions
 ├── scripts/
-│   ├── plot_species_weeks.py   # Weekly probability charts
-│   ├── plot_range_maps.py      # Species distribution maps (static PNG or animated GIF)
-│   ├── plot_richness.py        # Species richness heatmaps
+│   ├── plot_species_weeks.py   # Weekly probability charts (+ ground truth overlay via --data_path)
+│   ├── plot_range_maps.py      # Species distribution maps (static PNG or animated GIF, + GT overlay)
+│   ├── plot_richness.py        # Species richness heatmaps (+ side-by-side observed vs predicted)
 │   ├── plot_training.py        # Training loss curves and metrics
 │   ├── plot_variable_importance.py  # Feature importance analysis
 │   └── plot_environmental.py   # Environmental feature visualization

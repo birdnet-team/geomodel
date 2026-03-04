@@ -100,6 +100,7 @@ nav:
       - Richness Maps: plotting/richness.md
       - Training Curves: plotting/training-curves.md
       - Variable Importance: plotting/variable-importance.md
+      - Environmental: plotting/environmental.md
   - API Reference:
       - model: api/model.md
       - model.loss: api/loss.md

@@ -10,6 +10,9 @@ python scripts/plot_richness.py
 
 # Europe in spring at higher resolution
 python scripts/plot_richness.py --week 16 --bounds europe --resolution 0.25
+
+# Side-by-side predicted vs observed richness
+python scripts/plot_richness.py --week 26 --data_path outputs/combined.parquet
 ```
 
 ## CLI Reference
@@ -24,14 +27,17 @@ python scripts/plot_richness.py --week 16 --bounds europe --resolution 0.25
 | `--outdir` | `outputs/plots` | Output directory |
 | `--batch_size` | `4096` | Batch size for grid inference |
 | `--device` | `auto` | `auto`, `cuda`, or `cpu` |
+| `--data_path` | — | Path to training parquet for observed richness side-by-side |
 
 ## Output
 
-A single PNG (`richness_week_26.png`) showing:
+A single PNG (`richness_w26_t0.1.png`) showing:
 
 - Robinson projection for global views, PlateCarree for regional views
 - Color-coded species count per grid cell (viridis scale)
 - Colorbar with species count range
+
+When `--data_path` is provided, the output is a side-by-side figure with the **predicted** richness on the left and **observed** richness (species counts from the training data) on the right, sharing the same color scale.
 
 ## Interpretation
 

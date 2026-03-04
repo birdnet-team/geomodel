@@ -29,6 +29,14 @@ This project adheres to the [Contributor Covenant Code of Conduct](CODE_OF_CONDU
 4. Keep commits small and focused; write clear commit messages.
 5. Open a pull request with a description of what changed and why.
 
+### AI-Assisted Contributions
+
+We welcome contributions that use AI coding assistants (Copilot, Cursor, etc.), but please keep PRs **focused on a single, isolated change** — one bug fix, one feature, or one refactor. Large PRs that touch many unrelated parts of the codebase are difficult to review and will be asked to be split up. In particular:
+
+- **Do not** submit PRs that bundle AI-generated reformatting, renaming, or stylistic changes alongside functional work.
+- **Do** verify that AI-generated code is correct, well-tested, and that you understand what it does.
+- **Do** mention in the PR description if AI tools were used.
+
 ## Development Setup
 
 ```bash

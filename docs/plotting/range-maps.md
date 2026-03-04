@@ -22,6 +22,14 @@ python scripts/plot_range_maps.py --taxon_keys 2488027
 python scripts/plot_range_maps.py --species "Barn Swallow" --bounds europe --resolution 0.5
 ```
 
+### With ground truth overlay
+
+```bash
+# Show training observations as green dots on the predicted range map
+python scripts/plot_range_maps.py --species "Barn Swallow" \
+    --data_path outputs/combined.parquet --bounds europe
+```
+
 ### Animated GIF
 
 ```bash
@@ -51,6 +59,7 @@ python scripts/plot_range_maps.py --species "Great Tit" --gif --fps 2
 | `--gif` | off | Render all 48 weeks as an animated GIF |
 | `--cols` | auto | Number of subplot columns in GIF mode (default: $\lceil\sqrt{n}\rceil$) |
 | `--fps` | `4` | Frames per second for the GIF |
+| `--data_path` | — | Path to training parquet for ground truth overlay |
 
 ## Static Output
 
@@ -64,6 +73,8 @@ One PNG per species (e.g., `range_Eurasian_Blackbird.png`), arranged as a 2×2 g
 | **Bottom-right** | Week 39 | Autumn (October) |
 
 Each panel uses a Robinson projection for global views or PlateCarree for regional views. Probability is mapped to a **YlOrRd** (yellow-orange-red) color scale.
+
+When `--data_path` is provided, H3 cells where the species was observed in the training data are overlaid as small green dots on each seasonal panel.
 
 ## GIF Output
 

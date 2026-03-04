@@ -1,12 +1,12 @@
 <p align="center">
-  <img src="birdnet-logo-circle.png" width="150" alt="BirdNET Logo">
+  <img src="birdnet-logo-circle.png" width="250" alt="BirdNET Logo">
 </p>
 
 <h1 align="center">BirdNET Geomodel</h1>
 
 <p align="center">
   <a href="https://github.com/birdnet-team/geomodel/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License"></a>
-  <a href="https://www.python.org/"><img src="https://img.shields.io/badge/python-3.11+-blue.svg" alt="Python 3.11+"></a>
+  <a href=\"https://www.python.org/\"><img src=\"https://img.shields.io/badge/python-3.10+-blue.svg\" alt=\"Python 3.10+\"></a>
   <a href="https://pytorch.org/"><img src="https://img.shields.io/badge/PyTorch-2.0+-ee4c2c.svg" alt="PyTorch"></a>
   <a href="https://birdnet-team.github.io/geomodel/"><img src="https://img.shields.io/badge/docs-mkdocs-blue.svg" alt="Documentation"></a>
   <a href="https://github.com/birdnet-team/geomodel/actions/workflows/docs.yml"><img src="https://github.com/birdnet-team/geomodel/actions/workflows/docs.yml/badge.svg" alt="Docs"></a>
@@ -76,7 +76,7 @@ A multi-task neural network that learns spatial-temporal patterns from coordinat
 - **Input:** Raw (lat, lon, week) — circular encoding is handled inside the model
 - **Primary task:** Multi-label species classification (asymmetric loss)
 - **Auxiliary task:** Environmental feature regression (training only, acts as regularizer)
-- **Scalable:** ~1.5M (scale=0.5) to ~47M (scale=2.0) parameters (default scale=1.0 ≈ 7M)
+- **Scalable:** ~1.8M (scale=0.5) to ~36M (scale=2.0) parameters with ~12K species (default scale=1.0 ≈ 7M)
 
 ## Visualization
 
@@ -89,6 +89,11 @@ python scripts/plot_range_maps.py --species "Barn Swallow" --bounds europe
 
 # Species richness heatmap
 python scripts/plot_richness.py --week 26
+
+# Ground truth overlay (pass training parquet to any of the above)
+python scripts/plot_species_weeks.py --lat 50.83 --lon 12.92 --data_path outputs/combined.parquet
+python scripts/plot_range_maps.py --species "Barn Swallow" --data_path outputs/combined.parquet
+python scripts/plot_richness.py --week 26 --data_path outputs/combined.parquet
 
 # Variable importance (Spearman correlations)
 python scripts/plot_variable_importance.py --species "Great Tit" --data_path data.parquet

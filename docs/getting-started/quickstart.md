@@ -46,7 +46,8 @@ Join the H3 environmental grid with species observations:
 python utils/combine.py \
     --geodata data/global_50km_ee.parquet \
     --gbif ./outputs/gbif_processed.csv.gz \
-    --output ./outputs/combined.parquet
+    --output ./outputs/combined.parquet \
+    --workers 16
 ```
 
 This produces a combined parquet with per-week species lists and a taxonomy CSV. See [Combining Data](../pipeline/combine.md).
@@ -54,7 +55,7 @@ This produces a combined parquet with per-week species lists and a taxonomy CSV.
 ## Stage 4 — Train
 
 ```bash
-python train.py --data_path ./outputs/combined.parquet --batch_size 1024
+python train.py --data_path ./outputs/combined.parquet
 ```
 
 Training produces checkpoints in `./checkpoints/`. See [Training](../model/training.md) for all options.

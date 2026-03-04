@@ -2,11 +2,15 @@
 
 Maps each GBIF record to its H3 cell and week, producing a combined
 parquet with per-week species lists and an accompanying taxonomy CSV.
+
+Supports multiprocessing (``--workers``) to parallelise the expensive
+per-row H3 cell computation across CPU cores.
 """
 
 import geopandas as gpd
 import gzip
 import logging
+import multiprocessing as mp
 import os
 from collections import defaultdict
 
@@ -19,6 +23,70 @@ GBIF_REQUIRED_COLUMNS = ['latitude', 'longitude', 'taxonKey', 'verbatimScientifi
 
 # Number of BirdNET weeks per year
 NUM_WEEKS = 48
+
+# ---------------------------------------------------------------------------
+# Worker state (set once per process via initializer)
+# ---------------------------------------------------------------------------
+
+_valid_h3_cells = None
+_valid_classes = None
+_h3_res = None
+
+
+def _init_worker(valid_cells, classes, resolution):
+    """Initializer for pool workers — sets shared read-only state."""
+    global _valid_h3_cells, _valid_classes, _h3_res
+    _valid_h3_cells = valid_cells
+    _valid_classes = classes
+    _h3_res = resolution
+
+
+def _process_chunk(chunk):
+    """Process a single DataFrame chunk in a worker process.
+
+    Returns:
+        Tuple of (cell_week_species dict, taxon_names dict, missing_cells set,
+        chunk_size int).
+    """
+    chunk_size = len(chunk)
+
+    # Filter to valid classes
+    chunk = chunk[chunk['class'].isin(_valid_classes)]
+    if chunk.empty:
+        return {}, {}, set(), chunk_size
+
+    # Compute H3 cells — the main bottleneck
+    lats = chunk['latitude'].values
+    lons = chunk['longitude'].values
+    h3_cells = [h3.latlng_to_cell(lat, lon, _h3_res) for lat, lon in zip(lats, lons)]
+    chunk = chunk.assign(h3_cell=h3_cells)
+
+    # Filter to valid cells
+    mask = chunk['h3_cell'].isin(_valid_h3_cells)
+    new_missing = set(chunk.loc[~mask, 'h3_cell'].unique())
+    matched = chunk[mask]
+
+    if matched.empty:
+        return {}, {}, new_missing, chunk_size
+
+    # Accumulate species per (cell, week) via groupby
+    cell_week_species = {}
+    for (cell, week), species in matched.groupby(
+        ['h3_cell', 'week'],
+    )['taxonKey'].agg(set).items():
+        cell_week_species[(cell, int(week))] = species
+
+    # Batch-collect taxon names (once per unique taxonKey)
+    taxon_names = {}
+    taxa = matched.drop_duplicates('taxonKey')
+    for tk, sci, com in zip(
+        taxa['taxonKey'].values,
+        taxa['verbatimScientificName'].values,
+        taxa['commonName'].values,
+    ):
+        taxon_names.setdefault(int(tk), (str(sci), str(com)))
+
+    return cell_week_species, taxon_names, new_missing, chunk_size
 
 
 def estimate_gzip_rows(file_path, sample_rows=10000):
@@ -41,7 +109,8 @@ def estimate_gzip_rows(file_path, sample_rows=10000):
     return 0
 
 
-def combine_geodata_and_gbif(geodata_path, gbif_processed_path, output_path, valid_classes):
+def combine_geodata_and_gbif(geodata_path, gbif_processed_path, output_path,
+                             valid_classes, workers=1):
     """Combine geographical data with processed GBIF data.
 
     Reads an H3-indexed GeoParquet and a processed GBIF CSV, maps each GBIF
@@ -53,6 +122,7 @@ def combine_geodata_and_gbif(geodata_path, gbif_processed_path, output_path, val
         gbif_processed_path (str): Path to the processed GBIF CSV (.csv.gz).
         output_path (str): Output path for the combined parquet.
         valid_classes (list[str]): Taxonomic classes to include.
+        workers (int): Number of parallel worker processes (default 1).
     """
     gdf = gpd.read_parquet(geodata_path)
 
@@ -73,50 +143,64 @@ def combine_geodata_and_gbif(geodata_path, gbif_processed_path, output_path, val
     estimated_rows = estimate_gzip_rows(gbif_processed_path)
 
     # Pandas handles gzip natively — no need for manual gzip.open
+    chunk_size = 1_000_000 if workers > 1 else 500_000
     reader = pd.read_csv(
-        gbif_processed_path, chunksize=500_000, usecols=GBIF_REQUIRED_COLUMNS,
+        gbif_processed_path, chunksize=chunk_size, usecols=GBIF_REQUIRED_COLUMNS,
     )
-    with tqdm(total=estimated_rows, desc="Processing GBIF data") as pbar:
-        for chunk in reader:
-            chunk_size = len(chunk)
 
-            # Filter to valid classes
-            chunk = chunk[chunk['class'].isin(valid_classes_set)]
+    def _merge_result(result):
+        """Merge a worker result into the main accumulators."""
+        cws, tn, mc, _ = result
+        for key, species in cws.items():
+            cell_week_species[key] |= species
+        for tk, names in tn.items():
+            taxon_names.setdefault(tk, names)
+        if mc:
+            new = mc - missing_cells
+            if new:
+                logging.warning(f"{len(new)} new H3 cell(s) not in geodata")
+                missing_cells.update(new)
 
-            if not chunk.empty:
-                # Compute H3 cells
-                h3_cells = [
-                    h3.latlng_to_cell(lat, lon, h3_res)
-                    for lat, lon in zip(chunk['latitude'].values,
-                                        chunk['longitude'].values)
-                ]
-                chunk = chunk.assign(h3_cell=h3_cells)
+    if workers <= 1:
+        # Single-process path (original behaviour)
+        with tqdm(total=estimated_rows, desc="Processing GBIF data") as pbar:
+            for chunk in reader:
+                _init_worker(valid_h3_cells, valid_classes_set, h3_res)
+                result = _process_chunk(chunk)
+                _merge_result(result)
+                pbar.update(result[3])
+    else:
+        # Multi-process: distribute chunk processing across workers.
+        # The main thread reads chunks (gzip is single-threaded) and
+        # submits them to the pool.  We cap in-flight work to avoid
+        # memory blow-up (each 1M-row chunk is ~200 MB pickled).
+        max_pending = workers * 2
+        pool = mp.Pool(
+            workers,
+            initializer=_init_worker,
+            initargs=(valid_h3_cells, valid_classes_set, h3_res),
+        )
+        pending = []
 
-                # Track missing cells (log once per cell)
-                mask = chunk['h3_cell'].isin(valid_h3_cells)
-                new_missing = set(chunk.loc[~mask, 'h3_cell'].unique()) - missing_cells
-                if new_missing:
-                    logging.warning(f"{len(new_missing)} new H3 cell(s) not in geodata")
-                    missing_cells.update(new_missing)
+        with tqdm(total=estimated_rows, desc=f"Processing GBIF data ({workers} workers)") as pbar:
+            for chunk in reader:
+                future = pool.apply_async(_process_chunk, (chunk,))
+                pending.append(future)
 
-                matched = chunk.loc[mask]
-                if not matched.empty:
-                    # Accumulate species per (cell, week) via groupby
-                    for (cell, week), species in matched.groupby(
-                        ['h3_cell', 'week'],
-                    )['taxonKey'].agg(set).items():
-                        cell_week_species[(cell, int(week))] |= species
+                # Drain completed futures to bound memory
+                while len(pending) >= max_pending:
+                    result = pending.pop(0).get()
+                    _merge_result(result)
+                    pbar.update(result[3])
 
-                    # Batch-collect taxon names (once per unique taxonKey)
-                    taxa = matched.drop_duplicates('taxonKey')
-                    for tk, sci, com in zip(
-                        taxa['taxonKey'].values,
-                        taxa['verbatimScientificName'].values,
-                        taxa['commonName'].values,
-                    ):
-                        taxon_names.setdefault(int(tk), (str(sci), str(com)))
+            # Drain remaining
+            for future in pending:
+                result = future.get()
+                _merge_result(result)
+                pbar.update(result[3])
 
-            pbar.update(chunk_size)
+        pool.close()
+        pool.join()
 
     # Build week columns efficiently: construct plain lists, assign once
     # (avoids slow per-cell gdf.at[] calls)
@@ -159,6 +243,8 @@ if __name__ == '__main__':
                         help='Output parquet file. If not provided, generated from geodata filename.')
     parser.add_argument('--valid_classes', type=str, nargs='+', default=['Aves', 'Mammalia', 'Amphibia'],
                         help='Valid taxonomic classes to include from GBIF data')
+    parser.add_argument('--workers', type=int, default=1,
+                        help='Number of parallel worker processes for H3 computation (default: 1)')
     args = parser.parse_args()
 
     output = args.output
@@ -167,4 +253,5 @@ if __name__ == '__main__':
         output = os.path.join('./outputs', geodata_filename)
         logging.info(f"No output file provided. Using default: {output}")
 
-    combine_geodata_and_gbif(args.geodata, args.gbif, output, args.valid_classes)
+    combine_geodata_and_gbif(args.geodata, args.gbif, output, args.valid_classes,
+                             workers=args.workers)
