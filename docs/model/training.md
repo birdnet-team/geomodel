@@ -42,26 +42,26 @@ The training script handles the full pipeline automatically:
 | Flag | Default | Description |
 |---|---|---|
 | `--model_scale` | `1.0` | Continuous scaling factor (0.5 ≈ 1.8M, 1.0 ≈ 7M, 2.0 ≈ 36M params) |
-| `--coord_harmonics` | `4` | Harmonics for lat/lon encoding |
+| `--coord_harmonics` | `8` | Harmonics for lat/lon encoding |
 | `--week_harmonics` | `4` | Harmonics for week encoding |
 
 ### Training
 
 | Flag | Default | Description |
 |---|---|---|
-| `--batch_size` | `256` | Batch size |
-| `--num_epochs` | `100` | Maximum epochs |
+| `--batch_size` | `1024` | Batch size |
+| `--num_epochs` | `50` | Maximum epochs |
 | `--lr` | `0.001` | Initial learning rate |
-| `--weight_decay` | `0.0001` | AdamW weight decay |
+| `--weight_decay` | `0.001` | AdamW weight decay |
 | `--species_weight` | `1.0` | Species loss multiplier |
-| `--env_weight` | `0.1` | Environmental loss multiplier |
-| `--species_loss` | `an` | Loss function: `an` (assume-negative, default), `bce`, or `focal` |
+| `--env_weight` | `0.05` | Environmental loss multiplier |
+| `--species_loss` | `bce` | Loss function: `bce` (default), `an` (assume-negative), or `focal` |
 | `--focal_alpha` | `0.25` | Focal loss alpha (only with `--species_loss focal`) |
 | `--focal_gamma` | `2.0` | Focal loss gamma |
-| `--pos_lambda` | `16.0` | Positive up-weighting λ for AN loss |
-| `--neg_samples` | `512` | Negative species to sample per example for AN loss (0 = all) |
-| `--label_smoothing` | `0.01` | Smooth binary targets to prevent overconfidence (0 = off) |
-| `--max_obs_per_species` | `0` | Cap observations per species (0 = no cap) |
+| `--pos_lambda` | `8.0` | Positive up-weighting λ for AN loss |
+| `--neg_samples` | `1024` | Negative species to sample per example for AN loss (0 = all) |
+| `--label_smoothing` | `0.05` | Smooth binary targets to prevent overconfidence (0 = off) |
+| `--max_obs_per_species` | `50000` | Cap observations per species (0 = no cap) |
 | `--ocean_sample_rate` | `0.1` | Fraction of high-water cells to keep (1.0 = keep all) |
 | `--no_yearly` | off | Exclude week-0 (yearly) samples from training |
 | `--jitter` | off | Jitter training coordinates within H3 cells each epoch |
@@ -79,13 +79,13 @@ The training script handles the full pipeline automatically:
 
 | Flag | Default | Description |
 |---|---|---|
-| `--patience` | `15` | Stop after N epochs without mAP improvement (0 = disabled) |
+| `--patience` | `10` | Stop after N epochs without mAP improvement (0 = disabled) |
 
 ### Data Split
 
 | Flag | Default | Description |
 |---|---|---|
-| `--test_size` | `0.2` | Test set fraction |
+| `--test_size` | `0.1` | Test set fraction |
 | `--val_size` | `0.1` | Validation set fraction |
 | `--sample_fraction` | `1.0` | Fraction of training samples per epoch (0–1) |
 
@@ -115,7 +115,7 @@ When `--jitter` is passed, Gaussian noise is added to training coordinates every
 | `--resume` | — | Path to checkpoint to resume training from |
 | `--save_every` | `5` | Save checkpoint every N epochs |
 | `--device` | `auto` | `auto`, `cuda`, or `cpu` |
-| `--num_workers` | `0` | DataLoader worker processes |
+| `--num_workers` | `min(4, CPUs)` | DataLoader worker processes |
 
 ## Loss Functions
 
@@ -286,7 +286,7 @@ python train.py --data_path data.parquet --autotune lr pos_lambda    # tune spec
 | Flag | Default | Description |
 |---|---|---|
 | `--autotune` | — | Enable autotune. Without args: tune all. With args: tune listed params only. |
-| `--autotune_trials` | `20` | Number of Optuna trials |
-| `--autotune_epochs` | `15` | Epochs per trial |
+| `--autotune_trials` | `50` | Number of Optuna trials |
+| `--autotune_epochs` | `10` | Epochs per trial |
 
 Each trial trains a fresh model and optimises towards validation mAP.  Optuna's `MedianPruner` kills unpromising trials early (after 3 warmup epochs).  Results are saved to `checkpoints/autotune/autotune_results.json`, and a suggested `train.py` command with the best parameters is printed.

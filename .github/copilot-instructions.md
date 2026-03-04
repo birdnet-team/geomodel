@@ -23,7 +23,7 @@ Species identifiers from the Global Biodiversity Information Facility (GBIF) tax
 - **Spatial location**: Latitude and longitude (converted from H3 cells)
   - Uses **multi-harmonic circular encoding** for neural network compatibility
   - Each coordinate → [sin(θ), cos(θ), sin(2θ), cos(2θ), …, sin(nθ), cos(nθ)]
-  - Default `coord_harmonics=4` → 8 features per coordinate (16 total for lat+lon)
+  - Default `coord_harmonics=8` → 16 features per coordinate (32 total for lat+lon)
   - Preserves spherical continuity (e.g., -180° and 180° longitude map to same point)
 - **Temporal**: Week number (1-48)
   - Uses **multi-harmonic circular encoding** for cyclical representation
@@ -32,13 +32,13 @@ Species identifiers from the Global Biodiversity Information Facility (GBIF) tax
   - Temporal signal modulates spatial embedding via **FiLM conditioning**
     (Feature-wise Linear Modulation: γ × spatial + β per residual block)
 
-**Total Input Features**: 16 spatial (lat+lon) + 8 temporal (week FiLM)
+**Total Input Features**: 32 spatial (lat+lon) + 8 temporal (week FiLM)
 
 **Training Targets:**
 - **Primary target**: Species list (GBIF taxonKeys) for that location/week combination
   - Encoded as multi-label binary classification
-  - Assume-negative (AN) loss with positive up-weighting and negative sampling (default)
-  - BCE and focal loss also available via `--species_loss`
+  - Assume-negative (AN) loss with positive up-weighting and negative sampling
+  - BCE (default) and focal loss also available via `--species_loss`
 - **Auxiliary target**: Environmental/geographic features for that cell
   - The environmental features act as a regularization signal
   - Helps the model learn better spatial representations
@@ -140,11 +140,11 @@ Species identifiers from the Global Biodiversity Information Facility (GBIF) tax
 **loss.py** - Loss Functions:
 - `AssumeNegativeLoss`: Default loss — LAN-full strategy (Cole et al., 2023) for presence-only data
   - Up-weights positives by λ, samples M negatives per example
-  - Default: λ=16, M=512, label_smoothing=0.01
+  - Default: λ=8, M=1024, label_smoothing=0.05
 - `MultiTaskLoss`: Weighted combination of species loss + environmental MSE
   - Total Loss = species_weight × species_loss + env_weight × MSE
-  - Species loss: `an` (assume-negative, default), `bce`, or `focal`
-  - Default weights: species=1.0, env=0.1
+  - Species loss: `bce` (default), `an` (assume-negative), or `focal`
+  - Default weights: species=1.0, env=0.05
   - Environmental MSE uses `masked_mse()` to skip NaN targets
 - `compute_pos_weights()`: Calculate class weights from training data
 - `focal_loss()`: Alternative loss for severe class imbalance
@@ -156,7 +156,7 @@ Species identifiers from the Global Biodiversity Information Facility (GBIF) tax
 - Automatic mixed precision (AMP) on CUDA
 - Gradient clipping (max_norm=1.0) to prevent exploding gradients
 - Linear LR warmup (3 epochs) + CosineAnnealingWarmRestarts schedule
-- Early stopping with configurable patience (default 15), based on validation mAP
+- Early stopping with configurable patience (default 10), based on validation mAP
 - Checkpoint management:
   - `checkpoint_latest.pt`: Latest model state
   - `checkpoint_best.pt`: Best validation mAP
@@ -170,7 +170,7 @@ Species identifiers from the Global Biodiversity Information Facility (GBIF) tax
 - Optuna-based hyperparameter autotune (`--autotune`)
   - Tunes: lr, batch_size, pos_lambda, neg_samples, label_smoothing, weight_decay, env_weight, lr_T0, jitter, max_obs_per_species, no_yearly, species_loss, model_scale, coord_harmonics, week_harmonics
   - Bayesian optimization with TPE sampler and MedianPruner
-  - `--autotune_trials` (default 20), `--autotune_epochs` (default 15)
+  - `--autotune_trials` (default 50), `--autotune_epochs` (default 10)
   - Results saved to `checkpoints/autotune/autotune_results.json`
 
 **Command-line interface:**
