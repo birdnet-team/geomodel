@@ -6,10 +6,9 @@
 
 <p align="center">
   <a href="https://github.com/birdnet-team/geomodel/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License"></a>
-  <a href=\"https://www.python.org/\"><img src=\"https://img.shields.io/badge/python-3.10+-blue.svg\" alt=\"Python 3.10+\"></a>
+  <a href="https://www.python.org/"><img src="https://img.shields.io/badge/python-3.10+-blue.svg" alt="Python 3.10+"></a>
   <a href="https://pytorch.org/"><img src="https://img.shields.io/badge/PyTorch-2.0+-ee4c2c.svg" alt="PyTorch"></a>
   <a href="https://birdnet-team.github.io/geomodel/"><img src="https://img.shields.io/badge/docs-mkdocs-blue.svg" alt="Documentation"></a>
-  <a href="https://github.com/birdnet-team/geomodel/actions/workflows/docs.yml"><img src="https://github.com/birdnet-team/geomodel/actions/workflows/docs.yml/badge.svg" alt="Docs"></a>
 </p>
 
 <p align="center">
