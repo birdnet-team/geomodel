@@ -2,11 +2,18 @@
 Loss functions for multi-task learning.
 
 Species prediction:
-  - Assume-Negative (AN) loss for presence-only data with negative sampling (default)
+  - Asymmetric Loss (ASL) for multi-label classification (default)
   - BCE with logits
   - Focal loss
+  - Assume-Negative (AN) loss for presence-only data with negative sampling
 
 Environmental prediction: mean squared error (auxiliary task).
+
+ASL (Ridnik et al., 2021) uses separate focusing parameters for positive and
+negative terms.  A hard-thresholding mechanism (probability margin *m*) shifts
+the negative probability down before computing the loss, effectively
+discarding very easy negatives.  This is especially effective for species
+occurrence data where >99 %% of labels are 0.
 
 The AN loss implements the "Full Location-Aware Assume Negative" (LAN-full)
 strategy from Cole et al. (SINR, 2023).  It combines:
@@ -47,6 +54,76 @@ def focal_loss(
     p_t = probs * targets + (1 - probs) * (1 - targets)
     alpha_t = alpha * targets + (1 - alpha) * (1 - targets)
     loss = alpha_t * ((1 - p_t) ** gamma) * bce
+
+    if reduction == 'mean':
+        return loss.mean()
+    elif reduction == 'sum':
+        return loss.sum()
+    return loss
+
+
+def asymmetric_loss(
+    logits: torch.Tensor,
+    targets: torch.Tensor,
+    gamma_pos: float = 0.0,
+    gamma_neg: float = 4.0,
+    clip: float = 0.05,
+    reduction: str = 'mean',
+) -> torch.Tensor:
+    """Asymmetric Loss for multi-label classification.
+
+    Applies separate focusing parameters for positive and negative terms,
+    plus a probability-margin shift on negatives.  This combination
+    aggressively down-weights easy/confident negatives while leaving the
+    positive gradient intact, making it ideal for extreme class imbalance.
+
+    Reference: Ridnik et al., "Asymmetric Loss For Multi-Label
+    Classification" (ICCV 2021).
+
+    The per-element loss is::
+
+        L = -[ y · (1-p)^γ+ · log(p)
+             + (1-y) · p_m^γ- · log(1-p_m) ]
+
+    where ``p_m = max(p - m, 0)`` is the margin-shifted probability.
+
+    Args:
+        logits: ``(batch, n_species)`` raw logits.
+        targets: ``(batch, n_species)`` binary labels.
+        gamma_pos: Focusing parameter for positive (present) species.
+            0 = no down-weighting of hard positives (recommended).
+        gamma_neg: Focusing parameter for negative (absent) species.
+            Higher values more aggressively suppress easy negatives.
+        clip: Probability margin *m*.  Shifts the negative probability
+            down before loss computation, effectively ignoring very
+            easy negatives.  Set 0 to disable.
+        reduction: ``'mean'`` | ``'sum'`` | ``'none'``.
+    """
+    probs = torch.sigmoid(logits)
+
+    # --- Positive term: -y · (1-p)^γ+ · log(p) ---
+    log_pos = F.logsigmoid(logits)  # numerically stable log(sigmoid(x))
+    if gamma_pos > 0:
+        pos_weight = (1 - probs).pow(gamma_pos)
+        pos_term = -targets * pos_weight * log_pos
+    else:
+        pos_term = -targets * log_pos
+
+    # --- Negative term: -(1-y) · p_m^γ- · log(1-p_m) ---
+    probs_neg = probs
+    if clip > 0:
+        # Shift probability down; clamp to [0, 1]
+        probs_neg = (probs - clip).clamp(min=0.0)
+
+    # log(1-p_m): use log1p for numerical stability
+    log_neg = torch.log1p(-probs_neg + 1e-8)
+    if gamma_neg > 0:
+        neg_weight = probs_neg.pow(gamma_neg)
+        neg_term = -(1 - targets) * neg_weight * log_neg
+    else:
+        neg_term = -(1 - targets) * log_neg
+
+    loss = pos_term + neg_term
 
     if reduction == 'mean':
         return loss.mean()
@@ -167,7 +244,7 @@ def masked_mse(pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
 
 class MultiTaskLoss(nn.Module):
     """
-    Weighted multi-task loss: species (AN, BCE, or focal) + environmental (MSE).
+    Weighted multi-task loss: species (ASL, BCE, focal, or AN) + environmental (MSE).
 
     Total = species_weight × species_loss  +  env_weight × env_loss
     """
@@ -177,25 +254,31 @@ class MultiTaskLoss(nn.Module):
         species_weight: float = 1.0,
         env_weight: float = 0.1,
         pos_weight: Optional[torch.Tensor] = None,
-        species_loss: str = 'an',
+        species_loss: str = 'asl',
         focal_alpha: float = 0.25,
         focal_gamma: float = 2.0,
         pos_lambda: float = 32.0,
         neg_samples: int = 192,
         label_smoothing: float = 0.05,
+        asl_gamma_pos: float = 0.0,
+        asl_gamma_neg: float = 4.0,
+        asl_clip: float = 0.05,
         reduction: str = 'mean',
     ):
         """
         Args:
             species_weight: Multiplier for species loss.
             env_weight: Multiplier for environmental loss.
-            pos_weight: Positive-class weights for BCE mode (ignored for focal/an).
-            species_loss: 'an' (assume-negative, default), 'bce', or 'focal'.
+            pos_weight: Positive-class weights for BCE mode (ignored for focal/an/asl).
+            species_loss: 'asl' (asymmetric, default), 'bce', 'focal', or 'an'.
             focal_alpha: Alpha for focal loss.
             focal_gamma: Gamma for focal loss.
             pos_lambda: λ for assume-negative loss (positive up-weighting).
             neg_samples: M for assume-negative loss (negative species to sample).
             label_smoothing: Smooth binary targets (AN loss only, 0 = off).
+            asl_gamma_pos: ASL focusing parameter for positive species (default 0).
+            asl_gamma_neg: ASL focusing parameter for negative species (default 4).
+            asl_clip: ASL probability margin for negatives (default 0.05).
         """
         super().__init__()
         self.species_weight = species_weight
@@ -205,6 +288,9 @@ class MultiTaskLoss(nn.Module):
         self.species_loss_type = species_loss
         self.focal_alpha = focal_alpha
         self.focal_gamma = focal_gamma
+        self.asl_gamma_pos = asl_gamma_pos
+        self.asl_gamma_neg = asl_gamma_neg
+        self.asl_clip = asl_clip
 
         if species_loss == 'bce':
             self.species_criterion = nn.BCEWithLogitsLoss(
@@ -239,6 +325,14 @@ class MultiTaskLoss(nn.Module):
             species_loss = focal_loss(
                 logits, species_t,
                 alpha=self.focal_alpha, gamma=self.focal_gamma,
+                reduction=self.reduction,
+            )
+        elif self.species_loss_type == 'asl':
+            species_loss = asymmetric_loss(
+                logits, species_t,
+                gamma_pos=self.asl_gamma_pos,
+                gamma_neg=self.asl_gamma_neg,
+                clip=self.asl_clip,
                 reduction=self.reduction,
             )
         elif self.species_loss_type == 'an':

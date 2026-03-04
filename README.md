@@ -53,7 +53,7 @@ python utils/geoutils.py --km 350 --out-dir outputs/global_chunks \
     --threads 8 --combine --combined-out data/global_350km_ee.parquet --fill-missing
 
 # 2. Process GBIF archive
-python utils/gbifutils.py --gbif /path/to/gbif_archive.zip --file occurrence.csv \
+python utils/gbifutils.py --gbif /path/to/gbif_archive.zip --file occurrence.txt \
     --output ./outputs/gbif_processed.csv.gz --taxonomy taxonomy.csv
 
 # 3. Combine

@@ -11,7 +11,8 @@ from .model import (
 from .loss import (
     MultiTaskLoss,
     compute_pos_weights,
-    focal_loss
+    focal_loss,
+    asymmetric_loss,
 )
 
 __all__ = [
@@ -22,5 +23,6 @@ __all__ = [
     'create_model',
     'MultiTaskLoss',
     'compute_pos_weights',
-    'focal_loss'
+    'focal_loss',
+    'asymmetric_loss',
 ]

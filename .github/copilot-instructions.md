@@ -37,8 +37,8 @@ Species identifiers from the Global Biodiversity Information Facility (GBIF) tax
 **Training Targets:**
 - **Primary target**: Species list (GBIF taxonKeys) for that location/week combination
   - Encoded as multi-label binary classification
-  - Assume-negative (AN) loss with positive up-weighting and negative sampling
-  - BCE (default) and focal loss also available via `--species_loss`
+  - Asymmetric Loss (ASL, default) with separate positive/negative focusing
+  - BCE, focal, and assume-negative (AN) loss also available via `--species_loss`
 - **Auxiliary target**: Environmental/geographic features for that cell
   - The environmental features act as a regularization signal
   - Helps the model learn better spatial representations
@@ -138,12 +138,15 @@ Species identifiers from the Global Biodiversity Information Facility (GBIF) tax
 - scale=2.0 → ~47M parameters, embed_dim=1024, encoder: 8 blocks
 
 **loss.py** - Loss Functions:
-- `AssumeNegativeLoss`: Default loss — LAN-full strategy (Cole et al., 2023) for presence-only data
+- `asymmetric_loss()`: Default loss — ASL (Ridnik et al., 2021) for multi-label classification
+  - Separate focusing: γ+=0 (keep all positives), γ-=4 (suppress easy negatives)
+  - Probability margin clip=0.05 discards very easy negatives
+- `AssumeNegativeLoss`: LAN-full strategy (Cole et al., 2023) for presence-only data
   - Up-weights positives by λ, samples M negatives per example
   - Default: λ=8, M=1024, label_smoothing=0.05
 - `MultiTaskLoss`: Weighted combination of species loss + environmental MSE
   - Total Loss = species_weight × species_loss + env_weight × MSE
-  - Species loss: `bce` (default), `an` (assume-negative), or `focal`
+  - Species loss: `asl` (default), `bce`, `focal`, or `an` (assume-negative)
   - Default weights: species=1.0, env=0.05
   - Environmental MSE uses `masked_mse()` to skip NaN targets
 - `compute_pos_weights()`: Calculate class weights from training data
@@ -168,7 +171,7 @@ Species identifiers from the Global Biodiversity Information Facility (GBIF) tax
 - Progress tracking with tqdm
 - GPU/CPU support with automatic device selection
 - Optuna-based hyperparameter autotune (`--autotune`)
-  - Tunes: lr, batch_size, pos_lambda, neg_samples, label_smoothing, weight_decay, env_weight, lr_T0, jitter, max_obs_per_species, no_yearly, species_loss, model_scale, coord_harmonics, week_harmonics
+  - Tunes: lr, batch_size, pos_lambda, neg_samples, label_smoothing, weight_decay, env_weight, lr_T0, jitter, max_obs_per_species, no_yearly, species_loss, model_scale, coord_harmonics, week_harmonics, asl_gamma_neg, asl_clip
   - Bayesian optimization with TPE sampler and MedianPruner
   - `--autotune_trials` (default 50), `--autotune_epochs` (default 10)
   - Results saved to `checkpoints/autotune/autotune_results.json`

@@ -7,7 +7,7 @@ Features:
   - AdamW optimizer with linear LR warmup + CosineAnnealingWarmRestarts
   - Automatic mixed-precision (AMP) on CUDA for ~2× speed-up
   - Early stopping based on validation mAP plateau
-  - Assume-negative (AN) loss (default); BCE and focal also available
+  - Asymmetric Loss (ASL, default); BCE, focal, and assume-negative also available
   - Label smoothing and observation cap for regularization
   - Gradient clipping
   - Optuna-based hyperparameter autotune (--autotune)
@@ -45,6 +45,7 @@ TUNABLE_PARAMS = [
     'label_smoothing', 'weight_decay', 'env_weight', 'lr_T0',
     'jitter', 'max_obs_per_species', 'no_yearly', 'species_loss',
     'model_scale', 'coord_harmonics', 'week_harmonics',
+    'asl_gamma_neg', 'asl_clip',
 ]
 
 # Params that affect data preprocessing — when tuned, data is re-processed per trial
@@ -384,7 +385,11 @@ def _suggest_param(trial, name: str, args):
     if name == 'no_yearly':
         return trial.suggest_categorical('no_yearly', [True, False])
     if name == 'species_loss':
-        return trial.suggest_categorical('species_loss', ['an', 'bce', 'focal'])
+        return trial.suggest_categorical('species_loss', ['asl', 'an', 'bce', 'focal'])
+    if name == 'asl_gamma_neg':
+        return trial.suggest_float('asl_gamma_neg', 1.0, 8.0)
+    if name == 'asl_clip':
+        return trial.suggest_float('asl_clip', 0.0, 0.2)
     if name == 'model_scale':
         return trial.suggest_float('model_scale', 0.25, 3.0, log=True)
     if name == 'coord_harmonics':
@@ -483,6 +488,10 @@ def run_autotune(args, device: torch.device):
             # AN-specific params: use defaults, don't let Optuna vary them
             p['pos_lambda'] = args.pos_lambda
             p['neg_samples'] = args.neg_samples
+        if loss_type != 'asl':
+            # ASL-specific params: use defaults when not relevant
+            p['asl_gamma_neg'] = args.asl_gamma_neg
+            p['asl_clip'] = args.asl_clip
 
         batch_size = int(p['batch_size'])
         use_jitter = bool(p.get('jitter', args.jitter))
@@ -539,6 +548,9 @@ def run_autotune(args, device: torch.device):
             pos_lambda=float(p['pos_lambda']),
             neg_samples=int(p['neg_samples']),
             label_smoothing=float(p['label_smoothing']),
+            asl_gamma_pos=args.asl_gamma_pos,
+            asl_gamma_neg=float(p.get('asl_gamma_neg', args.asl_gamma_neg)),
+            asl_clip=float(p.get('asl_clip', args.asl_clip)),
         )
         optimizer = torch.optim.AdamW(
             model.parameters(), lr=float(p['lr']),
@@ -686,8 +698,14 @@ def main():
     parser.add_argument('--weight_decay', type=float, default=1e-3)
     parser.add_argument('--species_weight', type=float, default=1.0)
     parser.add_argument('--env_weight', type=float, default=0.05)
-    parser.add_argument('--species_loss', type=str, default='bce', choices=['bce', 'focal', 'an'],
-                        help='Species loss function: bce (cross-entropy, default), bce, or focal')
+    parser.add_argument('--species_loss', type=str, default='asl', choices=['asl', 'bce', 'focal', 'an'],
+                        help='Species loss function: asl (asymmetric, default), bce, focal, or an')
+    parser.add_argument('--asl_gamma_pos', type=float, default=0.0,
+                        help='ASL positive focusing parameter (default: 0, no down-weighting)')
+    parser.add_argument('--asl_gamma_neg', type=float, default=4.0,
+                        help='ASL negative focusing parameter (default: 4, aggressively suppress easy negatives)')
+    parser.add_argument('--asl_clip', type=float, default=0.05,
+                        help='ASL probability margin for negatives (default: 0.05, 0=disable)')
     parser.add_argument('--focal_alpha', type=float, default=0.25)
     parser.add_argument('--focal_gamma', type=float, default=2.0)
     parser.add_argument('--pos_lambda', type=float, default=8.0,
@@ -770,7 +788,9 @@ def main():
     print(f"  Batch size: {args.batch_size}")
     print(f"  LR:         {args.lr}  (schedule: {args.lr_schedule}, warmup: {args.lr_warmup})")
     loss_desc = args.species_loss
-    if args.species_loss == 'an':
+    if args.species_loss == 'asl':
+        loss_desc += f"  (γ+={args.asl_gamma_pos}, γ-={args.asl_gamma_neg}, clip={args.asl_clip})"
+    elif args.species_loss == 'an':
         loss_desc += f"  (λ={args.pos_lambda}, M={args.neg_samples}, smooth={args.label_smoothing})"
     elif args.species_loss == 'focal':
         loss_desc += f"  (α={args.focal_alpha}, γ={args.focal_gamma})"
@@ -900,6 +920,9 @@ def main():
         focal_alpha=args.focal_alpha, focal_gamma=args.focal_gamma,
         pos_lambda=args.pos_lambda, neg_samples=args.neg_samples,
         label_smoothing=args.label_smoothing,
+        asl_gamma_pos=args.asl_gamma_pos,
+        asl_gamma_neg=args.asl_gamma_neg,
+        asl_clip=args.asl_clip,
     )
     optimizer = torch.optim.AdamW(
         model.parameters(), lr=args.lr, weight_decay=args.weight_decay,

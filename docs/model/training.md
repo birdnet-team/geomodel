@@ -14,8 +14,7 @@ python train.py \
     --model_scale 1.0 \
     --num_epochs 100 \
     --batch_size 256 \
-    --lr 0.001 \
-    --species_loss an
+    --lr 0.001
 ```
 
 ## Training Pipeline
@@ -55,7 +54,10 @@ The training script handles the full pipeline automatically:
 | `--weight_decay` | `0.001` | AdamW weight decay |
 | `--species_weight` | `1.0` | Species loss multiplier |
 | `--env_weight` | `0.05` | Environmental loss multiplier |
-| `--species_loss` | `bce` | Loss function: `bce` (default), `an` (assume-negative), or `focal` |
+| `--species_loss` | `asl` | Loss function: `asl` (asymmetric, default), `bce`, `focal`, or `an` |
+| `--asl_gamma_pos` | `0.0` | ASL positive focusing parameter (0 = no down-weighting) |
+| `--asl_gamma_neg` | `4.0` | ASL negative focusing parameter (higher = more aggressive) |
+| `--asl_clip` | `0.05` | ASL probability margin for negatives (0 = disable) |
 | `--focal_alpha` | `0.25` | Focal loss alpha (only with `--species_loss focal`) |
 | `--focal_gamma` | `2.0` | Focal loss gamma |
 | `--pos_lambda` | `8.0` | Positive up-weighting λ for AN loss |
@@ -190,7 +192,9 @@ The samples themselves are kept (they may still have other species) — only the
 over-represented species labels are dropped.  This prevents ubiquitous species
 from dominating the gradient signal.
 
-### Reference
+### References
+
+> Ridnik, T., Ben-Baruch, E., Zamir, N., Noy, A., Friedman, I., Protter, M., & Zelnik-Manor, L. (2021). Asymmetric Loss For Multi-Label Classification. In *IEEE/CVF International Conference on Computer Vision* (pp. 82–91).
 
 > Cole, E., Van Horn, G., Lange, C., Shepard, A., Leary, P., Perona, P., Loarie, S., & Mac Aodha, O. (2023). Spatial implicit neural representations for global-scale species mapping. In *International Conference on Machine Learning* (pp. 6320–6342). PMLR.
 
@@ -202,7 +206,7 @@ $$
 \mathcal{L}_{\text{total}} = w_{\text{species}} \cdot \mathcal{L}_{\text{species}} + w_{\text{env}} \cdot \mathcal{L}_{\text{env}}
 $$
 
-The environmental MSE loss regularizes the spatial embedding. Default weights: species=1.0, env=0.1.
+The environmental MSE loss regularizes the spatial embedding. Default weights: species=1.0, env=0.05.
 
 Environmental features with missing values (NaN) are excluded from the MSE
 computation via masked loss — the model is not penalised for positions where
@@ -273,7 +277,9 @@ python train.py --data_path data.parquet --autotune lr pos_lambda    # tune spec
 | `jitter` | {true, false} |
 | `max_obs_per_species` | {0, 500, 1000, 2000, 5000} |
 | `no_yearly` | {true, false} |
-| `species_loss` | {an, bce, focal} |
+| `species_loss` | {asl, an, bce, focal} |
+| `asl_gamma_neg` | 1.0 → 8.0 |
+| `asl_clip` | 0.0 → 0.2 |
 | `model_scale` | 0.25 → 3.0 (log scale) |
 | `coord_harmonics` | 2 → 8 (integer) |
 | `week_harmonics` | 2 → 8 (integer) |
