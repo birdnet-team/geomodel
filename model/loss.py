@@ -252,7 +252,7 @@ class MultiTaskLoss(nn.Module):
     def __init__(
         self,
         species_weight: float = 1.0,
-        env_weight: float = 0.05,
+        env_weight: float = 0.1,
         pos_weight: Optional[torch.Tensor] = None,
         species_loss: str = 'asl',
         focal_alpha: float = 0.25,

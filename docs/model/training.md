@@ -53,7 +53,7 @@ The training script handles the full pipeline automatically:
 | `--lr` | `0.001` | Initial learning rate |
 | `--weight_decay` | `0.001` | AdamW (Loshchilov & Hutter, 2019) weight decay |
 | `--species_weight` | `1.0` | Species loss multiplier |
-| `--env_weight` | `0.05` | Environmental loss multiplier |
+| `--env_weight` | `0.1` | Environmental loss multiplier |
 | `--species_loss` | `asl` | Loss function: `asl` (asymmetric, default), `bce`, `focal`, or `an` |
 | `--asl_gamma_pos` | `0.0` | ASL positive focusing parameter (0 = no down-weighting) |
 | `--asl_gamma_neg` | `4.0` | ASL negative focusing parameter (higher = more aggressive) |
@@ -63,7 +63,7 @@ The training script handles the full pipeline automatically:
 | `--pos_lambda` | `8.0` | Positive up-weighting λ for AN loss |
 | `--neg_samples` | `1024` | Negative species to sample per example for AN loss (0 = all) |
 | `--label_smoothing` | `0.05` | Smooth binary targets to prevent overconfidence (0 = off) |
-| `--max_obs_per_species` | `50000` | Cap observations per species (0 = no cap) |
+| `--max_obs_per_species` | `100000` | Cap observations per species (0 = no cap) |
 | `--ocean_sample_rate` | `0.1` | Fraction of high-water cells to keep (1.0 = keep all) |
 | `--no_yearly` | off | Exclude week-0 (yearly) samples from training |
 | `--jitter` | off | Jitter training coordinates within H3 cells each epoch |
@@ -120,6 +120,26 @@ When `--jitter` is passed, Gaussian noise is added to training coordinates every
 | `--num_workers` | `min(4, CPUs)` | DataLoader worker processes |
 
 ## Loss Functions
+
+### Asymmetric Loss (Default)
+
+Asymmetric Loss (ASL; Ridnik et al., 2021) is a multi-label focal loss variant that applies **separate focusing parameters** to positive and negative samples.  In species distribution modelling the vast majority of labels are negative (a given species is absent from most locations), so ASL aggressively down-weights easy negatives while keeping all positive signal intact.
+
+$$
+\mathcal{L}_{\text{ASL}} = \frac{1}{N}\sum_i
+\begin{cases}
+(1-p_i)^{\gamma_+}\,\log(p_i) & y_i=1 \\[4pt]
+(p_{m})^{\gamma_-}\,\log(1-p_{m}) & y_i=0
+\end{cases}
+$$
+
+where $p_i = \sigma(z_i)$ and $p_m = \max(p_i - m,\, 0)$ is the probability after a hard margin shift $m$ (the `--asl_clip` parameter).  The margin discards very easy negatives entirely ($p_i < m \Rightarrow$ zero loss).
+
+| Parameter | Default | Notes |
+|---|---|---|
+| `--asl_gamma_pos` | `0.0` | Positive focusing — 0 keeps all positive gradient |
+| `--asl_gamma_neg` | `4.0` | Negative focusing — higher suppresses easy negatives more |
+| `--asl_clip` | `0.05` | Hard probability margin for negatives (0 = disable) |
 
 ### BCE
 
@@ -204,7 +224,7 @@ $$
 \mathcal{L}_{\text{total}} = w_{\text{species}} \cdot \mathcal{L}_{\text{species}} + w_{\text{env}} \cdot \mathcal{L}_{\text{env}}
 $$
 
-The environmental MSE loss regularizes the spatial embedding. Default weights: species=1.0, env=0.05.
+The environmental MSE loss regularizes the spatial embedding. Default weights: species=1.0, env=0.1.
 
 Environmental features with missing values (NaN) are excluded from the MSE
 computation via masked loss — the model is not penalised for positions where

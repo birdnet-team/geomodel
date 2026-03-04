@@ -147,7 +147,7 @@ Species identifiers from the Global Biodiversity Information Facility (GBIF) tax
 - `MultiTaskLoss`: Weighted combination of species loss + environmental MSE
   - Total Loss = species_weight × species_loss + env_weight × MSE
   - Species loss: `asl` (default), `bce`, `focal`, or `an` (assume-negative)
-  - Default weights: species=1.0, env=0.05
+  - Default weights: species=1.0, env=0.1
   - Environmental MSE uses `masked_mse()` to skip NaN targets
 - `compute_pos_weights()`: Calculate class weights from training data
 - `focal_loss()`: Alternative loss for severe class imbalance

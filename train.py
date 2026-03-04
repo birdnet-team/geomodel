@@ -695,7 +695,7 @@ def main():
     parser.add_argument('--lr', type=float, default=1e-3)
     parser.add_argument('--weight_decay', type=float, default=1e-3)
     parser.add_argument('--species_weight', type=float, default=1.0)
-    parser.add_argument('--env_weight', type=float, default=0.05)
+    parser.add_argument('--env_weight', type=float, default=0.1)
     parser.add_argument('--species_loss', type=str, default='asl', choices=['asl', 'bce', 'focal', 'an'],
                         help='Species loss function: asl (asymmetric, default), bce, focal, or an')
     parser.add_argument('--asl_gamma_pos', type=float, default=0.0,
@@ -712,8 +712,8 @@ def main():
                         help='Number of negative species to sample per example for AN loss (default: 1024, 0=all)')
     parser.add_argument('--label_smoothing', type=float, default=0.05,
                         help='Smooth binary targets to prevent overconfident predictions (default: 0.05, 0=off)')
-    parser.add_argument('--max_obs_per_species', type=int, default=50000,
-                        help='Cap observations per species to reduce common-species dominance (default: 50000, 0=no cap)')
+    parser.add_argument('--max_obs_per_species', type=int, default=100000,
+                        help='Cap observations per species to reduce common-species dominance (default: 100000, 0=no cap)')
     parser.add_argument('--ocean_sample_rate', type=float, default=0.1,
                         help='Fraction of ocean cells (water_fraction > 0.9) to keep (default: 0.1, 1.0=keep all)')
     parser.add_argument('--no_yearly', action='store_true',
