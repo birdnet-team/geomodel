@@ -690,7 +690,7 @@ def main():
                         help='Number of harmonics for week circular encoding (default: 4)')
 
     # Training
-    parser.add_argument('--batch_size', type=int, default=1024)
+    parser.add_argument('--batch_size', type=int, default=512)
     parser.add_argument('--num_epochs', type=int, default=50)
     parser.add_argument('--lr', type=float, default=1e-3)
     parser.add_argument('--weight_decay', type=float, default=1e-3)
@@ -714,8 +714,8 @@ def main():
                         help='Smooth binary targets to prevent overconfident predictions (default: 0.05, 0=off)')
     parser.add_argument('--max_obs_per_species', type=int, default=100000,
                         help='Cap observations per species to reduce common-species dominance (default: 100000, 0=no cap)')
-    parser.add_argument('--ocean_sample_rate', type=float, default=0.1,
-                        help='Fraction of ocean cells (water_fraction > 0.9) to keep (default: 0.1, 1.0=keep all)')
+    parser.add_argument('--ocean_sample_rate', type=float, default=1.0,
+                        help='Fraction of ocean cells (water_fraction > 0.9) to keep (default: 1.0, 1.0=keep all)')
     parser.add_argument('--no_yearly', action='store_true',
                         help='Exclude week-0 (yearly) samples from training. '
                              'Year-round predictions are computed by averaging all 48 weeks at inference.')
