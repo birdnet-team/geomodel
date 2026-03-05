@@ -389,7 +389,10 @@ class Trainer:
                 probs_cpu = probs.cpu()
                 labels_cpu = pos_mask.cpu()
                 for tk, idx in self.watchlist_indices.items():
-                    wl_scores[tk].append(probs_cpu[:, idx])
+                    # .clone() detaches the 1-D slice from the full (B, n_species)
+                    # tensor — without it, the view keeps the entire parent alive
+                    # and memory grows linearly with the number of val batches.
+                    wl_scores[tk].append(probs_cpu[:, idx].clone())
                     wl_labels[tk].append(labels_cpu[:, idx].float())
 
         # F1/precision/recall from micro-averaged TP/FP/FN per threshold
@@ -1057,7 +1060,7 @@ def main():
     # Device
     parser.add_argument('--device', type=str, default='auto', choices=['auto', 'cuda', 'cpu'])
     parser.add_argument('--num_workers', type=int, default=min(4, os.cpu_count() or 1),
-                        help='Number of DataLoader worker processes (default: min(8, CPU cores))')
+                        help='Number of DataLoader worker processes (default: min(4, CPU cores))')
 
     # Autotune
     parser.add_argument('--autotune', nargs='*', default=None, metavar='PARAM',
