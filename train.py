@@ -73,13 +73,23 @@ def _check_watchlist_coverage(
     import warnings
     import numpy as np
 
-    def _species_present(tgt: Dict, idx: int) -> bool:
+    def _present_indices(tgt: Dict) -> set:
+        """Return set of species indices that have at least one positive."""
         sp = tgt['species']
         if isinstance(sp, np.ndarray) and sp.ndim == 2:
-            return sp[:, idx].any()
+            return set(np.where(sp.any(axis=0))[0].tolist())
         elif isinstance(sp, list):
-            return any(idx in row for row in sp)
-        return False
+            present: set = set()
+            for row in sp:
+                if hasattr(row, 'tolist'):
+                    present.update(row.tolist())
+                else:
+                    present.update(row)
+            return present
+        return set()
+
+    train_present = _present_indices(train_tgt)
+    val_present = _present_indices(val_tgt)
 
     missing_train = []
     missing_val = []
@@ -89,9 +99,9 @@ def _check_watchlist_coverage(
         if idx is None:
             not_in_vocab.append((taxon_key, name))
             continue
-        if not _species_present(train_tgt, idx):
+        if idx not in train_present:
             missing_train.append((taxon_key, name))
-        if not _species_present(val_tgt, idx):
+        if idx not in val_present:
             missing_val.append((taxon_key, name))
 
     if not_in_vocab:
@@ -460,7 +470,16 @@ class Trainer:
         Args:
             checkpoint_path: Path to a ``.pt`` checkpoint file.
         """
-        ckpt = torch.load(checkpoint_path, map_location=self.device, weights_only=False)
+        try:
+            ckpt = torch.load(checkpoint_path, map_location=self.device, weights_only=False)
+        except (RuntimeError, EOFError, Exception) as exc:
+            import warnings
+            warnings.warn(
+                f"Checkpoint {checkpoint_path} is corrupted and will be "
+                f"ignored (training starts from scratch): {exc}",
+                stacklevel=2,
+            )
+            return
         self.model.load_state_dict(ckpt['model_state_dict'])
         self.optimizer.load_state_dict(ckpt['optimizer_state_dict'])
         self.current_epoch = ckpt['epoch']

@@ -268,11 +268,12 @@ geomodel/
 │   ├── plot_richness.py        # Species richness heatmaps (+ side-by-side observed vs predicted)
 │   ├── plot_training.py        # Training loss curves and metrics
 │   ├── plot_variable_importance.py  # Feature importance analysis
-│   ├── plot_environmental.py   # Environmental feature visualization
-│   ├── collect_ablation_results.py  # Collect ablation results into Markdown/CSV tables
-│   └── run_ablation.sh         # Run all ablation experiments sequentially
+│   └── plot_environmental.py   # Environmental feature visualization
 ├── report/
-│   └── hypotheses.md           # Ablation study plan, hypotheses, and results
+│   ├── ablation.md             # Ablation study plan, hypotheses, and results
+│   ├── run_ablation.sh         # Run all ablation experiments sequentially
+│   ├── collect_ablation_results.py  # Collect ablation results into Markdown/CSV tables
+│   └── ablation/               # Ablation experiment checkpoints and logs
 ├── docs/                       # MkDocs documentation
 ├── checkpoints/                # Saved model checkpoints
 └── outputs/                    # Generated data and plots

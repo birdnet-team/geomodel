@@ -338,6 +338,8 @@ The trainer saves:
 
 Each checkpoint contains the full model state, optimizer state, scheduler state, AMP scaler, and species vocabulary — everything needed to resume training or run inference.
 
+If a checkpoint file is corrupted (e.g. from a crash during writing), `--resume` will log a warning and start training from scratch instead of crashing.
+
 ### Evaluation Metrics
 
 During each validation epoch, the following metrics are computed and recorded:
@@ -347,8 +349,30 @@ During each validation epoch, the following metrics are computed and recorded:
 | **mAP** | Mean per-sample average precision — measures how well positive species are ranked above negatives |
 | **Top-10 recall** | Fraction of true positives appearing in the model's 10 highest-probability predictions |
 | **Top-30 recall** | Fraction of true positives in the top 30 predictions |
+| **F1 @ 5% / 10% / 25%** | Micro-averaged F1 score at three probability thresholds |
+| **Precision @ 5% / 10% / 25%** | Micro-averaged precision at three probability thresholds |
+| **Recall @ 5% / 10% / 25%** | Micro-averaged recall at three probability thresholds |
+| **List-ratio @ 5% / 10% / 25%** | Ratio of predicted list length to true list length (1.0 = perfect calibration) |
+| **Mean list length @ 5% / 10% / 25%** | Average number of species predicted above the threshold |
+| **Watchlist mean AP** | Mean average precision across 18 endemic/restricted-range watchlist species |
+| **Per-species AP** | Individual AP for each watchlist species |
 
 Metrics are printed after each epoch and saved in `training_history.json`. Use [`scripts/plot_training.py`](../plotting/training-curves.md) to visualise them.
+
+### Watchlist Species
+
+The trainer tracks individual average precision for 18 endemic and restricted-range bird species grouped by island system.  These species have small, disjoint ranges that are particularly challenging for spatiotemporal models:
+
+| Group | Species |
+|---|---|
+| **Hawaiian** | Hawaiian Goose (Nēnē), Hawaiian Hawk, Hawaii Elepaio, Apapane, Iiwi, Hawaii Amakihi |
+| **New Zealand** | Kea, North Island Brown Kiwi, South Island Takahe, Rifleman, Tui, North Island Kokako |
+| **Galápagos** | Galápagos Hawk, Galápagos Rail, Galápagos Petrel |
+| **Other** | Kagu (New Caledonia), California Condor, Whooping Crane |
+
+Per-species AP and the watchlist mean AP are recorded in `training_history.json` every epoch.
+
+When `--sample_fraction` is used, the trainer checks that all watchlist species still have samples in both the training and validation splits and emits a warning if any are missing.
 
 ## Resuming Training
 
@@ -356,7 +380,7 @@ Metrics are printed after each epoch and saved in `training_history.json`. Use [
 python train.py --resume checkpoints/checkpoint_latest.pt --num_epochs 50
 ```
 
-This loads the model, optimizer, scheduler, and scaler states and continues training for 50 more epochs.
+This loads the model, optimizer, scheduler, and scaler states and continues training for 50 more epochs.  If the checkpoint is corrupted (truncated write, power loss, etc.) training starts from scratch with a warning rather than crashing.
 
 ## Hyperparameter Autotune
 
