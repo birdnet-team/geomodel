@@ -565,6 +565,7 @@ def run_autotune(args, device: torch.device):
 
         # Train for n_epochs, report mAP after each epoch for pruning
         best_map = 0.0
+        epoch_history = []
         for epoch in range(n_epochs):
             trainer.current_epoch = epoch
 
@@ -572,7 +573,7 @@ def run_autotune(args, device: torch.device):
             if hasattr(sampler, 'set_epoch'):
                 sampler.set_epoch(epoch)
 
-            trainer.train_epoch(t_loader)
+            train_m = trainer.train_epoch(t_loader)
             val_m = trainer.validate(v_loader)
 
             if scheduler is not None:
@@ -580,6 +581,21 @@ def run_autotune(args, device: torch.device):
 
             val_map = val_m['map']
             best_map = max(best_map, val_map)
+
+            epoch_history.append({
+                'epoch': epoch,
+                'train_loss': train_m['loss'],
+                'train_species_loss': train_m['species_loss'],
+                'train_env_loss': train_m['env_loss'],
+                'val_loss': val_m['loss'],
+                'val_species_loss': val_m['species_loss'],
+                'val_env_loss': val_m['env_loss'],
+                'val_map': val_m['map'],
+                'val_top10_recall': val_m['top10_recall'],
+                'val_top30_recall': val_m['top30_recall'],
+            })
+            trial.set_user_attr('epoch_history', epoch_history)
+
             trial.report(val_map, epoch)
 
             if trial.should_prune():
@@ -608,7 +624,8 @@ def run_autotune(args, device: torch.device):
         print(f"  Best so far: mAP={b.value:.4f} (trial {b.number})  {', '.join(parts)}")
 
     study.optimize(objective, n_trials=n_trials, show_progress_bar=True,
-                   callbacks=[_after_trial])
+                   callbacks=[_after_trial],
+                   catch=(RuntimeError,))
 
     # -- Report -----------------------------------------------------------
     best = study.best_trial
@@ -639,6 +656,7 @@ def run_autotune(args, device: torch.device):
                 'value': t.value if t.value is not None else None,
                 'params': t.params,
                 'state': str(t.state),
+                'epoch_history': t.user_attrs.get('epoch_history', []),
             }
             for t in study.trials
         ],
