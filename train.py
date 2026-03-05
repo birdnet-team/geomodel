@@ -233,6 +233,12 @@ class Trainer:
         self.model.train()
         total_loss = total_species = total_env = 0.0
         n_batches = 0
+        n_total = len(train_loader)
+
+        # When tqdm is disabled (e.g. TQDM_DISABLE=1), print phase markers
+        _tqdm_off = os.environ.get('TQDM_DISABLE', '').strip() in ('1', 'true', 'True')
+        if _tqdm_off:
+            print(f'Epoch {self.current_epoch + 1} [Train] {n_total} batches ...', flush=True)
 
         pbar = tqdm(train_loader, desc=f'Epoch {self.current_epoch + 1} [Train]')
         for batch_idx, (inputs, targets) in enumerate(pbar):
@@ -308,6 +314,10 @@ class Trainer:
         # Each entry holds (scores, labels) lists to compute column-wise AP
         wl_scores: Dict[int, list] = {tk: [] for tk in self.watchlist_indices}
         wl_labels: Dict[int, list] = {tk: [] for tk in self.watchlist_indices}
+
+        _tqdm_off = os.environ.get('TQDM_DISABLE', '').strip() in ('1', 'true', 'True')
+        if _tqdm_off:
+            print(f'Epoch {self.current_epoch + 1} [Val]   {len(val_loader)} batches ...', flush=True)
 
         for inputs, targets in tqdm(val_loader, desc=f'Epoch {self.current_epoch + 1} [Val]  '):
             lat = inputs['lat'].to(self.device, non_blocking=True)
