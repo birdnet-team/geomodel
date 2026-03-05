@@ -44,12 +44,13 @@ def plot_training(
     epochs = np.arange(1, len(history['train_loss']) + 1)
 
     has_metrics = 'val_map' in history and len(history['val_map']) > 0
+    has_f1 = 'val_f1_10' in history and len(history.get('val_f1_10', [])) > 0
 
-    # Determine layout: 2×2 without metrics, 2×3 with metrics
+    # Determine layout: 2×2 without metrics, 2×4 with all metrics
+    ncols = 2
     if has_metrics:
-        fig, axes = plt.subplots(2, 3, figsize=(18, 9))
-    else:
-        fig, axes = plt.subplots(2, 2, figsize=(12, 9))
+        ncols = 4 if has_f1 else 3
+    fig, axes = plt.subplots(2, ncols, figsize=(ncols * 6, 9))
 
     axes = axes.ravel()
     ax_idx = 0
@@ -116,6 +117,27 @@ def plot_training(
         ax.set_xlabel('Epoch')
         ax.set_ylabel('Recall')
         ax.set_ylim(0, 1)
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+
+    # --- F1@10% and list-length ratio ---
+    if has_f1:
+        ax = axes[ax_idx]; ax_idx += 1
+        ax.plot(epochs, history['val_f1_10'],
+                color='tab:red', linewidth=1.5)
+        ax.set_title('Validation F1 @ 10%', fontweight='bold')
+        ax.set_xlabel('Epoch')
+        ax.set_ylabel('F1')
+        ax.set_ylim(0, 1)
+        ax.grid(True, alpha=0.3)
+
+        ax = axes[ax_idx]; ax_idx += 1
+        ax.plot(epochs, history['val_list_ratio'],
+                color='tab:purple', linewidth=1.5)
+        ax.axhline(1.0, color='gray', linestyle='--', alpha=0.5, label='Ideal (1.0)')
+        ax.set_title('Species List-Length Ratio @ 10%', fontweight='bold')
+        ax.set_xlabel('Epoch')
+        ax.set_ylabel('Predicted / True')
         ax.legend()
         ax.grid(True, alpha=0.3)
 

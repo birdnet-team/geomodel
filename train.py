@@ -90,6 +90,7 @@ class Trainer:
             'train_loss': [], 'train_species_loss': [], 'train_env_loss': [],
             'val_loss': [], 'val_species_loss': [], 'val_env_loss': [],
             'val_map': [], 'val_top10_recall': [], 'val_top30_recall': [],
+            'val_f1_10': [], 'val_list_ratio': [],
             'lr': [],
         }
         self.best_val_map = 0.0
@@ -154,10 +155,13 @@ class Trainer:
           ranked in the model's top-k predictions.
         - **mAP** (mean average precision): mean per-sample AP, measuring
           how well the model ranks true positives above negatives.
+        - **F1@10%**: macro F1 score using a 10% probability threshold.
+        - **list ratio**: mean ratio of predicted list length to true list
+          length at a 10% threshold (values near 1.0 are optimal).
 
         Returns:
             Dict with 'loss', 'species_loss', 'env_loss', 'map',
-            'top10_recall', and 'top30_recall'.
+            'top10_recall', 'top30_recall', 'f1_10', and 'list_ratio'.
         """
         self.model.eval()
         total_loss = total_species = total_env = 0.0
@@ -167,6 +171,10 @@ class Trainer:
         total_hits_10 = total_hits_30 = total_positives = 0
         ap_sum = 0.0
         ap_count = 0
+        # F1 @ 10% threshold accumulators
+        f1_tp = f1_fp = f1_fn = 0
+        list_ratio_sum = 0.0
+        list_ratio_count = 0
 
         for inputs, targets in tqdm(val_loader, desc=f'Epoch {self.current_epoch + 1} [Val]  '):
             lat = inputs['lat'].to(self.device, non_blocking=True)
@@ -215,6 +223,28 @@ class Trainer:
                 ap_sum += sample_ap.sum().item()
                 ap_count += has_pos.sum().item()
 
+            # --- F1 and list-length ratio at 10% threshold ---
+            pred_mask = probs > 0.10
+            tp = (pred_mask & pos_mask).sum().item()
+            fp = (pred_mask & ~pos_mask).sum().item()
+            fn = (~pred_mask & pos_mask).sum().item()
+            f1_tp += tp
+            f1_fp += fp
+            f1_fn += fn
+
+            # List-length ratio (only for samples that have ground-truth positives)
+            pred_counts = pred_mask[has_pos].sum(dim=1).float()
+            true_counts = n_pos[has_pos].float()
+            # Avoid division by zero (has_pos guarantees true_counts > 0)
+            ratios = pred_counts / true_counts
+            list_ratio_sum += ratios.sum().item()
+            list_ratio_count += has_pos.sum().item()
+
+        # F1 from micro-averaged TP/FP/FN
+        f1_prec = f1_tp / max(f1_tp + f1_fp, 1)
+        f1_rec = f1_tp / max(f1_tp + f1_fn, 1)
+        f1 = 2 * f1_prec * f1_rec / max(f1_prec + f1_rec, 1e-8)
+
         metrics = {
             'loss': total_loss / n_batches,
             'species_loss': total_species / n_batches,
@@ -222,6 +252,8 @@ class Trainer:
             'map': ap_sum / max(ap_count, 1),
             'top10_recall': total_hits_10 / max(total_positives, 1),
             'top30_recall': total_hits_30 / max(total_positives, 1),
+            'f1_10': f1,
+            'list_ratio': list_ratio_sum / max(list_ratio_count, 1),
         }
         return metrics
 
@@ -320,7 +352,7 @@ class Trainer:
                 for k in ('loss', 'species_loss', 'env_loss'):
                     self.history[f'train_{k}'].append(train_m[k])
                     self.history[f'val_{k}'].append(val_m[k])
-                for k in ('map', 'top10_recall', 'top30_recall'):
+                for k in ('map', 'top10_recall', 'top30_recall', 'f1_10', 'list_ratio'):
                     self.history[f'val_{k}'].append(val_m[k])
 
                 print(f"\nEpoch {epoch + 1} \u2014 lr={lr:.2e}  "
@@ -328,7 +360,9 @@ class Trainer:
                       f"Val: {val_m['loss']:.4f} (sp={val_m['species_loss']:.4f} env={val_m['env_loss']:.4f})")
                 print(f"  Metrics: mAP={val_m['map']:.4f}  "
                       f"top-10={val_m['top10_recall']:.4f}  "
-                      f"top-30={val_m['top30_recall']:.4f}")
+                      f"top-30={val_m['top30_recall']:.4f}  "
+                      f"F1@10%={val_m['f1_10']:.4f}  "
+                      f"list-ratio={val_m['list_ratio']:.2f}")
 
                 is_best = val_m['map'] > self.best_val_map
                 if is_best:
@@ -599,6 +633,8 @@ def run_autotune(args, device: torch.device):
                 'val_map': val_m['map'],
                 'val_top10_recall': val_m['top10_recall'],
                 'val_top30_recall': val_m['top30_recall'],
+                'val_f1_10': val_m['f1_10'],
+                'val_list_ratio': val_m['list_ratio'],
             })
             trial.set_user_attr('epoch_history', epoch_history)
 
