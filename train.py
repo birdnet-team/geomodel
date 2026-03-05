@@ -23,6 +23,7 @@ Usage:
 import argparse
 import csv
 import json
+import math
 import os
 from pathlib import Path
 from typing import Dict, Optional
@@ -574,6 +575,11 @@ def run_autotune(args, device: torch.device):
                 sampler.set_epoch(epoch)
 
             train_m = trainer.train_epoch(t_loader)
+
+            # Abort trial if loss diverged
+            if math.isnan(train_m['loss']) or math.isinf(train_m['loss']):
+                raise optuna.TrialPruned(f"Training loss is {train_m['loss']}")
+
             val_m = trainer.validate(v_loader)
 
             if scheduler is not None:
