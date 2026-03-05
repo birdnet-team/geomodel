@@ -520,7 +520,14 @@ class Trainer:
             print("  Mixed precision (AMP): enabled")
         if self.patience:
             print(f"  Early stopping patience: {self.patience}")
-        print(f"  Train: {len(train_loader.dataset):,} samples  |  Val: {len(val_loader.dataset):,} samples")
+        # Show effective per-epoch counts when FractionalRandomSampler is active
+        sampler = getattr(train_loader, 'sampler', None)
+        train_total = len(train_loader.dataset)
+        if hasattr(sampler, 'fraction') and sampler.fraction < 1.0:
+            effective = len(sampler)
+            print(f"  Train: {train_total:,} samples ({effective:,}/epoch, {sampler.fraction:.0%})  |  Val: {len(val_loader.dataset):,} samples")
+        else:
+            print(f"  Train: {train_total:,} samples  |  Val: {len(val_loader.dataset):,} samples")
         print(f"  Batch size: {train_loader.batch_size}  |  Batches/epoch: {len(train_loader)}\n")
 
         start_epoch = self.current_epoch
@@ -1088,6 +1095,8 @@ def main():
         print(f"  Jitter:     enabled (Gaussian noise within H3 cells)")
     if args.label_freq_weight:
         print(f"  Freq weight: enabled (min={args.label_freq_weight_min})")
+    if args.sample_fraction < 1.0:
+        print(f"  Sample fraction: {args.sample_fraction} (training subsampled per epoch)")
     print(f"  Device:     {device}")
 
     # -- Data loading & preprocessing ---
