@@ -22,6 +22,7 @@ Usage:
 
 import argparse
 import csv
+import gc
 import json
 import math
 import os
@@ -695,6 +696,11 @@ def run_autotune(args, device: torch.device):
         ocean_sample_rate=args.ocean_sample_rate,
         include_yearly=not args.no_yearly,
     )
+
+    # Free the GeoDataFrame — no longer needed after flattening
+    del loader
+    gc.collect()
+
     print("3. Preprocessing...")
     preprocessor = H3DataPreprocessor()
     inputs, targets = preprocessor.prepare_training_data(
@@ -702,6 +708,11 @@ def run_autotune(args, device: torch.device):
         max_obs_per_species=args.max_obs_per_species,
         min_obs_per_species=args.min_obs_per_species,
     )
+
+    # Free raw flattened arrays — now encoded in inputs/targets
+    del lats, lons, weeks, env_features
+    gc.collect()
+
     info = preprocessor.get_preprocessing_info()
     n_species = info['n_species']
     n_env = info['n_env_features']
@@ -713,11 +724,19 @@ def run_autotune(args, device: torch.device):
         species_lists, min_weight=args.label_freq_weight_min,
     )
 
+    # Free species_lists — no longer needed after vocab + weights
+    del species_lists
+    gc.collect()
+
     print("4. Splitting data...")
     train_in, val_in, _, train_tgt, val_tgt, _ = preprocessor.split_data(
         inputs, targets, test_size=args.test_size, val_size=args.val_size,
         random_state=42, split_by_location=True,
     )
+
+    # Free unsplit data — now in train/val/test subsets
+    del inputs, targets
+    gc.collect()
     # Subsample val by location once; training uses FractionalRandomSampler
     if args.sample_fraction < 1.0:
         val_in, val_tgt = preprocessor.subsample_by_location(
@@ -1038,7 +1057,7 @@ def main():
     # Device
     parser.add_argument('--device', type=str, default='auto', choices=['auto', 'cuda', 'cpu'])
     parser.add_argument('--num_workers', type=int, default=min(4, os.cpu_count() or 1),
-                        help='Number of DataLoader worker processes (default: min(4, CPU cores))')
+                        help='Number of DataLoader worker processes (default: min(8, CPU cores))')
 
     # Autotune
     parser.add_argument('--autotune', nargs='*', default=None, metavar='PARAM',
@@ -1116,6 +1135,10 @@ def main():
         jitter_std = loader.compute_jitter_std(loader.get_h3_cells())
         print(f"   Coordinate jitter: ±{jitter_std:.4f}° std")
 
+    # Free the GeoDataFrame — no longer needed after flattening
+    del loader
+    gc.collect()
+
     print("3. Preprocessing...")
     preprocessor = H3DataPreprocessor()
     inputs, targets = preprocessor.prepare_training_data(
@@ -1123,6 +1146,10 @@ def main():
         max_obs_per_species=args.max_obs_per_species,
         min_obs_per_species=args.min_obs_per_species,
     )
+
+    # Free raw flattened arrays — now encoded in inputs/targets
+    del lats, lons, weeks, env_features
+    gc.collect()
 
     info = preprocessor.get_preprocessing_info()
     n_species = info['n_species']
@@ -1136,12 +1163,20 @@ def main():
             species_lists, min_weight=args.label_freq_weight_min,
         )
 
+    # Free species_lists — no longer needed after vocab + weights
+    del species_lists
+    gc.collect()
+
     print("4. Splitting data...")
     train_in, val_in, test_in, train_tgt, val_tgt, test_tgt = preprocessor.split_data(
         inputs, targets, test_size=args.test_size, val_size=args.val_size,
         random_state=42, split_by_location=True,
     )
     print(f"   Train: {len(train_in['lat']):,}  |  Val: {len(val_in['lat']):,}  |  Test: {len(test_in['lat']):,}")
+
+    # Free unsplit data — now in train/val/test subsets
+    del inputs, targets
+    gc.collect()
 
     # Subsample val/test by location once (consistent throughout training).
     # Training is subsampled per-epoch via FractionalRandomSampler instead.
@@ -1152,6 +1187,10 @@ def main():
         test_in, test_tgt = preprocessor.subsample_by_location(
             test_in, test_tgt, fraction=args.sample_fraction, random_state=42,
         )
+
+    # Free test split — not used during training
+    del test_in, test_tgt
+    gc.collect()
 
     # Verify watchlist species survived subsampling / splitting
     _check_watchlist_coverage(
