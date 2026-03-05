@@ -78,7 +78,7 @@ Year-round predictions (week 0) are computed at inference time as the **max** ac
 The encoder maps spatial coordinates into a rich embedding, **modulated by temporal information** via FiLM (Feature-wise Linear Modulation; Perez et al., 2018):
 
 1. **Spatial projection**: Concatenated lat+lon circular features → Linear to `embed_dim` (default 512)
-2. **Residual blocks** — each block applies LayerNorm → GELU → Linear → LayerNorm → GELU → Dropout → Linear with a skip connection
+2. **Residual blocks** — each block applies LayerNorm → GELU → Linear → LayerNorm → GELU → Dropout → Linear with a skip connection.  All LayerNorm layers use `eps=1e-4` (above the FP16 minimum normal ~6e-5) so that the epsilon retains full precision after half-precision quantisation.
 3. **FiLM conditioning** — after each residual block, the week encoding generates per-block scale (γ) and shift (β) parameters: $x' = \gamma \cdot \text{block}(x) + \beta$.  This forces the model to actively modulate spatial representations based on the time of year.
 4. **Final LayerNorm** for stable downstream processing
 

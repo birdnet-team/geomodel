@@ -115,7 +115,8 @@ Species identifiers from the Global Biodiversity Information Facility (GBIF) tax
    - Output dim = 2 × n_harmonics per scalar
 
 2. **ResidualBlock**: Pre-norm residual block
-   - LayerNorm → GELU → Linear → LayerNorm → GELU → Dropout → Linear + skip connection
+   - LayerNorm(eps=1e-4) → GELU → Linear → LayerNorm(eps=1e-4) → GELU → Dropout → Linear + skip connection
+   - eps=1e-4 keeps epsilon above the FP16 min-normal (~6e-5) for quantisation safety
 
 3. **SpatioTemporalEncoder**: Shared encoder with FiLM temporal conditioning
    - Spatial: lat→16, lon→16 = 32 features → Linear projection to embed_dim
@@ -205,6 +206,10 @@ Supports top-k filtering and probability thresholding.
 Converts a PyTorch checkpoint to portable inference formats (ONNX, TFLite, TF SavedModel)
 with FP16 and INT8 quantisation options.  Each conversion is automatically validated against
 the PyTorch reference model.  Default format is ONNX FP16.
+
+By default, ONNX FP16 exports keep model inputs/outputs in FP32 (`keep_io_fp32=True`)
+while converting internal weights to FP16.  LayerNormalization is also kept in FP32 for
+numerical stability.  Pass `--fp16_io` to convert I/O tensors to FP16 as well.
 
 ### Data Flow
 

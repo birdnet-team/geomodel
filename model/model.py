@@ -66,6 +66,13 @@ class CircularEncoding(nn.Module):
         return torch.cat([torch.sin(scaled), torch.cos(scaled)], dim=1)
 
 
+#: LayerNorm epsilon — set above the FP16 minimum normal value (~6e-5)
+#: so that the epsilon remains representable with full precision after
+#: FP16 quantisation.  The PyTorch default (1e-5) falls in the FP16
+#: subnormal range where precision degrades.
+LAYERNORM_EPS: float = 1e-4
+
+
 class ResidualBlock(nn.Module):
     """Pre-norm residual block: LayerNorm → GELU → Linear → LayerNorm → GELU → Dropout → Linear."""
 
@@ -78,10 +85,10 @@ class ResidualBlock(nn.Module):
         """
         super().__init__()
         self.block = nn.Sequential(
-            nn.LayerNorm(dim),
+            nn.LayerNorm(dim, eps=LAYERNORM_EPS),
             nn.GELU(),
             nn.Linear(dim, dim),
-            nn.LayerNorm(dim),
+            nn.LayerNorm(dim, eps=LAYERNORM_EPS),
             nn.GELU(),
             nn.Dropout(dropout),
             nn.Linear(dim, dim),
@@ -167,7 +174,7 @@ class SpatioTemporalEncoder(nn.Module):
                 nn.Linear(embed_dim, 2 * embed_dim),  # (γ, β)
             ) for _ in range(n_blocks)
         ])
-        self.norm = nn.LayerNorm(embed_dim)
+        self.norm = nn.LayerNorm(embed_dim, eps=LAYERNORM_EPS)
         self.output_dim = embed_dim
 
     def forward(self, lat: torch.Tensor, lon: torch.Tensor, week: torch.Tensor) -> torch.Tensor:
@@ -243,7 +250,7 @@ class SpeciesPredictionHead(nn.Module):
             *[ResidualBlock(hidden_dim, dropout) for _ in range(n_blocks)]
         )
         self.head = nn.Sequential(
-            nn.LayerNorm(hidden_dim),
+            nn.LayerNorm(hidden_dim, eps=LAYERNORM_EPS),
             nn.Linear(hidden_dim, bottleneck),
             nn.GELU(),
             nn.Linear(bottleneck, n_species),
@@ -290,7 +297,7 @@ class EnvironmentalPredictionHead(nn.Module):
             *[ResidualBlock(hidden_dim, dropout) for _ in range(n_blocks)]
         )
         self.head = nn.Sequential(
-            nn.LayerNorm(hidden_dim),
+            nn.LayerNorm(hidden_dim, eps=LAYERNORM_EPS),
             nn.Linear(hidden_dim, n_env_features),
         )
 

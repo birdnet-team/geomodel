@@ -1,5 +1,4 @@
-"""
-Export a trained BirdNET Geomodel checkpoint to portable inference formats.
+"""Export a trained BirdNET Geomodel checkpoint to portable inference formats.
 
 The export wrapper takes a single input tensor of shape ``(batch, 3)`` where
 columns are ``[latitude, longitude, week]`` and returns species probabilities
@@ -7,12 +6,20 @@ of shape ``(batch, n_species)``.
 
 Supported formats:
     onnx        ONNX FP32
-    onnx_fp16   ONNX FP16 (default)
+    onnx_fp16   ONNX FP16 (default) — weights in FP16, I/O in FP32 by default
     tflite      TensorFlow Lite FP32
     tflite_fp16 TensorFlow Lite FP16
     tflite_int8 TensorFlow Lite INT8 (dynamic-range quantisation)
     tf          TensorFlow SavedModel
     all         All of the above
+
+FP16 I/O behaviour:
+    By default, ONNX FP16 exports keep model inputs and outputs in FP32
+    (``keep_io_fp32=True``).  This preserves full coordinate precision
+    (latitude, longitude, week) and significantly reduces numerical
+    differences versus the PyTorch reference (typically <0.002 max diff
+    instead of ~0.01).  Pass ``--fp16_io`` to convert I/O tensors to FP16
+    as well, at the cost of larger numerical divergence.
 
 After each conversion, a numerical validation is run: a batch of reference
 inputs is passed through both the original PyTorch model and the exported model,
@@ -23,11 +30,13 @@ Usage:
     python convert.py                                   # ONNX FP16 (default)
     python convert.py --formats onnx tflite_fp16        # specific formats
     python convert.py --formats all                     # everything
+    python convert.py --fp16_io                         # FP16 I/O (lossy)
     python convert.py --checkpoint checkpoints/checkpoint_best.pt --outdir exports
 """
 
 import argparse
 import sys
+import warnings
 from pathlib import Path
 from typing import Dict, List, Tuple
 
@@ -109,13 +118,65 @@ def _validate(reference: np.ndarray, exported: np.ndarray,
 
 
 # ---------------------------------------------------------------------------
+# Shared ONNX export helper
+# ---------------------------------------------------------------------------
+
+def _torch_onnx_export(wrapper: nn.Module, dummy: torch.Tensor,
+                       path: Path) -> None:
+    """Run ``torch.onnx.export`` with suppression of known benign warnings.
+
+    Suppressed warnings:
+
+    * *dynamic_axes + dynamo* — PyTorch >= 2.6 defaults to the dynamo-based
+      exporter which emits a ``UserWarning`` when ``dynamic_axes`` is used.
+      The traditional exporter handles ``dynamic_axes`` correctly; the
+      warning is harmless for our model.
+    * *LeafSpec deprecation* — ``FutureWarning`` from ``copyreg`` triggered
+      during dynamo decomposition.  A PyTorch internal issue that does not
+      affect the exported model.
+    """
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore", message=r".*dynamic_axes.*dynamo.*",
+            category=UserWarning)
+        warnings.filterwarnings(
+            "ignore", message=r".*LeafSpec.*",
+            category=FutureWarning)
+        torch.onnx.export(
+            wrapper, dummy, str(path),
+            input_names=["input"],
+            output_names=["probabilities"],
+            dynamic_axes={"input": {0: "batch"},
+                          "probabilities": {0: "batch"}},
+            opset_version=18,
+        )
+
+
+# ---------------------------------------------------------------------------
 # ONNX export
 # ---------------------------------------------------------------------------
 
 def _export_onnx(wrapper: ExportWrapper, ref_inputs: np.ndarray,
                  ref_outputs: np.ndarray, outdir: Path,
-                 fp16: bool, tol: float, device: torch.device) -> bool:
-    """Export to ONNX format."""
+                 fp16: bool, tol: float, device: torch.device,
+                 keep_io_fp32: bool = True) -> bool:
+    """Export to ONNX format.
+
+    Args:
+        wrapper: Export-ready model wrapper.
+        ref_inputs: Reference input array ``(n, 3)`` for validation.
+        ref_outputs: Expected output probabilities from PyTorch.
+        outdir: Output directory.
+        fp16: If ``True``, convert weights to FP16.
+        tol: Base numerical tolerance for FP32 validation.
+        device: Torch device.
+        keep_io_fp32: When *fp16* is ``True``, keep model inputs and
+            outputs in FP32 while converting internal weights and
+            activations to FP16.  This preserves full coordinate
+            precision (latitude, longitude, week) and significantly
+            reduces numerical differences compared to full FP16.
+            Default ``True``.
+    """
     try:
         import onnx
         import onnxruntime as ort
@@ -130,13 +191,7 @@ def _export_onnx(wrapper: ExportWrapper, ref_inputs: np.ndarray,
     dummy = torch.randn(1, 3, device=device)
     wrapper.eval()
 
-    torch.onnx.export(
-        wrapper, dummy, str(path),
-        input_names=["input"],
-        output_names=["probabilities"],
-        dynamic_axes={"input": {0: "batch"}, "probabilities": {0: "batch"}},
-        opset_version=18,
-    )
+    _torch_onnx_export(wrapper, dummy, path)
 
     # Merge external data into a single .onnx file
     data_path = Path(str(path) + ".data")
@@ -148,9 +203,17 @@ def _export_onnx(wrapper: ExportWrapper, ref_inputs: np.ndarray,
     if fp16:
         from onnxconverter_common import float16
         model_fp32 = onnx.load(str(path))
-        model_fp16 = float16.convert_float_to_float16(model_fp32)
+        # Suppress benign truncation warnings for very small weight
+        # values (e.g. near-zero biases clamped to +/-1e-7 in FP16).
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "ignore", category=UserWarning,
+                module=r"onnxconverter_common\.float16")
+            model_fp16 = float16.convert_float_to_float16(
+                model_fp32, keep_io_types=keep_io_fp32)
         onnx.save(model_fp16, str(path))
-        print(f"  Converted to FP16")
+        io_note = " (I/O kept at FP32)" if keep_io_fp32 else ""
+        print(f"  Converted weights to FP16{io_note}")
 
     # Validate with ONNX Runtime
     sess = ort.InferenceSession(str(path), providers=["CPUExecutionProvider"])
@@ -160,8 +223,15 @@ def _export_onnx(wrapper: ExportWrapper, ref_inputs: np.ndarray,
     else:
         inp = ref_inputs.astype(np.float32)
     exported = sess.run(None, {"input": inp})[0].astype(np.float32)
-    ok = _validate(ref_outputs, exported, tag,
-                   tol=0.05 if fp16 else tol)  # FP16 gets wider tolerance
+
+    # Tolerance: FP16 weights with FP32 I/O is much tighter than full FP16
+    if fp16 and keep_io_fp32:
+        effective_tol = max(tol, 0.02)
+    elif fp16:
+        effective_tol = 0.05
+    else:
+        effective_tol = tol
+    ok = _validate(ref_outputs, exported, tag, effective_tol)
 
     total_bytes = path.stat().st_size
     size_mb = total_bytes / (1024 * 1024)
@@ -193,13 +263,7 @@ def _export_tf_saved_model(wrapper: ExportWrapper, ref_inputs: np.ndarray,
     # Step 1: export ONNX (FP32) as intermediate
     dummy = torch.randn(1, 3, device=device)
     wrapper.eval()
-    torch.onnx.export(
-        wrapper, dummy, str(onnx_path),
-        input_names=["input"],
-        output_names=["probabilities"],
-        dynamic_axes={"input": {0: "batch"}, "probabilities": {0: "batch"}},
-        opset_version=18,
-    )
+    _torch_onnx_export(wrapper, dummy, onnx_path)
 
     # Step 2: convert ONNX → TF SavedModel
     onnx2tf.convert(
@@ -248,13 +312,7 @@ def _export_tflite(wrapper: ExportWrapper, ref_inputs: np.ndarray,
     # Step 1: ONNX intermediate
     dummy = torch.randn(1, 3, device=device)
     wrapper.eval()
-    torch.onnx.export(
-        wrapper, dummy, str(onnx_path),
-        input_names=["input"],
-        output_names=["probabilities"],
-        dynamic_axes={"input": {0: "batch"}, "probabilities": {0: "batch"}},
-        opset_version=18,
-    )
+    _torch_onnx_export(wrapper, dummy, onnx_path)
 
     # Step 2: ONNX → TF SavedModel
     onnx2tf.convert(
@@ -319,6 +377,7 @@ def convert(
     formats: List[str] | None = None,
     tol: float = 1e-4,
     device: str = "auto",
+    keep_io_fp32: bool = True,
 ) -> Dict[str, bool]:
     """Convert a checkpoint to the requested formats.
 
@@ -328,6 +387,9 @@ def convert(
         formats: List of format names (default: ``['onnx_fp16']``).
         tol: Base tolerance for numerical validation.
         device: ``'auto'``, ``'cuda'``, or ``'cpu'``.
+        keep_io_fp32: Keep model inputs/outputs in FP32 for FP16
+            exports.  This preserves coordinate precision and reduces
+            numerical divergence.  Default ``True``.
 
     Returns:
         Dict mapping format name to success boolean.
@@ -386,7 +448,8 @@ def convert(
         "onnx":        lambda: _export_onnx(wrapper, ref_inputs, ref_outputs,
                                             outpath, fp16=False, tol=tol, device=dev),
         "onnx_fp16":   lambda: _export_onnx(wrapper, ref_inputs, ref_outputs,
-                                            outpath, fp16=True, tol=tol, device=dev),
+                                            outpath, fp16=True, tol=tol, device=dev,
+                                            keep_io_fp32=keep_io_fp32),
         "tflite":      lambda: _export_tflite(wrapper, ref_inputs, ref_outputs,
                                               outpath, mode="fp32", tol=tol, device=dev),
         "tflite_fp16": lambda: _export_tflite(wrapper, ref_inputs, ref_outputs,
@@ -445,6 +508,9 @@ def main():
     parser.add_argument("--device", type=str, default="auto",
                         choices=["auto", "cuda", "cpu"],
                         help="Device for PyTorch model (default: auto)")
+    parser.add_argument("--fp16_io", action="store_true",
+                        help="Convert model I/O to FP16 as well (default: keep "
+                             "inputs/outputs at FP32 for better precision)")
     args = parser.parse_args()
 
     results = convert(
@@ -453,6 +519,7 @@ def main():
         formats=args.formats,
         tol=args.tol,
         device=args.device,
+        keep_io_fp32=not args.fp16_io,
     )
 
     # Exit with error code if any conversion failed

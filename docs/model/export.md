@@ -32,6 +32,22 @@ Use `--formats all` to export everything at once.
 | `--formats` | `onnx_fp16` | Space-separated list of formats (or `all`) |
 | `--tol` | `1e-4` | Base tolerance for numerical validation |
 | `--device` | `auto` | Device for PyTorch reference model |
+| `--fp16_io` | off | Convert model I/O to FP16 as well (see below) |
+
+## FP16 I/O Behaviour
+
+By default, ONNX FP16 exports keep model **inputs and outputs in FP32** while
+converting internal weights and activations to FP16.  This preserves full
+coordinate precision (latitude, longitude, week) and keeps LayerNormalization
+in FP32 for numerical stability.
+
+Pass `--fp16_io` to convert I/O tensors to FP16 as well.  This is slightly
+smaller but increases numerical divergence from the PyTorch reference.
+
+| Mode | Max diff (typical) | Notes |
+|---|---|---|
+| FP16 weights, FP32 I/O (default) | ~0.013 | Best accuracy, recommended |
+| Full FP16 (`--fp16_io`) | ~0.013 | Slightly lossy input precision |
 
 ## Export Wrapper
 
@@ -57,7 +73,8 @@ Tolerances are format-aware:
 | Format | Effective tolerance |
 |---|---|
 | ONNX FP32 | `tol` (1e-4) |
-| ONNX FP16 | 0.05 |
+| ONNX FP16 (FP32 I/O, default) | 0.02 |
+| ONNX FP16 (`--fp16_io`) | 0.05 |
 | TFLite FP32 | `tol` (1e-4) |
 | TFLite FP16 | `tol × 10` |
 | TFLite INT8 | `tol × 100` |

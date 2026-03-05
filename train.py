@@ -691,7 +691,7 @@ def main():
     parser = argparse.ArgumentParser(description='Train BirdNET Geomodel')
 
     # Data
-    parser.add_argument('--data_path', type=str, default='./outputs/global_350km_ee_gbif.parquet')
+    parser.add_argument('--data_path', type=str, help='Path to H3-aggregated training data (Parquet files)', required=True)
 
     # Model
     parser.add_argument('--model_scale', type=float, default=1.0,
