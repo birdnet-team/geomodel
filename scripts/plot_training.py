@@ -44,7 +44,8 @@ def plot_training(
     epochs = np.arange(1, len(history['train_loss']) + 1)
 
     has_metrics = 'val_map' in history and len(history['val_map']) > 0
-    has_f1 = 'val_f1_10' in history and len(history.get('val_f1_10', [])) > 0
+    has_f1 = any(f'val_f1_{p}' in history and len(history.get(f'val_f1_{p}', [])) > 0
+                 for p in [5, 10, 25])
 
     # Determine layout: 2×2 without metrics, 2×4 with all metrics
     ncols = 2
@@ -120,22 +121,29 @@ def plot_training(
         ax.legend()
         ax.grid(True, alpha=0.3)
 
-    # --- F1@10% and list-length ratio ---
+    # --- F1 and list-length ratio at multiple thresholds ---
     if has_f1:
         ax = axes[ax_idx]; ax_idx += 1
-        ax.plot(epochs, history['val_f1_10'],
-                color='tab:red', linewidth=1.5)
-        ax.set_title('Validation F1 @ 10%', fontweight='bold')
+        for pct, color in [(5, 'tab:orange'), (10, 'tab:red'), (25, 'tab:brown')]:
+            key = f'val_f1_{pct}'
+            if key in history and len(history[key]) > 0:
+                ax.plot(epochs, history[key],
+                        label=f'{pct}%', color=color, linewidth=1.5)
+        ax.set_title('Validation F1 by Threshold', fontweight='bold')
         ax.set_xlabel('Epoch')
         ax.set_ylabel('F1')
         ax.set_ylim(0, 1)
+        ax.legend()
         ax.grid(True, alpha=0.3)
 
         ax = axes[ax_idx]; ax_idx += 1
-        ax.plot(epochs, history['val_list_ratio'],
-                color='tab:purple', linewidth=1.5)
+        for pct, color in [(5, 'tab:orange'), (10, 'tab:red'), (25, 'tab:brown')]:
+            key = f'val_list_ratio_{pct}'
+            if key in history and len(history[key]) > 0:
+                ax.plot(epochs, history[key],
+                        label=f'{pct}%', color=color, linewidth=1.5)
         ax.axhline(1.0, color='gray', linestyle='--', alpha=0.5, label='Ideal (1.0)')
-        ax.set_title('Species List-Length Ratio @ 10%', fontweight='bold')
+        ax.set_title('Species List-Length Ratio', fontweight='bold')
         ax.set_xlabel('Epoch')
         ax.set_ylabel('Predicted / True')
         ax.legend()

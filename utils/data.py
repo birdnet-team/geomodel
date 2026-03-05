@@ -605,6 +605,54 @@ class H3DataPreprocessor:
               f"{len(inputs['lat']):,} -> {int(mask.sum()):,} samples")
         return sub_in, sub_tgt
 
+    def subsample_by_samples(
+        self,
+        inputs: Dict[str, np.ndarray],
+        targets: Dict[str, Any],
+        fraction: float = 1.0,
+        random_state: int = 42,
+    ) -> Tuple[Dict[str, np.ndarray], Dict[str, Any]]:
+        """Randomly subsample a fraction of individual samples (week@location rows).
+
+        Unlike :meth:`subsample_by_location`, which drops entire H3 cells,
+        this method drops individual week-rows while preserving at least some
+        data for every location.  This avoids losing small islands that have
+        few cells but whose endemic species are important to monitor.
+
+        Args:
+            inputs: Dict with 'lat', 'lon', 'week' arrays.
+            targets: Dict with 'species' and 'env_features'.
+            fraction: Fraction of samples to keep (0 < fraction <= 1).
+            random_state: Random seed for reproducibility.
+
+        Returns:
+            (inputs, targets) subsets with the selected samples.
+        """
+        if fraction >= 1.0:
+            return inputs, targets
+
+        n = len(inputs['lat'])
+        k = max(1, int(n * fraction))
+        rng = np.random.RandomState(random_state)
+        selected = np.sort(rng.choice(n, size=k, replace=False))
+
+        def _subset(d: Dict[str, Any], idx: np.ndarray) -> Dict[str, Any]:
+            out = {}
+            for key, v in d.items():
+                if isinstance(v, np.ndarray):
+                    out[key] = v[idx]
+                elif isinstance(v, list):
+                    out[key] = [v[i] for i in idx]
+                else:
+                    out[key] = v
+            return out
+
+        sub_in = _subset(inputs, selected)
+        sub_tgt = _subset(targets, selected)
+        print(f"   Subsampled {fraction:.0%} of samples: "
+              f"{n:,} -> {k:,} samples")
+        return sub_in, sub_tgt
+
     def split_data(
         self,
         inputs: Dict[str, np.ndarray],

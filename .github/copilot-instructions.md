@@ -85,7 +85,10 @@ Species identifiers from the Global Biodiversity Information Facility (GBIF) tax
   - Sigmoid-shaped interpolation between percentiles; stored as `self.species_freq_weights`
 - `split_data()`: Location-based train/val/test splitting to prevent data leakage
 - `subsample_by_location()`: Randomly subsample a fraction of locations (and all
-  their samples). Used to reduce val/test size before training starts.
+  their samples). Preserves temporal structure within each H3 cell.
+- `subsample_by_samples()`: Randomly subsample a fraction of individual
+  week@location rows. Used when dropping entire locations is undesirable
+  (e.g. small islands with endemic species).
 
 **data.py** - PyTorch Dataset:
 - `BirdSpeciesDataset`: PyTorch Dataset wrapper with sparse-to-dense conversion
@@ -98,7 +101,7 @@ Species identifiers from the Global Biodiversity Information Facility (GBIF) tax
   - Accepts `sample_fraction` (0–1]; uses `FractionalRandomSampler` when < 1
   - Accepts `jitter_std`; applied to training set only (val is never jittered)
   - Accepts `species_freq_weights`; applied to training set only
-  - Val/test are subsampled by location once before training (consistent)
+  - Val/test are subsampled by location once before training
   - Training is subsampled per-epoch via FractionalRandomSampler (varying)
 
 **geoutils.py**: Google Earth Engine feature extraction for H3 cells
@@ -178,6 +181,11 @@ Species identifiers from the Global Biodiversity Information Facility (GBIF) tax
 - Evaluation metrics computed during validation:
   - Mean Average Precision (mAP)
   - Top-k recall at k=10 and k=30
+  - F1, precision, recall at probability thresholds 5%, 10%, 25%
+  - List-ratio and mean list length at the same thresholds
+  - Per-species AP for 18 endemic/restricted-range watchlist species
+    (Hawaiian, NZ, Galápagos, other), with watchlist mean AP
+- `WATCHLIST_SPECIES` dict in train.py maps taxonKeys to common names
 - Progress tracking with tqdm
 - GPU/CPU support with automatic device selection
 - Optuna-based hyperparameter autotune (`--autotune`)
@@ -260,7 +268,11 @@ geomodel/
 │   ├── plot_richness.py        # Species richness heatmaps (+ side-by-side observed vs predicted)
 │   ├── plot_training.py        # Training loss curves and metrics
 │   ├── plot_variable_importance.py  # Feature importance analysis
-│   └── plot_environmental.py   # Environmental feature visualization
+│   ├── plot_environmental.py   # Environmental feature visualization
+│   ├── collect_ablation_results.py  # Collect ablation results into Markdown/CSV tables
+│   └── run_ablation.sh         # Run all ablation experiments sequentially
+├── report/
+│   └── hypotheses.md           # Ablation study plan, hypotheses, and results
 ├── docs/                       # MkDocs documentation
 ├── checkpoints/                # Saved model checkpoints
 └── outputs/                    # Generated data and plots

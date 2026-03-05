@@ -53,6 +53,101 @@ TUNABLE_PARAMS = [
 
 
 
+# ---------------------------------------------------------------------------
+# Endemic / restricted-range watchlist for per-species AP tracking
+# ---------------------------------------------------------------------------
+
+
+def _check_watchlist_coverage(
+    watchlist: Dict[int, str],
+    species_to_idx: Dict[int, int],
+    train_tgt: Dict,
+    val_tgt: Dict,
+    n_species: int,
+) -> None:
+    """Warn if any watchlist species has zero samples in train or val.
+
+    Works with both dense (ndarray) and sparse (list-of-index-arrays)
+    species encodings.
+    """
+    import warnings
+    import numpy as np
+
+    def _species_present(tgt: Dict, idx: int) -> bool:
+        sp = tgt['species']
+        if isinstance(sp, np.ndarray) and sp.ndim == 2:
+            return sp[:, idx].any()
+        elif isinstance(sp, list):
+            return any(idx in row for row in sp)
+        return False
+
+    missing_train = []
+    missing_val = []
+    not_in_vocab = []
+    for taxon_key, name in watchlist.items():
+        idx = species_to_idx.get(taxon_key)
+        if idx is None:
+            not_in_vocab.append((taxon_key, name))
+            continue
+        if not _species_present(train_tgt, idx):
+            missing_train.append((taxon_key, name))
+        if not _species_present(val_tgt, idx):
+            missing_val.append((taxon_key, name))
+
+    if not_in_vocab:
+        warnings.warn(
+            f"Watchlist: {len(not_in_vocab)} species not in vocabulary "
+            f"(filtered by min_obs?): "
+            + ", ".join(f"{n} ({t})" for t, n in not_in_vocab),
+            stacklevel=2,
+        )
+    if missing_train:
+        warnings.warn(
+            f"Watchlist: {len(missing_train)} species have ZERO training "
+            f"samples after subsampling: "
+            + ", ".join(f"{n} ({t})" for t, n in missing_train),
+            stacklevel=2,
+        )
+    if missing_val:
+        warnings.warn(
+            f"Watchlist: {len(missing_val)} species have ZERO validation "
+            f"samples after subsampling: "
+            + ", ".join(f"{n} ({t})" for t, n in missing_val),
+            stacklevel=2,
+        )
+    if not not_in_vocab and not missing_train and not missing_val:
+        print(f"   Watchlist: all {len(watchlist)} species present in "
+              f"train & val splits")
+
+
+# TaxonKey → common name for species tracked in ablation study section 3.2.
+# These must appear in the training vocabulary to produce valid AP values.
+WATCHLIST_SPECIES: Dict[int, str] = {
+    # Hawaiian endemics
+    5232445: 'Hawaiian Goose',
+    2480528: 'Hawaiian Hawk',
+    2486699: 'Hawaii Elepaio',
+    2494524: 'Apapane',
+    8070758: 'Iiwi',
+    8346110: 'Hawaii Amakihi',
+    # New Zealand endemics
+    2479593: 'Kea',
+    2495144: 'North Island Brown Kiwi',
+    5228153: 'South Island Takahe',
+    5229954: 'Rifleman',
+    2487029: 'Tui',
+    5817136: 'North Island Kokako',
+    # Galápagos endemics
+    2480569: 'Galápagos Hawk',
+    2474597: 'Galápagos Rail',
+    2481460: 'Galápagos Petrel',
+    # Other restricted-range
+    2474354: 'Kagu',
+    2481920: 'California Condor',
+    2474941: 'Whooping Crane',
+}
+
+
 class Trainer:
     """Training loop with validation, checkpointing, LR scheduling, AMP, and early stopping."""
 
@@ -68,6 +163,7 @@ class Trainer:
         species_vocab: Dict = None,
         patience: int = 10,
         log_interval: int = 10,
+        watchlist: Optional[Dict[int, str]] = None,
     ):
         self.model = model.to(device)
         self.criterion = criterion
@@ -86,13 +182,28 @@ class Trainer:
 
         self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
+        # Resolve watchlist taxonKeys to model column indices
+        self.watchlist: Dict[int, str] = watchlist or {}
+        s2i = self.species_vocab.get('species_to_idx', {})
+        self.watchlist_indices: Dict[int, int] = {}  # taxonKey → model index
+        for tk in self.watchlist:
+            if tk in s2i:
+                self.watchlist_indices[tk] = s2i[tk]
+
         self.history = {
             'train_loss': [], 'train_species_loss': [], 'train_env_loss': [],
             'val_loss': [], 'val_species_loss': [], 'val_env_loss': [],
             'val_map': [], 'val_top10_recall': [], 'val_top30_recall': [],
-            'val_f1_10': [], 'val_list_ratio': [],
+            'val_f1_5': [], 'val_f1_10': [], 'val_f1_25': [],
+            'val_list_ratio_5': [], 'val_list_ratio_10': [], 'val_list_ratio_25': [],
             'lr': [],
         }
+        # Per-species AP history for watchlist species
+        for tk in self.watchlist_indices:
+            self.history[f'val_ap_{tk}'] = []
+        if self.watchlist_indices:
+            self.history['val_watchlist_mean_ap'] = []
+
         self.best_val_map = 0.0
         self.current_epoch = 0
         self._epochs_no_improve = 0
@@ -155,13 +266,15 @@ class Trainer:
           ranked in the model's top-k predictions.
         - **mAP** (mean average precision): mean per-sample AP, measuring
           how well the model ranks true positives above negatives.
-        - **F1@10%**: macro F1 score using a 10% probability threshold.
-        - **list ratio**: mean ratio of predicted list length to true list
-          length at a 10% threshold (values near 1.0 are optimal).
+        - **F1**, **precision**, **recall** at 5%, 10%, and 25% probability
+          thresholds.
+        - **list ratio** and **mean list length** at the same thresholds.
+        - **Per-species AP** for watchlist species (endemic/restricted-range).
 
         Returns:
-            Dict with 'loss', 'species_loss', 'env_loss', 'map',
-            'top10_recall', 'top30_recall', 'f1_10', and 'list_ratio'.
+            Dict with loss terms, mAP, top-k recall, per-threshold
+            F1 / precision / recall / list-ratio / mean-list-length,
+            and per-species AP for watchlist species.
         """
         self.model.eval()
         total_loss = total_species = total_env = 0.0
@@ -171,10 +284,20 @@ class Trainer:
         total_hits_10 = total_hits_30 = total_positives = 0
         ap_sum = 0.0
         ap_count = 0
-        # F1 @ 10% threshold accumulators
-        f1_tp = f1_fp = f1_fn = 0
-        list_ratio_sum = 0.0
-        list_ratio_count = 0
+        # Multi-threshold F1 & list-ratio accumulators
+        THRESHOLDS = [0.05, 0.10, 0.25]
+        thresh_tp = {t: 0 for t in THRESHOLDS}
+        thresh_fp = {t: 0 for t in THRESHOLDS}
+        thresh_fn = {t: 0 for t in THRESHOLDS}
+        thresh_lr_sum = {t: 0.0 for t in THRESHOLDS}
+        thresh_lr_count = {t: 0 for t in THRESHOLDS}
+        thresh_list_len_sum = {t: 0 for t in THRESHOLDS}
+        thresh_list_len_count = {t: 0 for t in THRESHOLDS}
+
+        # Per-species AP accumulators for watchlist
+        # Each entry holds (scores, labels) lists to compute column-wise AP
+        wl_scores: Dict[int, list] = {tk: [] for tk in self.watchlist_indices}
+        wl_labels: Dict[int, list] = {tk: [] for tk in self.watchlist_indices}
 
         for inputs, targets in tqdm(val_loader, desc=f'Epoch {self.current_epoch + 1} [Val]  '):
             lat = inputs['lat'].to(self.device, non_blocking=True)
@@ -223,27 +346,36 @@ class Trainer:
                 ap_sum += sample_ap.sum().item()
                 ap_count += has_pos.sum().item()
 
-            # --- F1 and list-length ratio at 10% threshold ---
-            pred_mask = probs > 0.10
-            tp = (pred_mask & pos_mask).sum().item()
-            fp = (pred_mask & ~pos_mask).sum().item()
-            fn = (~pred_mask & pos_mask).sum().item()
-            f1_tp += tp
-            f1_fp += fp
-            f1_fn += fn
+            # --- F1 and list-length ratio at multiple thresholds ---
+            for t in THRESHOLDS:
+                pred_mask_t = probs > t
+                thresh_tp[t] += (pred_mask_t & pos_mask).sum().item()
+                thresh_fp[t] += (pred_mask_t & ~pos_mask).sum().item()
+                thresh_fn[t] += (~pred_mask_t & pos_mask).sum().item()
+                # Mean list length (all samples, not just those with positives)
+                thresh_list_len_sum[t] += pred_mask_t.sum().item()
+                thresh_list_len_count[t] += pred_mask_t.shape[0]
 
-            # List-length ratio (only for samples that have ground-truth positives)
-            pred_counts = pred_mask[has_pos].sum(dim=1).float()
-            true_counts = n_pos[has_pos].float()
-            # Avoid division by zero (has_pos guarantees true_counts > 0)
-            ratios = pred_counts / true_counts
-            list_ratio_sum += ratios.sum().item()
-            list_ratio_count += has_pos.sum().item()
+                if has_pos.any():
+                    pred_counts = pred_mask_t[has_pos].sum(dim=1).float()
+                    true_counts = n_pos[has_pos].float()
+                    ratios = pred_counts / true_counts
+                    thresh_lr_sum[t] += ratios.sum().item()
+                    thresh_lr_count[t] += has_pos.sum().item()
 
-        # F1 from micro-averaged TP/FP/FN
-        f1_prec = f1_tp / max(f1_tp + f1_fp, 1)
-        f1_rec = f1_tp / max(f1_tp + f1_fn, 1)
-        f1 = 2 * f1_prec * f1_rec / max(f1_prec + f1_rec, 1e-8)
+            # --- Watchlist per-species scores ---
+            if self.watchlist_indices:
+                probs_cpu = probs.cpu()
+                labels_cpu = pos_mask.cpu()
+                for tk, idx in self.watchlist_indices.items():
+                    wl_scores[tk].append(probs_cpu[:, idx])
+                    wl_labels[tk].append(labels_cpu[:, idx].float())
+
+        # F1/precision/recall from micro-averaged TP/FP/FN per threshold
+        def _f1(tp, fp, fn):
+            prec = tp / max(tp + fp, 1)
+            rec = tp / max(tp + fn, 1)
+            return 2 * prec * rec / max(prec + rec, 1e-8)
 
         metrics = {
             'loss': total_loss / n_batches,
@@ -252,9 +384,41 @@ class Trainer:
             'map': ap_sum / max(ap_count, 1),
             'top10_recall': total_hits_10 / max(total_positives, 1),
             'top30_recall': total_hits_30 / max(total_positives, 1),
-            'f1_10': f1,
-            'list_ratio': list_ratio_sum / max(list_ratio_count, 1),
         }
+        for t in THRESHOLDS:
+            pct = int(t * 100)
+            tp, fp, fn = thresh_tp[t], thresh_fp[t], thresh_fn[t]
+            prec = tp / max(tp + fp, 1)
+            rec = tp / max(tp + fn, 1)
+            f1 = 2 * prec * rec / max(prec + rec, 1e-8)
+            metrics[f'f1_{pct}'] = f1
+            metrics[f'precision_{pct}'] = prec
+            metrics[f'recall_{pct}'] = rec
+            metrics[f'list_ratio_{pct}'] = thresh_lr_sum[t] / max(thresh_lr_count[t], 1)
+            metrics[f'mean_list_len_{pct}'] = thresh_list_len_sum[t] / max(thresh_list_len_count[t], 1)
+
+        # --- Watchlist per-species AP ---
+        if self.watchlist_indices:
+            wl_aps = {}
+            for tk, idx in self.watchlist_indices.items():
+                all_scores = torch.cat(wl_scores[tk])
+                all_labels = torch.cat(wl_labels[tk])
+                n_pos_sp = all_labels.sum().item()
+                if n_pos_sp > 0:
+                    # Sort by score descending
+                    order = all_scores.argsort(descending=True)
+                    sorted_labels = all_labels[order]
+                    tp_cum = sorted_labels.cumsum(0)
+                    precision_at_k = tp_cum / torch.arange(1, len(sorted_labels) + 1).float()
+                    sp_ap = (precision_at_k * sorted_labels).sum().item() / n_pos_sp
+                else:
+                    sp_ap = float('nan')
+                metrics[f'ap_{tk}'] = sp_ap
+                wl_aps[tk] = sp_ap
+            # Mean over watchlist (excluding NaN)
+            valid_aps = [v for v in wl_aps.values() if not math.isnan(v)]
+            metrics['watchlist_mean_ap'] = sum(valid_aps) / max(len(valid_aps), 1) if valid_aps else float('nan')
+
         return metrics
 
     # -- checkpointing ----------------------------------------------------
@@ -352,17 +516,36 @@ class Trainer:
                 for k in ('loss', 'species_loss', 'env_loss'):
                     self.history[f'train_{k}'].append(train_m[k])
                     self.history[f'val_{k}'].append(val_m[k])
-                for k in ('map', 'top10_recall', 'top30_recall', 'f1_10', 'list_ratio'):
+                for k in ('map', 'top10_recall', 'top30_recall',
+                          'f1_5', 'f1_10', 'f1_25',
+                          'list_ratio_5', 'list_ratio_10', 'list_ratio_25'):
                     self.history[f'val_{k}'].append(val_m[k])
+
+                # Watchlist per-species AP history
+                for tk in self.watchlist_indices:
+                    key = f'val_ap_{tk}'
+                    self.history[key].append(val_m.get(f'ap_{tk}', float('nan')))
+                if self.watchlist_indices:
+                    self.history['val_watchlist_mean_ap'].append(
+                        val_m.get('watchlist_mean_ap', float('nan'))
+                    )
 
                 print(f"\nEpoch {epoch + 1} \u2014 lr={lr:.2e}  "
                       f"Train: {train_m['loss']:.4f} (sp={train_m['species_loss']:.4f} env={train_m['env_loss']:.4f})  "
                       f"Val: {val_m['loss']:.4f} (sp={val_m['species_loss']:.4f} env={val_m['env_loss']:.4f})")
                 print(f"  Metrics: mAP={val_m['map']:.4f}  "
                       f"top-10={val_m['top10_recall']:.4f}  "
-                      f"top-30={val_m['top30_recall']:.4f}  "
-                      f"F1@10%={val_m['f1_10']:.4f}  "
-                      f"list-ratio={val_m['list_ratio']:.2f}")
+                      f"top-30={val_m['top30_recall']:.4f}")
+                print(f"  F1:     5%={val_m['f1_5']:.4f}  "
+                      f"10%={val_m['f1_10']:.4f}  "
+                      f"25%={val_m['f1_25']:.4f}")
+                print(f"  Ratio:  5%={val_m['list_ratio_5']:.2f}  "
+                      f"10%={val_m['list_ratio_10']:.2f}  "
+                      f"25%={val_m['list_ratio_25']:.2f}")
+                if self.watchlist_indices:
+                    wl_ap = val_m.get('watchlist_mean_ap', float('nan'))
+                    print(f"  Watchlist: mean AP={wl_ap:.4f}  "
+                          f"({len(self.watchlist_indices)} species tracked)")
 
                 is_best = val_m['map'] > self.best_val_map
                 if is_best:
@@ -504,6 +687,12 @@ def run_autotune(args, device: torch.device):
         val_in, val_tgt = preprocessor.subsample_by_location(
             val_in, val_tgt, fraction=args.sample_fraction, random_state=42,
         )
+
+    # Verify watchlist species survived subsampling / splitting
+    _check_watchlist_coverage(
+        WATCHLIST_SPECIES, preprocessor.species_to_idx,
+        train_tgt, val_tgt, n_species,
+    )
     print(f"   Train: {len(train_in['lat']):,}  |  Val: {len(val_in['lat']):,}")
 
     # -- Objective --------------------------------------------------------
@@ -633,8 +822,12 @@ def run_autotune(args, device: torch.device):
                 'val_map': val_m['map'],
                 'val_top10_recall': val_m['top10_recall'],
                 'val_top30_recall': val_m['top30_recall'],
+                'val_f1_5': val_m['f1_5'],
                 'val_f1_10': val_m['f1_10'],
-                'val_list_ratio': val_m['list_ratio'],
+                'val_f1_25': val_m['f1_25'],
+                'val_list_ratio_5': val_m['list_ratio_5'],
+                'val_list_ratio_10': val_m['list_ratio_10'],
+                'val_list_ratio_25': val_m['list_ratio_25'],
             })
             trial.set_user_attr('epoch_history', epoch_history)
 
@@ -922,6 +1115,12 @@ def main():
             test_in, test_tgt, fraction=args.sample_fraction, random_state=42,
         )
 
+    # Verify watchlist species survived subsampling / splitting
+    _check_watchlist_coverage(
+        WATCHLIST_SPECIES, preprocessor.species_to_idx,
+        train_tgt, val_tgt, n_species,
+    )
+
     print("5. Creating DataLoaders...")
     train_loader, val_loader = create_dataloaders(
         train_in, train_tgt, val_in, val_tgt,
@@ -1032,6 +1231,7 @@ def main():
         checkpoint_dir=checkpoint_dir, model_config=model_config,
         species_vocab=species_vocab,
         patience=args.patience,
+        watchlist=WATCHLIST_SPECIES,
     )
 
     if args.resume:
