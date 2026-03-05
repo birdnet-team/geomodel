@@ -1,0 +1,302 @@
+/* ===== Demo Layout ===== */
+#demo-root {
+  font-family: inherit;
+}
+
+/* ---------- Controls bar ---------- */
+#demo-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: flex-end;
+  margin-bottom: 10px;
+  padding: 10px 16px;
+}
+
+#demo-controls label {
+  font-size: 0.82rem;
+  font-weight: 600;
+  display: block;
+  margin-bottom: 3px;
+}
+
+#demo-controls .ctrl-group {
+  display: flex;
+  flex-direction: column;
+}
+
+/* Species search */
+#species-search-wrap {
+  position: relative;
+  flex: 1 1 260px;
+  max-width: 400px;
+}
+
+#species-search {
+  width: 100%;
+  padding: 6px 10px;
+  font-size: 0.9rem;
+  border: 1px solid var(--md-default-fg-color--lightest, #ccc);
+  border-radius: 4px;
+  background: var(--md-default-bg-color, #fff);
+  color: var(--md-default-fg-color, #333);
+  box-sizing: border-box;
+}
+
+#species-results {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  max-height: 260px;
+  overflow-y: auto;
+  background: var(--md-default-bg-color, #fff);
+  border: 1px solid var(--md-default-fg-color--lightest, #ccc);
+  border-top: none;
+  border-radius: 0 0 4px 4px;
+  z-index: 1000;
+  display: none;
+  box-shadow: 0 4px 12px rgba(0,0,0,.15);
+}
+
+#species-results .sr-item {
+  padding: 6px 10px;
+  cursor: pointer;
+  font-size: 0.85rem;
+  border-bottom: 1px solid var(--md-default-fg-color--lightest, #eee);
+}
+
+#species-results .sr-item:hover,
+#species-results .sr-item.active {
+  background: var(--md-accent-fg-color, #448aff);
+  color: #fff;
+}
+
+#species-results .sr-item .sr-sci {
+  font-style: italic;
+  opacity: 0.75;
+  font-size: 0.8rem;
+}
+
+/* Week dropdown */
+#week-select-wrap {
+  flex: 0 1 auto;
+}
+
+#week-select {
+  padding: 6px 10px;
+  font-size: 0.9rem;
+  border: 1px solid var(--md-default-fg-color--lightest, #ccc);
+  border-radius: 4px;
+  background: var(--md-default-bg-color, #fff);
+  color: var(--md-default-fg-color, #333);
+}
+
+/* Mode select */
+#mode-select {
+  padding: 6px 10px;
+  font-size: 0.9rem;
+  border: 1px solid var(--md-default-fg-color--lightest, #ccc);
+  border-radius: 4px;
+  background: var(--md-default-bg-color, #fff);
+  color: var(--md-default-fg-color, #333);
+}
+
+/* Status bar */
+#demo-status {
+  font-size: 0.8rem;
+  color: var(--md-default-fg-color--light, #666);
+  min-height: 1.4em;
+  margin-bottom: 6px;
+}
+
+/* ---------- Map ---------- */
+#demo-map {
+  width: 100%;
+  height: 600px;
+  border-radius: 8px;
+  box-shadow: 0 2px 16px rgba(0,0,0,.35);
+  z-index: 1;
+}
+
+/* Canvas overlay on map for range heatmap */
+.heatmap-overlay {
+  image-rendering: auto;
+}
+
+/* Map wrapper */
+#demo-map-wrap {
+  position: relative;
+  margin-top: 8px;
+  margin-bottom: 12px;
+}
+
+#demo-computing {
+  position: absolute;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  background: rgba(255, 255, 255, 0.75);
+  gap: 10px;
+  pointer-events: none;
+}
+
+[data-md-color-scheme="slate"] #demo-computing {
+  background: rgba(0, 0, 0, 0.6);
+}
+
+#computing-text {
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--md-default-fg-color, #333);
+}
+
+#computing-progress-wrap {
+  width: 220px;
+  height: 6px;
+  background: var(--md-default-fg-color--lightest, #ddd);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+#computing-progress-bar {
+  height: 100%;
+  width: 0%;
+  background: var(--md-accent-fg-color, #448aff);
+  border-radius: 3px;
+  transition: width 0.15s ease;
+}
+
+/* ---------- Species list panel ---------- */
+#species-panel {
+  margin-top: 12px;
+  display: none;
+}
+
+#species-panel h3 {
+  margin: 0 0 6px;
+  font-size: 1rem;
+}
+
+#species-panel .sp-coords {
+  font-size: 0.8rem;
+  color: var(--md-default-fg-color--light, #666);
+  margin-bottom: 8px;
+}
+
+#species-list-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.85rem;
+}
+
+#species-list-table th {
+  text-align: left;
+  padding: 4px 8px;
+  border-bottom: 2px solid var(--md-default-fg-color--lightest, #ccc);
+  font-weight: 600;
+}
+
+#species-list-table td {
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--md-default-fg-color--lightest, #eee);
+}
+
+#species-list-table tr:hover td {
+  background: var(--md-code-bg-color, #f5f5f5);
+}
+
+.prob-bar-cell {
+  width: 120px;
+}
+
+.prob-bar {
+  height: 14px;
+  border-radius: 3px;
+  background: var(--md-accent-fg-color, #448aff);
+  transition: width 0.2s;
+}
+
+/* Loading overlay */
+#demo-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 80px 20px;
+  font-size: 1.1rem;
+  color: var(--md-default-fg-color--light, #666);
+}
+
+.spinner {
+  width: 28px;
+  height: 28px;
+  border: 3px solid var(--md-default-fg-color--lightest, #ccc);
+  border-top-color: var(--md-accent-fg-color, #448aff);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+  margin-right: 12px;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+/* Threshold dropdown */
+#threshold-wrap {
+  flex: 0 1 auto;
+}
+
+#threshold-select {
+  padding: 6px 10px;
+  font-size: 0.9rem;
+  border: 1px solid var(--md-default-fg-color--lightest, #ccc);
+  border-radius: 4px;
+  background: var(--md-default-bg-color, #fff);
+  color: var(--md-default-fg-color, #333);
+}
+
+/* ---------- Map legend ---------- */
+#demo-legend {
+  position: absolute;
+  bottom: 28px;
+  right: 12px;
+  z-index: 1000;
+  background: rgba(0, 0, 0, 0.75);
+  color: #eee;
+  padding: 8px 12px;
+  border-radius: 6px;
+  font-size: 0.78rem;
+  pointer-events: none;
+  min-width: 180px;
+  display: none;
+  backdrop-filter: blur(4px);
+  box-shadow: 0 2px 8px rgba(0,0,0,.4);
+}
+
+.legend-title {
+  font-weight: 600;
+  margin-bottom: 4px;
+  font-size: 0.8rem;
+}
+
+.legend-bar {
+  display: flex;
+  flex-direction: column;
+}
+
+.legend-gradient {
+  height: 10px;
+  border-radius: 3px;
+  width: 100%;
+}
+
+.legend-ticks {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 2px;
+  font-size: 0.72rem;
+  opacity: 0.85;
+}

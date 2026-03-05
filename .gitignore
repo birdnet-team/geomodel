@@ -1,3 +1,6 @@
+# Exclude report dir
+report/
+
 # Exclude export outputs
 exports/
 
@@ -12,6 +15,10 @@ checkpoints/
 commands.txt
 dev/
 
+# Demo assets (large ONNX model + labels copied for MkDocs build)
+demo/*.onnx
+docs/demo/*.onnx
+docs/demo/labels.txt
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]

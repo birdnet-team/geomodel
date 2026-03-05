@@ -107,6 +107,7 @@ python scripts/plot_environmental.py --input data/global_350km_ee.parquet
 geomodel/
 ├── train.py                 # Training (Stage 4)
 ├── predict.py               # Inference (Stage 5)
+├── convert.py               # Export to ONNX / TFLite / TF SavedModel
 ├── model/
 │   ├── model.py             # Neural network architecture
 │   └── loss.py              # Multi-task loss functions
@@ -117,8 +118,36 @@ geomodel/
 │   └── data.py              # Dataset / DataLoader / preprocessing
 ├── scripts/                 # Plotting scripts
 ├── docs/                    # MkDocs documentation source
+│   └── demo/                # Interactive web demo (ONNX Runtime Web)
+├── demo/                    # Demo assets (ONNX model + labels)
 └── checkpoints/             # Model checkpoints + labels.txt
 ```
+
+## Interactive Demo
+
+An interactive web demo is included under `docs/demo/`. It runs the ONNX FP16 model entirely client-side using [ONNX Runtime Web](https://onnxruntime.ai/docs/tutorials/web/) — no server-side inference needed.
+
+Features:
+- **Range Map** — select a species to see its predicted occurrence probability on a Leaflet map. Resolution adapts to the zoom level (coarser when zoomed out, finer when zoomed in).
+- **Species List** — click any location to see all predicted species for that point.
+- **Week slider** — scrub through all 48 weeks of the year.
+
+### Running the docs locally
+
+```bash
+# Install docs dependencies (once)
+pip install -r requirements-docs.txt
+
+# Start the MkDocs dev server
+mkdocs serve
+
+# Or specify a custom address
+mkdocs serve -a 0.0.0.0:8000
+```
+
+Then open <http://localhost:8000/demo/> in your browser.
+
+> **Note:** The demo requires `demo/geomodel_fp16.onnx` and `demo/labels.txt`. These are copied into `docs/demo/` automatically during `mkdocs build` / `mkdocs serve` by the build hook in `hooks/copy_demo_assets.py`. To generate them, run `python convert.py` after training.
 
 ## Citation
 
