@@ -6,7 +6,15 @@
 
 **Spatiotemporal species occurrence prediction for post-filtering BirdNET acoustic detections.**
 
-BirdNET Geomodel predicts which species are likely to occur at a given location and time of year. It uses a multi-task neural network trained on [GBIF](https://www.gbif.org/) occurrence data and environmental features from [Google Earth Engine](https://earthengine.google.com/), producing well-calibrated species occurrence probabilities useful for filtering acoustic detection results from [BirdNET](https://birdnet.cornell.edu/).
+BirdNET Geomodel predicts which species are likely to occur at a given location and time of year. It uses a multi-task neural network trained on [GBIF](https://www.gbif.org/) occurrence data and environmental features from [Google Earth Engine](https://earthengine.google.com/), producing species occurrence probabilities that serve as a prior for filtering acoustic detection results from [BirdNET](https://birdnet.cornell.edu/).
+
+## What It Is — and What It Isn't
+
+The geomodel is a **convenience tool for casual users and citizen scientists** who want to get the most out of BirdNET without expert ornithological knowledge. If you don't know which birds to expect at your recording location, the geomodel provides a reasonable prior that helps BirdNET suppress unlikely species and surface the most plausible detections.
+
+It is **not** a precise species distribution model. The predictions are intentionally coarse — "good enough" to improve acoustic classification, but not intended for scientific range analyses or conservation planning. Researchers who know their study area and the species they expect should use a **custom species list** curated by domain experts instead of relying on the geomodel. An expert-crafted list will always outperform an automated prior.
+
+In short: the geomodel exists so that beginners don't have to guess which species might be present. If you already know, you don't need it.
 
 ---
 
