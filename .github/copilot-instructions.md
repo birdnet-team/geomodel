@@ -95,14 +95,13 @@ Species identifiers from the Global Biodiversity Information Facility (GBIF) tax
   - Optional `jitter_std` (degrees) adds Gaussian noise to lat/lon on each draw
   - Optional `species_freq_weights` applies per-species label weights (training only)
   - Lat clamped to [-90, 90], lon wrapped at ±180°
-- `FractionalRandomSampler`: Sampler that draws a deterministic random subset of
-  training indices each epoch (seed `42 + epoch`). Used when `sample_fraction < 1`.
+  - Sparse path returns raw index arrays; dense vector built in batch collate_fn
 - `create_dataloaders()`: Creates training and validation DataLoaders
-  - Accepts `sample_fraction` (0–1]; uses `FractionalRandomSampler` when < 1
   - Accepts `jitter_std`; applied to training set only (val is never jittered)
   - Accepts `species_freq_weights`; applied to training set only
-  - Val/test are subsampled by location once before training
-  - Training is subsampled per-epoch via FractionalRandomSampler (varying)
+  - Uses custom `collate_fn` for sparse species (builds dense tensor per batch)
+  - `persistent_workers=True` when `num_workers > 0`
+  - Callers subsample by location before calling (see `subsample_by_location`)
 
 **geoutils.py**: Google Earth Engine feature extraction for H3 cells
 **gbifutils.py**: GBIF species occurrence data retrieval (parallel processing with multiprocessing pool)
@@ -171,7 +170,7 @@ Species identifiers from the Global Biodiversity Information Facility (GBIF) tax
 - Complete training loop with validation
 - Automatic mixed precision (AMP) on CUDA
 - Gradient clipping (max_norm=1.0) to prevent exploding gradients
-- Linear LR warmup (3 epochs) + CosineAnnealingWarmRestarts schedule
+- Linear LR warmup (3 epochs) + CosineAnnealingLR schedule (single decay, no restarts)
 - Early stopping with configurable patience (default 10), based on validation mAP
 - Checkpoint management:
   - `checkpoint_latest.pt`: Latest model state

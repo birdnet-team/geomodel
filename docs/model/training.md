@@ -75,8 +75,7 @@ The training script handles the full pipeline automatically:
 
 | Flag | Default | Description |
 |---|---|---|
-| `--lr_schedule` | `cosine` | `cosine` (warm restarts; Loshchilov & Hutter, 2017) or `none` |
-| `--lr_T0` | `10` | Cosine restart period in epochs |
+| `--lr_schedule` | `cosine` | `cosine` (single decay to `lr_min`) or `none` |
 | `--lr_min` | `1e-6` | Minimum learning rate |
 | `--lr_warmup` | `3` | Linear warmup epochs before cosine schedule (0 = off) |
 
@@ -92,22 +91,19 @@ The training script handles the full pipeline automatically:
 |---|---|---|
 | `--test_size` | `0.1` | Test set fraction |
 | `--val_size` | `0.1` | Validation set fraction |
-| `--sample_fraction` | `1.0` | Fraction of data to use (0–1) |
+| `--sample_fraction` | `1.0` | Fraction of locations to keep (0–1) |
 
 Splitting is **location-based**: all samples from one H3 cell go to the same split, preventing spatial data leakage.  The split uses a fixed random seed (`42`) for reproducibility.
 
 #### Sample fraction
 
-When `--sample_fraction` is less than 1.0 it reduces the effective dataset size in two complementary ways:
-
-- **Validation / test**: a random fraction of *locations* is sampled once (before training starts) and stays fixed, giving consistent evaluation metrics.
-- **Training**: a `FractionalRandomSampler` draws a fresh random subset of training *samples* each epoch (e.g. `0.25` → 25 % of training samples per epoch), so the model sees different data every epoch.
+When `--sample_fraction` is less than 1.0 it reduces the effective dataset size by subsampling a random fraction of *locations* once before training starts.  All splits (train, validation, test) are subsampled the same way.
 
 Key properties:
 
-- **Deterministic** — the val/test location subsample uses a fixed seed (`42`); training epoch *e* uses seed `42 + e`.
-- **Different training subset each epoch** — improves coverage over time while keeping per-epoch cost low.
-- **Val/test stay consistent** — evaluation is comparable across epochs and runs.
+- **Deterministic** — the location subsample uses a fixed seed (`42`).
+- **All temporal structure preserved** — every week belonging to a selected H3 cell is kept.
+- **Evaluation stays consistent** — validation and test sets are fixed across epochs and runs.
 
 #### Coordinate jitter
 
@@ -425,8 +421,6 @@ the CLI and stay fixed across all trials.
 Each trial trains a fresh model and optimises towards validation mAP.  Optuna's `MedianPruner` kills unpromising trials early (after 3 warmup epochs).  Results are saved to `checkpoints/autotune/autotune_results.json`, and a suggested `train.py` command with the best parameters is printed.
 
 ## References
-
-> Loshchilov, I. & Hutter, F. (2017). SGDR: Stochastic Gradient Descent with Warm Restarts. In *International Conference on Learning Representations*.
 
 > Loshchilov, I. & Hutter, F. (2019). Decoupled Weight Decay Regularization. In *International Conference on Learning Representations*.
 

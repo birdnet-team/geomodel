@@ -4,7 +4,7 @@ Training script for BirdNET Geomodel.
 Pipeline: load parquet → preprocess → train multi-task model → save checkpoints.
 
 Features:
-  - AdamW optimizer with linear LR warmup + CosineAnnealingWarmRestarts
+  - AdamW optimizer with linear LR warmup + CosineAnnealingLR (single decay, no restarts)
   - Automatic mixed-precision (AMP) on CUDA for ~2× speed-up
   - Early stopping based on validation mAP plateau
   - Asymmetric Loss (ASL, default); BCE, focal, and assume-negative also available
@@ -524,26 +524,13 @@ class Trainer:
             print("  Mixed precision (AMP): enabled")
         if self.patience:
             print(f"  Early stopping patience: {self.patience}")
-        # Show effective per-epoch counts when FractionalRandomSampler is active
-        sampler = getattr(train_loader, 'sampler', None)
-        train_total = len(train_loader.dataset)
-        if hasattr(sampler, 'fraction') and sampler.fraction < 1.0:
-            effective = len(sampler)
-            print(f"  Train: {train_total:,} samples ({effective:,}/epoch, {sampler.fraction:.0%})  |  Val: {len(val_loader.dataset):,} samples")
-        else:
-            print(f"  Train: {train_total:,} samples  |  Val: {len(val_loader.dataset):,} samples")
+        print(f"  Train: {len(train_loader.dataset):,} samples  |  Val: {len(val_loader.dataset):,} samples")
         print(f"  Batch size: {train_loader.batch_size}  |  Batches/epoch: {len(train_loader)}\n")
 
         start_epoch = self.current_epoch
         try:
             for epoch in range(start_epoch, start_epoch + num_epochs):
                 self.current_epoch = epoch
-
-                # Update FractionalRandomSampler seed so each epoch sees a
-                # different random subset of training data.
-                sampler = getattr(train_loader, 'sampler', None)
-                if hasattr(sampler, 'set_epoch'):
-                    sampler.set_epoch(epoch)
 
                 train_m = self.train_epoch(train_loader)
                 val_m = self.validate(val_loader)
@@ -596,6 +583,10 @@ class Trainer:
 
                 if (epoch + 1) % save_every == 0 or is_best:
                     self.save_checkpoint(is_best=is_best)
+
+                # Write training history after every epoch so it survives OOM kills
+                with open(self.checkpoint_dir / 'training_history.json', 'w') as f:
+                    json.dump(self.history, f, indent=2)
 
                 # Early stopping
                 if self.patience and self._epochs_no_improve >= self.patience:
@@ -740,8 +731,11 @@ def run_autotune(args, device: torch.device):
     # Free unsplit data — now in train/val/test subsets
     del inputs, targets
     gc.collect()
-    # Subsample val by location once; training uses FractionalRandomSampler
+    # Subsample all splits once by location
     if args.sample_fraction < 1.0:
+        train_in, train_tgt = preprocessor.subsample_by_location(
+            train_in, train_tgt, fraction=args.sample_fraction, random_state=42,
+        )
         val_in, val_tgt = preprocessor.subsample_by_location(
             val_in, val_tgt, fraction=args.sample_fraction, random_state=42,
         )
@@ -790,7 +784,6 @@ def run_autotune(args, device: torch.device):
             batch_size=batch_size, num_workers=args.num_workers,
             pin_memory=(device.type == 'cuda'),
             n_species=n_species,
-            sample_fraction=args.sample_fraction,
             jitter_std=jitter_std,
             species_freq_weights=_trial_freq_weights,
         )
@@ -820,11 +813,11 @@ def run_autotune(args, device: torch.device):
             weight_decay=args.weight_decay,
         )
 
-        lr_T0 = args.lr_T0
+        cosine_epochs = max(n_epochs - args.lr_warmup, 1)
         scheduler = None
         if args.lr_schedule == 'cosine':
-            cosine = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
-                optimizer, T_0=lr_T0, eta_min=args.lr_min,
+            cosine = torch.optim.lr_scheduler.CosineAnnealingLR(
+                optimizer, T_max=cosine_epochs, eta_min=args.lr_min,
             )
             if args.lr_warmup > 0:
                 warmup = torch.optim.lr_scheduler.LinearLR(
@@ -850,10 +843,6 @@ def run_autotune(args, device: torch.device):
         epoch_history = []
         for epoch in range(n_epochs):
             trainer.current_epoch = epoch
-
-            sampler = getattr(t_loader, 'sampler', None)
-            if hasattr(sampler, 'set_epoch'):
-                sampler.set_epoch(epoch)
 
             train_m = trainer.train_epoch(t_loader)
 
@@ -999,14 +988,14 @@ def main():
                         help='Species loss function: asl (asymmetric, default), bce, focal, or an')
     parser.add_argument('--asl_gamma_pos', type=float, default=0.0,
                         help='ASL positive focusing parameter (default: 0, no down-weighting)')
-    parser.add_argument('--asl_gamma_neg', type=float, default=4.0,
-                        help='ASL negative focusing parameter (default: 4, aggressively suppress easy negatives)')
+    parser.add_argument('--asl_gamma_neg', type=float, default=2.0,
+                        help='ASL negative focusing parameter (default: 2, higher=more focus on hard negatives)')
     parser.add_argument('--asl_clip', type=float, default=0.05,
                         help='ASL probability margin for negatives (default: 0.05, 0=disable)')
     parser.add_argument('--focal_alpha', type=float, default=0.25)
     parser.add_argument('--focal_gamma', type=float, default=2.0)
-    parser.add_argument('--pos_lambda', type=float, default=8.0,
-                        help='Positive up-weighting λ for assume-negative loss (default: 8)')
+    parser.add_argument('--pos_lambda', type=float, default=4.0,
+                        help='Positive up-weighting λ for assume-negative loss (default: 4)')
     parser.add_argument('--neg_samples', type=int, default=1024,
                         help='Number of negative species to sample per example for AN loss (default: 1024, 0=all)')
     parser.add_argument('--label_smoothing', type=float, default=0.05,
@@ -1032,9 +1021,7 @@ def main():
 
     # LR schedule
     parser.add_argument('--lr_schedule', type=str, default='cosine', choices=['cosine', 'none'],
-                        help='LR scheduler (default: cosine annealing with warm restarts)')
-    parser.add_argument('--lr_T0', type=int, default=10,
-                        help='Cosine restart period in epochs (default: 10)')
+                        help='LR scheduler (default: cosine annealing, single decay to lr_min)')
     parser.add_argument('--lr_min', type=float, default=1e-6,
                         help='Minimum LR for cosine schedule')
     parser.add_argument('--lr_warmup', type=int, default=3,
@@ -1048,7 +1035,7 @@ def main():
     parser.add_argument('--test_size', type=float, default=0.1)
     parser.add_argument('--val_size', type=float, default=0.1)
     parser.add_argument('--sample_fraction', type=float, default=1.0,
-                        help='Fraction of training data to use (default: 1.0 = all, 0.1 = 10%% random subset)')
+                        help='Fraction of locations to keep (default: 1.0 = all, 0.1 = 10%% random subset, subsampled once)')
 
     # Checkpoints
     parser.add_argument('--checkpoint_dir', type=str, default='./checkpoints')
@@ -1118,7 +1105,7 @@ def main():
     if args.label_freq_weight:
         print(f"  Freq weight: enabled (min={args.label_freq_weight_min})")
     if args.sample_fraction < 1.0:
-        print(f"  Sample fraction: {args.sample_fraction} (training subsampled per epoch)")
+        print(f"  Sample fraction: {args.sample_fraction} (subsampled by location once)")
     print(f"  Device:     {device}")
 
     # -- Data loading & preprocessing ---
@@ -1181,9 +1168,11 @@ def main():
     del inputs, targets
     gc.collect()
 
-    # Subsample val/test by location once (consistent throughout training).
-    # Training is subsampled per-epoch via FractionalRandomSampler instead.
+    # Subsample once by location if fraction < 1 (all splits).
     if args.sample_fraction < 1.0:
+        train_in, train_tgt = preprocessor.subsample_by_location(
+            train_in, train_tgt, fraction=args.sample_fraction, random_state=42,
+        )
         val_in, val_tgt = preprocessor.subsample_by_location(
             val_in, val_tgt, fraction=args.sample_fraction, random_state=42,
         )
@@ -1207,10 +1196,13 @@ def main():
         batch_size=args.batch_size, num_workers=args.num_workers,
         pin_memory=(device.type == 'cuda'),
         n_species=n_species,
-        sample_fraction=args.sample_fraction,
         jitter_std=jitter_std,
         species_freq_weights=freq_weights,
     )
+    # Numpy source arrays now live as tensors inside the Dataset.
+    # Dicts were cleared by create_dataloaders; drop remaining refs.
+    del train_in, train_tgt, val_in, val_tgt, freq_weights
+    gc.collect()
 
     # -- Model ---
     print("\n6. Creating model...")
@@ -1288,10 +1280,11 @@ def main():
         model.parameters(), lr=args.lr, weight_decay=args.weight_decay,
     )
 
+    cosine_epochs = args.num_epochs - args.lr_warmup
     scheduler = None
     if args.lr_schedule == 'cosine':
-        cosine = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
-            optimizer, T_0=args.lr_T0, eta_min=args.lr_min,
+        cosine = torch.optim.lr_scheduler.CosineAnnealingLR(
+            optimizer, T_max=max(cosine_epochs, 1), eta_min=args.lr_min,
         )
         if args.lr_warmup > 0:
             warmup = torch.optim.lr_scheduler.LinearLR(

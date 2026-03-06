@@ -16,7 +16,7 @@ import torch
 from pathlib import Path
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
-from torch.utils.data import Dataset, DataLoader, Sampler
+from torch.utils.data import Dataset, DataLoader
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 
@@ -724,33 +724,6 @@ class H3DataPreprocessor:
 # ---------------------------------------------------------------------------
 
 
-class FractionalRandomSampler(Sampler):
-    """Draw a deterministic random subset of training indices each epoch.
-
-    The seed changes every epoch (``42 + epoch``) so each epoch sees a
-    different subset while remaining reproducible.
-    """
-
-    def __init__(self, data_source: Dataset, fraction: float = 1.0):
-        self.data_source = data_source
-        self.fraction = fraction
-        self.epoch = 0
-
-    def set_epoch(self, epoch: int) -> None:
-        self.epoch = epoch
-
-    def __iter__(self):
-        n = len(self.data_source)
-        k = max(1, int(n * self.fraction))
-        rng = np.random.RandomState(42 + self.epoch)
-        indices = rng.choice(n, size=k, replace=False)
-        rng.shuffle(indices)
-        return iter(indices.tolist())
-
-    def __len__(self) -> int:
-        return max(1, int(len(self.data_source) * self.fraction))
-
-
 class BirdSpeciesDataset(Dataset):
     """PyTorch Dataset for bird species occurrence prediction.
 
@@ -822,23 +795,60 @@ class BirdSpeciesDataset(Dataset):
         if self.species_dense is not None:
             sp = self.species_dense[idx]
             if self.species_freq_weights is not None:
-                # Only weight positive labels (1s); 0s stay 0
                 mask = sp > 0
                 sp = sp.clone()
                 sp[mask] = self.species_freq_weights[mask]
+            return (
+                {'lat': lat, 'lon': lon, 'week': self.week[idx]},
+                {'species': sp, 'env_features': self.env_features[idx]},
+            )
         else:
-            # Materialise dense vector from sparse indices
-            sp = torch.zeros(self.n_species, dtype=torch.float32)
+            # Return raw sparse indices — dense vector is built in collate_fn
             indices = self.species_sparse[idx]
+            return (
+                {'lat': lat, 'lon': lon, 'week': self.week[idx]},
+                {'species_indices': indices, 'env_features': self.env_features[idx]},
+            )
+
+
+def _make_sparse_collate_fn(
+    n_species: int,
+    species_freq_weights: Optional[torch.Tensor] = None,
+):
+    """Return a collate function that builds dense species tensors from sparse indices.
+
+    Instead of each ``__getitem__`` call allocating a 40 KB dense vector,
+    the collate function builds one ``(batch, n_species)`` tensor per batch.
+    This cuts per-epoch allocation by ~1000×.
+    """
+    _weights = species_freq_weights  # captured once
+
+    def collate_fn(batch):
+        inputs_list, targets_list = zip(*batch)
+        # Stack scalar inputs
+        lat = torch.stack([inp['lat'] for inp in inputs_list])
+        lon = torch.stack([inp['lon'] for inp in inputs_list])
+        week = torch.stack([inp['week'] for inp in inputs_list])
+        env = torch.stack([tgt['env_features'] for tgt in targets_list])
+
+        # Build dense species matrix from sparse indices
+        B = len(batch)
+        species = torch.zeros(B, n_species, dtype=torch.float32)
+        for i, tgt in enumerate(targets_list):
+            indices = tgt['species_indices']
             if len(indices) > 0:
-                if self.species_freq_weights is not None:
-                    sp[indices] = self.species_freq_weights[indices]
+                idx_t = torch.from_numpy(indices).long() if not isinstance(indices, torch.Tensor) else indices.long()
+                if _weights is not None:
+                    species[i, idx_t] = _weights[idx_t]
                 else:
-                    sp[indices] = 1.0
+                    species[i, idx_t] = 1.0
+
         return (
-            {'lat': lat, 'lon': lon, 'week': self.week[idx]},
-            {'species': sp, 'env_features': self.env_features[idx]},
+            {'lat': lat, 'lon': lon, 'week': week},
+            {'species': species, 'env_features': env},
         )
+
+    return collate_fn
 
 
 def create_dataloaders(
@@ -850,17 +860,20 @@ def create_dataloaders(
     num_workers: int = 0,
     pin_memory: bool = True,
     n_species: int = 0,
-    sample_fraction: float = 1.0,
     jitter_std: float = 0.0,
     species_freq_weights: Optional[np.ndarray] = None,
 ) -> Tuple[DataLoader, DataLoader]:
     """Create training and validation DataLoaders.
 
+    All data is held in memory as PyTorch tensors.  Callers should
+    subsample *before* calling this function if only a fraction of the
+    data is needed (see ``H3DataPreprocessor.subsample_by_location``).
+
+    When species targets are sparse (list of index arrays), a custom
+    collate function builds the dense ``(batch, n_species)`` tensor once
+    per batch instead of per sample, reducing allocation pressure ~1000×.
+
     Args:
-        sample_fraction: Fraction of training samples to use per epoch.
-            When < 1, a ``FractionalRandomSampler`` draws a different
-            random subset each epoch (seed ``42 + epoch``).  Validation
-            always uses all samples.
         jitter_std: Gaussian noise std (degrees) added to training
             coordinates each time a sample is drawn.  Validation
             coordinates are never jittered.
@@ -872,20 +885,25 @@ def create_dataloaders(
                                   species_freq_weights=species_freq_weights)
     val_ds = BirdSpeciesDataset(val_inputs, val_targets, n_species=n_species)
 
-    if sample_fraction < 1.0:
-        sampler = FractionalRandomSampler(train_ds, fraction=sample_fraction)
-        train_loader = DataLoader(train_ds, batch_size=batch_size,
-                                  sampler=sampler,
-                                  num_workers=num_workers,
-                                  pin_memory=pin_memory, drop_last=True)
-    else:
-        train_loader = DataLoader(train_ds, batch_size=batch_size,
-                                  shuffle=True,
-                                  num_workers=num_workers,
-                                  pin_memory=pin_memory, drop_last=True)
+    # Use custom collation when species targets are sparse
+    _is_sparse = train_ds.species_sparse is not None
+    train_collate = _make_sparse_collate_fn(
+        n_species, train_ds.species_freq_weights) if _is_sparse else None
+    val_collate = _make_sparse_collate_fn(n_species) if _is_sparse else None
+
+    _persistent = num_workers > 0
+
+    train_loader = DataLoader(train_ds, batch_size=batch_size,
+                              shuffle=True,
+                              num_workers=num_workers,
+                              pin_memory=pin_memory, drop_last=True,
+                              persistent_workers=_persistent,
+                              collate_fn=train_collate)
 
     val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False,
-                            num_workers=num_workers, pin_memory=pin_memory)
+                            num_workers=num_workers, pin_memory=pin_memory,
+                            persistent_workers=_persistent,
+                            collate_fn=val_collate)
     return train_loader, val_loader
 
 
