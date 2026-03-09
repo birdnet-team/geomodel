@@ -8,7 +8,7 @@ hide:
 
 <p style="margin-bottom: 0.5em;">
 Run the BirdNET Geomodel directly in your browser — no server required.
-The ONNX FP16 model (~14 MB) is loaded once and all inference happens locally via
+The ONNX FP16 model (~3 MB) is loaded once and all inference happens locally via
 <a href="https://onnxruntime.ai/docs/tutorials/web/" target="_blank">ONNX Runtime Web</a>.
 </p>
 
