@@ -482,8 +482,9 @@ species encoding, so propagated species participate fully in training.
 2. **Normalize environmental features** — StandardScaler fit on all
    samples, NaN columns dropped.
 3. **Build a KD-tree** on the observed (non-sparse) samples'
-   normalised env vectors, grouped by week bucket (yearly samples
-   separate from weekly).
+   normalised env vectors, grouped by week (each of the 48 weeks
+   plus week 0 gets its own tree so that seasonal species don't
+   leak across weeks).
 4. **Query** *k* nearest neighbors (`--propagate_k`, default 5) in
    env-feature space for each sparse sample.
 5. **Filter by geographic distance** — discard any neighbor farther than

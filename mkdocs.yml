@@ -102,6 +102,7 @@ nav:
       - Training Curves: plotting/training-curves.md
       - Variable Importance: plotting/variable-importance.md
       - Environmental: plotting/environmental.md
+      - Label Propagation: plotting/propagation.md
   - API Reference:
       - model: api/model.md
       - model.loss: api/loss.md

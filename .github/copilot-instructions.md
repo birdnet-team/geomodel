@@ -291,7 +291,8 @@ geomodel/
 │   ├── plot_richness.py        # Species richness heatmaps (+ side-by-side observed vs predicted)
 │   ├── plot_training.py        # Training loss curves and metrics
 │   ├── plot_variable_importance.py  # Feature importance analysis
-│   └── plot_environmental.py   # Environmental feature visualization
+│   ├── plot_environmental.py   # Environmental feature visualization
+│   └── plot_propagation.py     # Before/after label propagation comparison
 ├── report/
 │   ├── ablation.md             # Ablation study plan, hypotheses, and results
 │   ├── run_ablation.sh         # Run all ablation experiments sequentially

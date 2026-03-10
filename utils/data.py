@@ -481,8 +481,10 @@ class H3DataPreprocessor:
 
         For each sample whose species list is shorter than *min_obs_threshold*,
         find the *k* nearest **observed** samples in environmental feature
-        space (among samples that share the same week bucket), then copy
-        species from neighbours within *max_radius_km*.
+        space (among samples from the **same week**), then copy species from
+        neighbours within *max_radius_km*.  Per-week matching prevents
+        seasonal species from leaking across weeks (e.g. summer migrants
+        appearing in winter).
 
         Args:
             lats: Per-sample latitudes.
@@ -532,14 +534,15 @@ class H3DataPreprocessor:
         cos_lats = np.cos(lats_rad)
         R = 6371.0  # Earth radius in km
 
-        # Week buckets: 0 = yearly, 1 = all weekly samples pooled
-        week_bucket = np.where(weeks == 0, 0, 1).astype(np.int8)
+        # Propagate within the same week — each week gets its own
+        # KD-tree so summer species don't leak into winter, etc.
+        unique_weeks = np.unique(weeks)
 
         total_propagated = 0
         cells_modified = 0
 
-        for bucket in (0, 1):
-            bucket_mask = week_bucket == bucket
+        for wk in unique_weeks:
+            bucket_mask = weeks == wk
             obs_in = np.where(bucket_mask & observed_mask)[0]
             sparse_in = np.where(bucket_mask & sparse_mask)[0]
 

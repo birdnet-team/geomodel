@@ -12,6 +12,7 @@ The `scripts/` directory contains plotting tools for analyzing model predictions
 | [Training Curves](training-curves.md) | Loss curves, LR schedule, mAP, recall | No | No** |
 | [Variable Importance](variable-importance.md) | Spearman correlation bar charts | Yes | Yes |
 | [Environmental](environmental.md) | Environmental feature maps from H3 grid data | No | Yes*** |
+| [Label Propagation](propagation.md) | Before/after comparison of env-neighbor label propagation | No | Yes |
 
 \* Pass `--data_path` with the training parquet to show ground truth alongside predictions.
 

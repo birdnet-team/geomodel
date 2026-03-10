@@ -117,7 +117,7 @@ geomodel/
 │   ├── gbifutils.py         # GBIF processing (Stage 2)
 │   ├── combine.py           # Join geodata + GBIF (Stage 3)
 │   └── data.py              # Dataset / DataLoader / preprocessing
-├── scripts/                 # Plotting scripts
+├── scripts/                 # Plotting & diagnostic scripts
 ├── docs/                    # MkDocs documentation source
 │   └── demo/                # Interactive web demo (ONNX Runtime Web)
 ├── demo/                    # Demo assets (ONNX model + labels)
