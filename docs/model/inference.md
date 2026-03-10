@@ -27,6 +27,9 @@ Rank  TaxonKey     Probability  Common Name                    Scientific Name
 | `--lat` | required | Latitude (-90 to 90) |
 | `--lon` | required | Longitude (-180 to 180) |
 | `--week` | required | Week number (1–48, or -1 for yearly) |
+
+!!! note "Yearly predictions"
+    The CLI maps `--week -1` to `week=0` internally. When calling `predict()` programmatically, pass `week=0` (not `-1`) for yearly predictions. Yearly mode computes the max probability across all 48 weeks for each species.
 | `--checkpoint` | `checkpoints/checkpoint_best.pt` | Model checkpoint |
 | `--top_k` | `100` | Show only the top K species |
 | `--threshold` | `0.15` | Show only species above this probability |
@@ -62,7 +65,7 @@ A checkpoint `.pt` file contains:
 | `model_config` | Dict with `model_scale`, `n_species`, `n_env_features`, `coord_harmonics`, `week_harmonics` |
 | `species_vocab` | Dict with `species_to_idx` and `idx_to_species` mappings |
 | `epoch` | Training epoch at save time |
-| `best_val_map` | Best validation mAP seen |
+| `best_geoscore` | Best validation GeoScore seen |
 | `history` | Full training history |
 | `scheduler_state_dict` | LR scheduler state (if used) |
 | `scaler_state_dict` | AMP scaler state (if CUDA) |

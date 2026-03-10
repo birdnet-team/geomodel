@@ -6,14 +6,14 @@
 python train.py --data_path outputs/combined.parquet
 ```
 
-This trains a medium-sized model with sensible defaults. For a full training run:
+This trains a small model (scale 0.5) with sensible defaults. For a full training run:
 
 ```bash
 python train.py \
     --data_path outputs/combined.parquet \
     --model_scale 1.0 \
     --num_epochs 100 \
-    --batch_size 256 \
+    --batch_size 1024 \
     --lr 0.001
 ```
 
@@ -33,28 +33,28 @@ The training script handles the full pipeline automatically:
 
 | Flag | Default | Description |
 |---|---|---|
-| `--data_path` | `outputs/global_350km_ee_gbif.parquet` | Combined parquet file |
+| `--data_path` | *(required)* | Combined parquet file |
 | `--taxonomy` | auto-detected | Taxonomy CSV for species name labels |
 
 ### Model
 
 | Flag | Default | Description |
 |---|---|---|
-| `--model_scale` | `1.0` | Continuous scaling factor (0.5 ≈ 1.8M, 1.0 ≈ 7M, 2.0 ≈ 36M params) |
-| `--coord_harmonics` | `8` | Harmonics for lat/lon encoding |
-| `--week_harmonics` | `4` | Harmonics for week encoding |
+| `--model_scale` | `0.5` | Continuous scaling factor (0.5 ≈ 1.8M, 1.0 ≈ 7M, 2.0 ≈ 36M params) |
+| `--coord_harmonics` | `4` | Harmonics for lat/lon encoding |
+| `--week_harmonics` | `8` | Harmonics for week encoding |
 
 ### Training
 
 | Flag | Default | Description |
 |---|---|---|
-| `--batch_size` | `512` | Batch size |
+| `--batch_size` | `1024` | Batch size |
 | `--num_epochs` | `50` | Maximum epochs |
 | `--lr` | `0.001` | Initial learning rate |
 | `--weight_decay` | `0.001` | AdamW (Loshchilov & Hutter, 2019) weight decay |
 | `--species_weight` | `1.0` | Species loss multiplier |
-| `--env_weight` | `0.1` | Environmental loss multiplier |
-| `--species_loss` | `asl` | Loss function: `asl` (asymmetric, default), `bce`, `focal`, or `an` |
+| `--env_weight` | `0.5` | Environmental loss multiplier |
+| `--species_loss` | `bce` | Loss function: `bce` (default), `asl` (asymmetric), `focal`, or `an` |
 | `--asl_gamma_pos` | `0.0` | ASL positive focusing parameter (0 = no down-weighting) |
 | `--asl_gamma_neg` | `2.0` | ASL negative focusing parameter (higher = more aggressive) |
 | `--asl_clip` | `0.05` | ASL probability margin for negatives (0 = disable) |
@@ -62,16 +62,20 @@ The training script handles the full pipeline automatically:
 | `--focal_gamma` | `2.0` | Focal loss gamma |
 | `--pos_lambda` | `4.0` | Positive up-weighting λ for AN loss |
 | `--neg_samples` | `1024` | Negative species to sample per example for AN loss (0 = all) |
-| `--label_smoothing` | `0.05` | Smooth binary targets to prevent overconfidence (0 = off) |
-| `--max_obs_per_species` | `100000` | Cap observations per species (0 = no cap) |
-| `--min_obs_per_species` | `100` | Exclude species with fewer than N observations (0 = keep all) |
+| `--label_smoothing` | `0.0` | Smooth binary targets to prevent overconfidence (0 = off) |
+| `--max_obs_per_species` | `0` | Cap observations per species (0 = no cap) |
+| `--min_obs_per_species` | `50` | Exclude species with fewer than N observations (0 = keep all) |
 | `--ocean_sample_rate` | `1.0` | Fraction of ocean cells (water > 90%) to keep (1.0 = keep all) |
 | `--no_yearly` | off | Exclude week-0 (yearly) samples from training |
 | `--jitter` | off | Jitter training coordinates within H3 cells each epoch |
 | `--label_freq_weight` | off | Weight positive labels by region-normalized species frequency |
-| `--label_freq_weight_min` | `0.1` | Minimum label weight for rare species |
-| `--label_freq_weight_pct_lo` | `10` | Lower percentile threshold (species at or below get min weight) |
-| `--label_freq_weight_pct_hi` | `90` | Upper percentile threshold (species at or above get weight 1.0) |
+| `--label_freq_weight_min` | `0.01` | Minimum label weight for rare species |
+| `--label_freq_weight_pct_lo` | `1` | Lower percentile threshold (species at or below get min weight) |
+| `--label_freq_weight_pct_hi` | `99` | Upper percentile threshold (species at or above get weight 1.0) |
+| `--propagate_labels` | off | Propagate species labels from observed to sparse cells via env similarity |
+| `--propagate_k` | `5` | Number of nearest env-space neighbors for propagation |
+| `--propagate_max_radius` | `2000` | Geographic radius cap in km for propagation |
+| `--propagate_min_obs` | `3` | Samples with fewer species than this receive propagated labels |
 
 ### Learning Rate Schedule
 
@@ -97,11 +101,11 @@ where each $s_i$ is a component score normalised to $[0, 1]$ (higher = better):
 |---|---|---|---|
 | Ranking quality | `mAP` | 0.20 | as-is |
 | Classification quality | `F1 @ 10%` | 0.20 | as-is |
-| List-length calibration | `list_ratio @ 10%` | 0.15 | $\max(0,\; 1 - |\ln(\text{LR})|)$ |
+| List-length calibration | `list_ratio @ 10%` | 0.15 | $\max(0,\; 1 - \lvert\ln(\text{LR})\rvert)$ |
 | Endemic species | `watchlist_mean_ap` | 0.10 | as-is |
 | Geographic generalisation | `holdout_map` | 0.10 | as-is (out-of-region mAP) |
 | Density robustness | `mAP_density_ratio` | 0.20 | as-is (sparse / dense) |
-| Decorrelation | `pred_density_corr` | 0.05 | $\max(0,\; 1 - |r|)$ |
+| Decorrelation | `pred_density_corr` | 0.05 | $\max(0,\; 1 - \lvert r\rvert)$ |
 
 !!! info "Why a composite metric?"
 
@@ -218,7 +222,7 @@ quartile (Q1) and the dense quartile (Q4).
 
 ## Loss Functions
 
-### Asymmetric Loss (Default)
+### Asymmetric Loss
 
 Asymmetric Loss (ASL; Ridnik et al., 2021) is a multi-label focal loss variant that applies **separate focusing parameters** to positive and negative samples.  In species distribution modelling the vast majority of labels are negative (a given species is absent from most locations), so ASL aggressively down-weights easy negatives while keeping all positive signal intact.
 
@@ -347,7 +351,7 @@ python train.py \
 |---|---|---|
 | `--pos_lambda` | `4` | Balances positive/negative gradient; increase if recall too low |
 | `--neg_samples` | `1024` | 0 = use all negatives (exact but slow) |
-| `--label_smoothing` | `0.05` | Prevents overconfident predictions; set 0 to disable |
+| `--label_smoothing` | `0.0` | Prevents overconfident predictions; set >0 to enable |
 
 ### Observation Cap
 
@@ -359,7 +363,7 @@ from dominating the gradient signal.
 
 ### Minimum Observation Filter
 
-When `--min_obs_per_species` is set (default: 100), species that appear in
+When `--min_obs_per_species` is set (default: 50), species that appear in
 fewer than the specified number of samples are excluded from the vocabulary
 entirely.  This removes extremely rare species that the model cannot
 meaningfully learn from small sample counts and reduces the output dimension.
@@ -386,7 +390,7 @@ US alone can contribute 10× more records than the Neotropics, so a naive
 **global** frequency count would assign high weights to common North American
 species while suppressing species-rich tropical communities.  The result is
 inflated prediction lists in heavily surveyed areas (e.g. 100 species at
->70% probability for a location in New York) and deflated lists in
+\>70% probability for a location in New York) and deflated lists in
 under-surveyed but species-rich areas (e.g. only 18 species above 40% for
 a location in Colombia).
 
@@ -404,56 +408,105 @@ normalization**.  The algorithm:
    percentile rank.  Using the max ensures that a species common in *any*
    region gets an appropriately high weight — even if it is absent or rare
    in most other regions.
-5. **Map** the max-regional-percentile to a label weight via a sigmoid curve
-   controlled by `--label_freq_weight_pct_lo` and `--label_freq_weight_pct_hi`.
+5. **Map** the max-regional-percentile to a label weight via linear
+   interpolation controlled by `--label_freq_weight_pct_lo` and
+   `--label_freq_weight_pct_hi`.
 
 This makes weights independent of absolute observation density: a species at
 the 90th percentile in Colombia gets the same weight as one at the 90th
 percentile in the US — regardless of raw count differences.
 
-#### Sigmoid mapping
+#### Linear mapping
 
-The position between `pct_lo` (default 10) and `pct_hi` (default 90) is mapped
-through a sigmoid $t' = \frac{t^3}{t^3 + (1-t)^3}$ for smooth S-shaped
-remapping, and finally $w = w_{\min} + t' \cdot (1 - w_{\min})$.  Only positive
-labels (1s) are affected — zeros stay at 0, so this does **not** act as label
-smoothing.
+The position between `pct_lo` (default 1) and `pct_hi` (default 99) is
+linearly interpolated:
+
+$$
+t = \frac{p - p_{\text{lo}}}{p_{\text{hi}} - p_{\text{lo}}}, \qquad
+w = w_{\text{min}} + t \cdot (1 - w_{\text{min}})
+$$
+
+Species at or below `pct_lo` get `min_weight`; species at or above `pct_hi`
+get weight 1.0.  Only positive labels (1s) are affected — zeros stay at 0,
+so this does **not** act as label smoothing.
 
 #### Weight curve
 
-The table below shows the resulting label weight at various positions between
-`pct_lo` and `pct_hi` (with default `min_weight=0.1`):
+The table below shows the resulting label weight at various regional
+percentile positions (with default `pct_lo=1`, `pct_hi=99`,
+`min_weight=0.01`):
 
-| Position between pct_lo–pct_hi | Sigmoid $t'$ | Label weight | Category |
-|---|---|---|---|
-| 0% (≤ pct_lo) | 0.000 | **0.10** | Rare — minimal gradient contribution |
-| 10% | 0.001 | 0.10 | Uncommon — near-minimum weight |
-| 20% | 0.015 | 0.11 | Uncommon |
-| 30% | 0.073 | 0.17 | Below average |
-| 40% | 0.229 | 0.31 | Below average |
-| 50% | 0.500 | 0.55 | Average |
-| 60% | 0.771 | 0.79 | Above average |
-| 70% | 0.927 | 0.93 | Common |
-| 80% | 0.985 | 0.99 | Common — near-maximum weight |
-| 90% | 0.999 | 1.00 | Very common |
-| 100% (≥ pct_hi) | 1.000 | **1.00** | Abundant — full gradient contribution |
+| Regional percentile | Label weight | Category |
+|---|---|---|
+| ≤ 1 (pct\_lo) | **0.01** | Rare — minimal gradient contribution |
+| 10 | 0.10 | Uncommon |
+| 25 | 0.25 | Below average |
+| 50 | 0.50 | Average |
+| 75 | 0.76 | Common |
+| 90 | 0.91 | Very common |
+| ≥ 99 (pct\_hi) | **1.00** | Abundant — full gradient contribution |
 
 #### Parameters
 
 | Parameter | Default | Description |
 |---|---|---|
 | `--label_freq_weight` | off | Enable region-normalized label weighting |
-| `--label_freq_weight_min` | `0.1` | Minimum weight assigned to rare species |
-| `--label_freq_weight_pct_lo` | `10` | Regional percentile at or below which species get min weight |
-| `--label_freq_weight_pct_hi` | `90` | Regional percentile at or above which species get weight 1.0 |
+| `--label_freq_weight_min` | `0.01` | Minimum weight assigned to rare species |
+| `--label_freq_weight_pct_lo` | `1` | Regional percentile at or below which species get min weight |
+| `--label_freq_weight_pct_hi` | `99` | Regional percentile at or above which species get weight 1.0 |
 
 ```bash
-python train.py --label_freq_weight --label_freq_weight_min 0.1
+python train.py --label_freq_weight --label_freq_weight_min 0.01
 ```
 
 !!! note
     Label frequency weighting applies to the **training set only** — validation
     uses standard binary labels for unbiased evaluation.
+
+### Environmental Neighbor Label Propagation
+
+The model struggles to predict species in areas with few or no eBird
+observations.  The environmental auxiliary task teaches spatial
+representations, but doesn't explicitly tell the model that
+"similar environment → similar species."
+
+**`--propagate_labels`** addresses this by copying species lists from
+well-observed cells to nearby sparse cells that share similar
+environmental features.  It runs **before** vocabulary building and
+species encoding, so propagated species participate fully in training.
+
+#### Algorithm
+
+1. **Identify sparse samples** — any sample whose species list has fewer
+   than `--propagate_min_obs` (default 3) species.
+2. **Normalize environmental features** — StandardScaler fit on all
+   samples, NaN columns dropped.
+3. **Build a KD-tree** on the observed (non-sparse) samples'
+   normalised env vectors, grouped by week bucket (yearly samples
+   separate from weekly).
+4. **Query** *k* nearest neighbors (`--propagate_k`, default 5) in
+   env-feature space for each sparse sample.
+5. **Filter by geographic distance** — discard any neighbor farther than
+   `--propagate_max_radius` km (default 2000) using haversine distance.
+   This prevents biogeographically nonsensical transfers (e.g. copying
+   Himalayan species to the Andes just because both are high-elevation).
+6. **Merge** the neighbor species into the sparse sample's list
+   (union, no duplicates).
+
+#### Parameters
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--propagate_labels` | off | Enable env-neighbor label propagation |
+| `--propagate_k` | 5 | Number of nearest env-space neighbors |
+| `--propagate_max_radius` | 2000 | Geographic radius cap (km) |
+| `--propagate_min_obs` | 3 | Sparsity threshold (species count) |
+
+!!! tip
+    Start with defaults and check whether the model's predictions in
+    previously blank areas improve.  Lowering `--propagate_max_radius`
+    to 500–1000 km is sensible for island endemics where long-distance
+    transfers are inappropriate.
 
 ### References
 
@@ -471,7 +524,7 @@ $$
 \mathcal{L}_{\text{total}} = w_{\text{species}} \cdot \mathcal{L}_{\text{species}} + w_{\text{env}} \cdot \mathcal{L}_{\text{env}}
 $$
 
-The environmental MSE loss regularizes the spatial embedding. Default weights: species=1.0, env=0.1.
+The environmental MSE loss regularizes the spatial embedding. Default weights: species=1.0, env=0.5.
 
 Environmental features with missing values (NaN) are excluded from the MSE
 computation via masked loss — the model is not penalised for positions where
@@ -496,7 +549,7 @@ Gradients are clipped to max norm 1.0 to prevent training instability from occas
 The trainer saves:
 
 - `checkpoint_latest.pt` — after every save interval and on early stopping
-- `checkpoint_best.pt` — whenever validation mAP improves
+- `checkpoint_best.pt` — whenever validation GeoScore improves
 - `labels.txt` — species vocabulary (taxonKey → scientific name → common name)
 - `training_history.json` — per-epoch losses, learning rate, and evaluation metrics
 
@@ -563,8 +616,6 @@ python train.py --data_path data.parquet --autotune lr pos_lambda    # tune spec
 
 | Parameter | Search space |
 |---|---|
-| `lr` | 1e-4 → 1e-2 (log scale) |
-| `batch_size` | {128, 256, 512, 1024} |
 | `pos_lambda` | 1.0 → 64 (log scale) |
 | `neg_samples` | {128, 256, 512, 1024, 2048, 4096} |
 | `label_smoothing` | 0 → 0.1 |
@@ -573,10 +624,15 @@ python train.py --data_path data.parquet --autotune lr pos_lambda    # tune spec
 | `species_loss` | {asl, an, bce, focal} |
 | `asl_gamma_neg` | 1.0 → 8.0 |
 | `asl_clip` | 0.0 → 0.2 |
+| `focal_alpha` | 0.1 → 0.9 |
+| `focal_gamma` | 0.5 → 5.0 |
 | `model_scale` | 0.25 → 3.0 (log scale) |
 | `coord_harmonics` | 2 → 8 (integer) |
 | `week_harmonics` | 2 → 8 (integer) |
 | `label_freq_weight` | {true, false} |
+| `label_freq_weight_min` | 0.01 → 0.5 (log scale) |
+| `label_freq_weight_pct_lo` | 1.0 → 25.0 |
+| `label_freq_weight_pct_hi` | 75.0 → 99.0 |
 
 The dataset is built once before tuning starts.  Data-affecting parameters
 (`--max_obs_per_species`, `--min_obs_per_species`, `--no_yearly`) are set via
@@ -587,10 +643,10 @@ the CLI and stay fixed across all trials.
 | Flag | Default | Description |
 |---|---|---|
 | `--autotune` | — | Enable autotune. Without args: tune all. With args: tune listed params only. |
-| `--autotune_trials` | `50` | Number of Optuna trials |
-| `--autotune_epochs` | `10` | Epochs per trial |
+| `--autotune_trials` | `30` | Number of Optuna trials |
+| `--autotune_epochs` | `15` | Epochs per trial |
 
-Each trial trains a fresh model and optimises towards validation mAP.  Optuna's `MedianPruner` kills unpromising trials early (after 3 warmup epochs).  Results are saved to `checkpoints/autotune/autotune_results.json`, and a suggested `train.py` command with the best parameters is printed.
+Each trial trains a fresh model and optimises towards validation GeoScore.  Optuna's `MedianPruner` kills unpromising trials early (after 3 warmup epochs).  Results are saved to `checkpoints/autotune/autotune_results.json`, and a suggested `train.py` command with the best parameters is printed.
 
 ## References
 

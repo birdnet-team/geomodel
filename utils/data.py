@@ -463,6 +463,146 @@ class H3DataPreprocessor:
 
     # -- Full pipeline ----------------------------------------------------
 
+    # -- Environmental neighbor label propagation -------------------------
+
+    @staticmethod
+    def propagate_env_labels(
+        lats: np.ndarray,
+        lons: np.ndarray,
+        weeks: np.ndarray,
+        species_lists: List[List[int]],
+        env_features: pd.DataFrame,
+        k: int = 5,
+        max_radius_km: float = 2000.0,
+        min_obs_threshold: int = 3,
+        soft_weight: float = 0.5,
+    ) -> List[List[int]]:
+        """Propagate species labels from observed to sparse/unobserved cells.
+
+        For each sample whose species list is shorter than *min_obs_threshold*,
+        find the *k* nearest **observed** samples in environmental feature
+        space (among samples that share the same week bucket), then copy
+        species from neighbours within *max_radius_km*.
+
+        Args:
+            lats: Per-sample latitudes.
+            lons: Per-sample longitudes.
+            weeks: Per-sample week numbers (0-48).
+            species_lists: Per-sample species occurrence lists (mutable).
+            env_features: Per-sample environmental feature DataFrame.
+            k: Number of nearest neighbors to consider (default 5).
+            max_radius_km: Geographic radius cap in km (default 2000).
+            min_obs_threshold: Samples with fewer species than this are
+                considered sparse and receive propagated labels (default 3).
+            soft_weight: Reserved for future soft-label support.
+
+        Returns:
+            Modified species_lists with propagated labels (also mutated
+            in place).
+        """
+        from sklearn.preprocessing import StandardScaler
+        from scipy.spatial import cKDTree
+
+        n = len(species_lists)
+
+        # Identify observed vs sparse samples
+        obs_counts = np.array([len(sl) for sl in species_lists], dtype=np.int32)
+        observed_mask = obs_counts >= min_obs_threshold
+        sparse_mask = ~observed_mask
+
+        n_sparse = int(sparse_mask.sum())
+        n_observed = int(observed_mask.sum())
+        if n_sparse == 0 or n_observed == 0:
+            print(f"   Env label propagation: nothing to propagate "
+                  f"({n_observed:,} observed, {n_sparse:,} sparse)")
+            return species_lists
+
+        # Normalize environmental features (vectorized NaN fill)
+        env_arr = env_features.values.astype(np.float64)
+        col_means = np.nanmean(env_arr, axis=0)
+        inds = np.where(np.isnan(env_arr))
+        env_arr[inds] = np.take(col_means, inds[1])
+
+        scaler = StandardScaler()
+        env_scaled = scaler.fit_transform(env_arr).astype(np.float32)
+
+        # Pre-convert coords to radians for vectorized haversine
+        lats_rad = np.radians(lats.astype(np.float64))
+        lons_rad = np.radians(lons.astype(np.float64))
+        cos_lats = np.cos(lats_rad)
+        R = 6371.0  # Earth radius in km
+
+        # Week buckets: 0 = yearly, 1 = all weekly samples pooled
+        week_bucket = np.where(weeks == 0, 0, 1).astype(np.int8)
+
+        total_propagated = 0
+        cells_modified = 0
+
+        for bucket in (0, 1):
+            bucket_mask = week_bucket == bucket
+            obs_in = np.where(bucket_mask & observed_mask)[0]
+            sparse_in = np.where(bucket_mask & sparse_mask)[0]
+
+            if len(obs_in) == 0 or len(sparse_in) == 0:
+                continue
+
+            # Build KD-tree on observed env features
+            tree = cKDTree(env_scaled[obs_in])
+            k_use = min(k, len(obs_in))
+
+            # Batch query all sparse samples at once
+            dists, nb_local = tree.query(env_scaled[sparse_in], k=k_use)
+
+            # Ensure 2-D even when k_use == 1
+            if dists.ndim == 1:
+                dists = dists[:, None]
+                nb_local = nb_local[:, None]
+
+            # Map local neighbour indices back to global indices
+            nb_global = obs_in[nb_local]  # shape (n_sparse_bucket, k_use)
+
+            # Vectorized haversine for ALL (sparse, neighbour) pairs at once
+            sp_idx = np.repeat(sparse_in, k_use)        # each sparse repeated k times
+            nb_idx = nb_global.ravel()                    # all neighbours flat
+
+            dlat = lats_rad[nb_idx] - lats_rad[sp_idx]
+            dlon = lons_rad[nb_idx] - lons_rad[sp_idx]
+            a = (np.sin(dlat * 0.5) ** 2 +
+                 cos_lats[sp_idx] * cos_lats[nb_idx] *
+                 np.sin(dlon * 0.5) ** 2)
+            geo_km = R * 2.0 * np.arcsin(np.sqrt(np.clip(a, 0.0, 1.0)))
+
+            # Reshape back to (n_sparse_bucket, k_use)
+            geo_km = geo_km.reshape(len(sparse_in), k_use)
+
+            # Mask: valid neighbours (finite dist AND within radius)
+            valid = (dists < np.inf) & (geo_km <= max_radius_km)
+
+            # Merge species from valid neighbours
+            for row_i in range(len(sparse_in)):
+                si = sparse_in[row_i]
+                cols = np.where(valid[row_i])[0]
+                if len(cols) == 0:
+                    continue
+
+                new_species = set(species_lists[si])
+                before = len(new_species)
+                for c in cols:
+                    new_species.update(species_lists[nb_global[row_i, c]])
+
+                added = len(new_species) - before
+                if added > 0:
+                    species_lists[si] = list(new_species)
+                    total_propagated += added
+                    cells_modified += 1
+
+        print(f"   Env label propagation: added {total_propagated:,} pseudo-labels "
+              f"to {cells_modified:,}/{n_sparse:,} sparse samples "
+              f"(k={k}, max_radius={max_radius_km:.0f}km, "
+              f"min_obs={min_obs_threshold})")
+
+        return species_lists
+
     # Heuristic: if dense matrix would exceed this many bytes, use sparse
     _DENSE_LIMIT_BYTES = 8 * 1024**3  # 8 GiB
 
@@ -561,8 +701,8 @@ class H3DataPreprocessor:
         3. Within each bin, compute the percentile rank of every species
            (among species present in that bin).
         4. For each species, take the **max** percentile rank across bins.
-        5. Map that max-regional-percentile to a weight via a sigmoid
-           curve controlled by *pct_lo* / *pct_hi*.
+        5. Map that max-regional-percentile to a weight via linear
+           interpolation controlled by *pct_lo* / *pct_hi*.
 
         This makes weights independent of absolute observation density:
         a species at the 90th percentile in Colombia gets the same weight
@@ -623,7 +763,7 @@ class H3DataPreprocessor:
             # Update per-species max percentile
             np.maximum.at(max_pctile, indices, pctiles)
 
-        # Map max-regional-percentile → weight via sigmoid curve
+        # Map max-regional-percentile → weight via linear interpolation
         weights = np.full(n_species, min_weight, dtype=np.float32)
         span = pct_hi - pct_lo
         if span > 0:
@@ -633,8 +773,6 @@ class H3DataPreprocessor:
                     weights[i] = 1.0
                 elif p > pct_lo:
                     t = (p - pct_lo) / span
-                    t3 = t ** 3
-                    t = t3 / (t3 + (1.0 - t) ** 3)
                     weights[i] = min_weight + t * (1.0 - min_weight)
                 # else: stays at min_weight (species absent or very rare
                 #        in every region they appear)

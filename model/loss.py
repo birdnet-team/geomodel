@@ -66,7 +66,7 @@ def asymmetric_loss(
     logits: torch.Tensor,
     targets: torch.Tensor,
     gamma_pos: float = 0.0,
-    gamma_neg: float = 4.0,
+    gamma_neg: float = 2.0,
     clip: float = 0.05,
     reduction: str = 'mean',
 ) -> torch.Tensor:
@@ -158,9 +158,9 @@ class AssumeNegativeLoss(nn.Module):
 
     def __init__(
         self,
-        pos_lambda: float = 8.0,
+        pos_lambda: float = 4.0,
         neg_samples: int = 1024,
-        label_smoothing: float = 0.05,
+        label_smoothing: float = 0.0,
     ):
         super().__init__()
         self.pos_lambda = pos_lambda
@@ -244,7 +244,7 @@ def masked_mse(pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
 
 class MultiTaskLoss(nn.Module):
     """
-    Weighted multi-task loss: species (ASL, BCE, focal, or AN) + environmental (MSE).
+    Weighted multi-task loss: species (BCE, ASL, focal, or AN) + environmental (MSE).
 
     Total = species_weight × species_loss  +  env_weight × env_loss
     """
@@ -252,14 +252,14 @@ class MultiTaskLoss(nn.Module):
     def __init__(
         self,
         species_weight: float = 1.0,
-        env_weight: float = 0.1,
+        env_weight: float = 0.5,
         pos_weight: Optional[torch.Tensor] = None,
-        species_loss: str = 'asl',
+        species_loss: str = 'bce',
         focal_alpha: float = 0.5,
         focal_gamma: float = 2.0,
         pos_lambda: float = 4.0,
         neg_samples: int = 1024,
-        label_smoothing: float = 0.05,
+        label_smoothing: float = 0.0,
         asl_gamma_pos: float = 0.0,
         asl_gamma_neg: float = 2.0,
         asl_clip: float = 0.05,
@@ -270,7 +270,7 @@ class MultiTaskLoss(nn.Module):
             species_weight: Multiplier for species loss.
             env_weight: Multiplier for environmental loss.
             pos_weight: Positive-class weights for BCE mode (ignored for focal/an/asl).
-            species_loss: 'asl' (asymmetric, default), 'bce', 'focal', or 'an'.
+            species_loss: 'bce' (default), 'asl' (asymmetric), 'focal', or 'an'.
             focal_alpha: Alpha for focal loss (default 0.5 = neutral).
             focal_gamma: Gamma for focal loss.
             pos_lambda: λ for assume-negative loss (positive up-weighting, default 4).

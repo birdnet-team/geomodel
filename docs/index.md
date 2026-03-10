@@ -16,6 +16,12 @@ It is **not** a precise species distribution model. The predictions are intentio
 
 In short: the geomodel exists so that beginners don't have to guess which species might be present. If you already know, you don't need it.
 
+### Why a model instead of a lookup table?
+
+An alternative approach would be to query eBird or iNaturalist observation databases directly, but that requires shipping hundreds of megabytes of occurrence data and building spatial indices on the client. The trained geomodel achieves comparable results in under 10 MB (≈ 3 MB at FP16) — small enough to bundle with any mobile or embedded application.
+
+Because the model learns continuous spatial and temporal patterns rather than memorising discrete observations, it also **interpolates** into areas with sparse or no survey coverage and **smooths out geographic biases** in the observation record (e.g. heavily surveyed regions like the US vs. under-surveyed tropical forests). A raw lookup table can only tell you what has been reported; the model can make reasonable predictions where nobody has looked yet.
+
 ---
 
 ## How It Works

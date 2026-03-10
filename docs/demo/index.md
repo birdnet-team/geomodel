@@ -14,6 +14,17 @@ The ONNX FP16 model (~3 MB) is loaded once and all inference happens locally via
 
 <div id="demo-root"></div>
 
+!!! warning "Research preview — not a definitive range map"
+    This model predicts **relative likelihood of species occurrence** based on
+    citizen-science observations (primarily eBird).  Predictions are shaped by
+    **where and when people observe**, not only by where species actually occur.
+    Areas with few observers (oceans, deserts, remote tropics) will have lower
+    confidence or missing species.  The model should **not** be used as the sole
+    basis for conservation decisions, legal compliance (e.g. environmental impact
+    assessments), or definitive species range boundaries.  Always cross-reference
+    with authoritative sources (IUCN, BirdLife, local atlases) for critical
+    applications.
+
 <div markdown="0">
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
 <link rel="stylesheet" href="demo.css">

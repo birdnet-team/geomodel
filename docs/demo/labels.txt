@@ -3921,7 +3921,7 @@
 2487413	Vireo griseus	White-eyed Vireo
 2487426	Vireo flavoviridis	Yellow-green Vireo
 2487428	Vireo brevipennis	Slaty Vireo
-2487430	Vireo olivaceus	Red-eyed Vireo
+2487430	Vireo olivaceus	Chivi Vireo
 2487431	Vireo caribaeus	San Andres Vireo
 2487432	Vireo gundlachii	Cuban Vireo
 2487433	Vireo masteri	Choco Vireo

@@ -73,7 +73,7 @@ Tolerances are format-aware:
 | Format | Effective tolerance |
 |---|---|
 | ONNX FP32 | `tol` (1e-4) |
-| ONNX FP16 (FP32 I/O, default) | 0.02 |
+| ONNX FP16 (FP32 I/O, default) | 0.06 |
 | ONNX FP16 (`--fp16_io`) | 0.05 |
 | TFLite FP32 | `tol` (1e-4) |
 | TFLite FP16 | `tol × 10` |

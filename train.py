@@ -7,7 +7,7 @@ Features:
   - AdamW optimizer with linear LR warmup + CosineAnnealingLR (single decay, no restarts)
   - Automatic mixed-precision (AMP) on CUDA for ~2× speed-up
   - Early stopping based on GeoScore (composite quality metric)
-  - Asymmetric Loss (ASL, default); BCE, focal, and assume-negative also available
+  - BCE (default); ASL (asymmetric), focal, and assume-negative also available
   - Label smoothing and observation cap for regularization
   - Gradient clipping
   - Optuna-based hyperparameter autotune (--autotune)
@@ -896,6 +896,16 @@ def run_autotune(args, device: torch.device):
     del loader
     gc.collect()
 
+    # Environmental neighbor label propagation (before preprocessing)
+    if args.propagate_labels:
+        print("   Propagating labels from observed to sparse cells...")
+        species_lists = H3DataPreprocessor.propagate_env_labels(
+            lats, lons, weeks, species_lists, env_features,
+            k=args.propagate_k,
+            max_radius_km=args.propagate_max_radius,
+            min_obs_threshold=args.propagate_min_obs,
+        )
+
     print("3. Preprocessing...")
     preprocessor = H3DataPreprocessor()
     inputs, targets = preprocessor.prepare_training_data(
@@ -1257,14 +1267,25 @@ def main():
                              '(Gaussian noise scaled to cell size, augments spatial inputs)')
     parser.add_argument('--label_freq_weight', action='store_true',
                         help='Weight positive labels by species frequency '
-                             '(common=1.0, rare=min_weight, sigmoid-shaped '
+                             '(common=1.0, rare=min_weight, linear '
                              'interpolation between lo/hi percentile)')
-    parser.add_argument('--label_freq_weight_min', type=float, default=0.05,
+    parser.add_argument('--label_freq_weight_min', type=float, default=0.01,
                         help='Minimum label weight for rare species (default: 0.01)')
-    parser.add_argument('--label_freq_weight_pct_lo', type=float, default=10.0,
-                        help='Lower percentile: species at or below get min_weight (default: 10)')
-    parser.add_argument('--label_freq_weight_pct_hi', type=float, default=90.0,
-                        help='Upper percentile: species at or above get weight 1.0 (default: 90)')
+    parser.add_argument('--label_freq_weight_pct_lo', type=float, default=1.0,
+                        help='Lower percentile: species at or below get min_weight (default: 1)')
+    parser.add_argument('--label_freq_weight_pct_hi', type=float, default=99.0,
+                        help='Upper percentile: species at or above get weight 1.0 (default: 99)')
+
+    # Label propagation (env neighbor)
+    parser.add_argument('--propagate_labels', action='store_true',
+                        help='Propagate species labels from observed to sparse/unobserved '
+                             'cells using environmental feature similarity (KNN in env space)')
+    parser.add_argument('--propagate_k', type=int, default=5,
+                        help='Number of nearest env-space neighbors for label propagation (default: 5)')
+    parser.add_argument('--propagate_max_radius', type=float, default=2000.0,
+                        help='Geographic radius cap in km for label propagation (default: 2000)')
+    parser.add_argument('--propagate_min_obs', type=int, default=3,
+                        help='Samples with fewer species than this receive propagated labels (default: 3)')
 
     # LR schedule
     parser.add_argument('--lr_schedule', type=str, default='cosine', choices=['cosine', 'none'],
@@ -1357,6 +1378,8 @@ def main():
         print(f"  Jitter:     enabled (Gaussian noise within H3 cells)")
     if args.label_freq_weight:
         print(f"  Freq weight: enabled (min={args.label_freq_weight_min})")
+    if args.propagate_labels:
+        print(f"  Propagate:  k={args.propagate_k}, radius={args.propagate_max_radius}km, min_obs={args.propagate_min_obs}")
     if args.sample_fraction < 1.0:
         print(f"  Sample fraction: {args.sample_fraction} (subsampled by location once)")
     if args.holdout_regions:
@@ -1384,6 +1407,16 @@ def main():
     del loader
     gc.collect()
 
+    # Environmental neighbor label propagation (before preprocessing)
+    if args.propagate_labels:
+        print("   Propagating labels from observed to sparse cells...")
+        species_lists = H3DataPreprocessor.propagate_env_labels(
+            lats, lons, weeks, species_lists, env_features,
+            k=args.propagate_k,
+            max_radius_km=args.propagate_max_radius,
+            min_obs_threshold=args.propagate_min_obs,
+        )
+
     print("3. Preprocessing...")
     preprocessor = H3DataPreprocessor()
     inputs, targets = preprocessor.prepare_training_data(
@@ -1408,6 +1441,7 @@ def main():
             species_lists, min_weight=args.label_freq_weight_min,
             pct_lo=args.label_freq_weight_pct_lo,
             pct_hi=args.label_freq_weight_pct_hi,
+            lats=inputs['lat'], lons=inputs['lon'],
         )
 
     # Free species_lists — no longer needed after vocab + weights

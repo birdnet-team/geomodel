@@ -23,22 +23,21 @@ Species identifiers from the Global Biodiversity Information Facility (GBIF) tax
 - **Spatial location**: Latitude and longitude (converted from H3 cells)
   - Uses **multi-harmonic circular encoding** for neural network compatibility
   - Each coordinate → [sin(θ), cos(θ), sin(2θ), cos(2θ), …, sin(nθ), cos(nθ)]
-  - Default `coord_harmonics=8` → 16 features per coordinate (32 total for lat+lon)
+  - Default `coord_harmonics=4` → 8 features per coordinate (16 total for lat+lon)
   - Preserves spherical continuity (e.g., -180° and 180° longitude map to same point)
 - **Temporal**: Week number (1-48)
   - Uses **multi-harmonic circular encoding** for cyclical representation
-  - Default `week_harmonics=4` → 8 features
+  - Default `week_harmonics=8` → 16 features
   - Ensures week 48 and week 1 are treated as adjacent
   - Temporal signal modulates spatial embedding via **FiLM conditioning**
     (Feature-wise Linear Modulation: γ × spatial + β per residual block)
 
-**Total Input Features**: 32 spatial (lat+lon) + 8 temporal (week FiLM)
+**Total Input Features**: 16 spatial (lat+lon) + 16 temporal (week FiLM)
 
 **Training Targets:**
 - **Primary target**: Species list (GBIF taxonKeys) for that location/week combination
   - Encoded as multi-label binary classification
-  - Asymmetric Loss (ASL, default) with separate positive/negative focusing
-  - BCE, focal, and assume-negative (AN) loss also available via `--species_loss`
+  - BCE (default); ASL (asymmetric), focal, and assume-negative (AN) loss also available via `--species_loss`
 - **Auxiliary target**: Environmental/geographic features for that cell
   - The environmental features act as a regularization signal
   - Helps the model learn better spatial representations
@@ -78,16 +77,16 @@ Species identifiers from the Global Biodiversity Information Facility (GBIF) tax
 - `encode_species_sparse()`: Converts species lists to sparse index arrays (used when dense would exceed 8 GiB)
 - `prepare_training_data()`: Complete preprocessing pipeline
   - Supports `max_obs_per_species` to cap common species observations
-  - Supports `min_obs_per_species` to exclude rare species (default 100)
+  - Supports `min_obs_per_species` to exclude rare species (default 50)
 - `compute_species_freq_weights()`: Per-species label weights via region-normalized frequency
   - Requires lats/lons arrays; partitions globe into 30°×60° bins
   - Computes per-species percentile rank within each bin, uses max regional
     percentile as the weight basis
   - Prevents heavily surveyed regions (e.g. US) from biasing weights against
     species-rich but less-surveyed areas (e.g. Neotropics)
-  - Common species (>=pct_hi percentile, default 90) -> weight 1.0; rare (<=pct_lo, default 10) -> min_weight (default 0.1)
+  - Common species (>=pct_hi percentile, default 99) -> weight 1.0; rare (<=pct_lo, default 1) -> min_weight (default 0.01)
   - `pct_lo` / `pct_hi` configurable via CLI (`--label_freq_weight_pct_lo`, `--label_freq_weight_pct_hi`)
-  - Sigmoid interpolation between percentiles; stored as `self.species_freq_weights`
+  - Linear interpolation between percentiles; stored as `self.species_freq_weights`
 - `compute_obs_density()`: Per-sample observation density (total species detections
   at each location across all weeks). Serves as a proxy for observer effort.
   Stored in `inputs['obs_density']` and used for density-stratified validation metrics.
@@ -159,22 +158,22 @@ Species identifiers from the Global Biodiversity Information Facility (GBIF) tax
    - `get_species_probabilities()`: Get occurrence probabilities
 
 **Model Scaling:**
-- Continuous `model_scale` factor (default 1.0)
-- scale=0.5 → ~1.8M parameters, embed_dim=256, encoder: 2 blocks
-- scale=1.0 → ~7.2M parameters, embed_dim=512, encoder: 4 blocks (default)
+- Continuous `model_scale` factor (default 0.5)
+- scale=0.5 → ~1.8M parameters, embed_dim=256, encoder: 2 blocks (default)
+- scale=1.0 → ~7.2M parameters, embed_dim=512, encoder: 4 blocks
 - scale=2.0 → ~36M parameters, embed_dim=1024, encoder: 8 blocks
 
 **loss.py** - Loss Functions:
-- `asymmetric_loss()`: Default loss — ASL (Ridnik et al., 2021) for multi-label classification
+- `asymmetric_loss()`: ASL (Ridnik et al., 2021) for multi-label classification
   - Separate focusing: γ+=0 (keep all positives), γ-=2 (suppress easy negatives)
   - Probability margin clip=0.05 discards very easy negatives
 - `AssumeNegativeLoss`: LAN-full strategy (Cole et al., 2023) for presence-only data
   - Up-weights positives by λ, samples M negatives per example
-  - Default: λ=4, M=1024, label_smoothing=0.05
+  - Default: λ=4, M=1024, label_smoothing=0.0
 - `MultiTaskLoss`: Weighted combination of species loss + environmental MSE
   - Total Loss = species_weight × species_loss + env_weight × MSE
-  - Species loss: `asl` (default), `bce`, `focal`, or `an` (assume-negative)
-  - Default weights: species=1.0, env=0.1
+  - Species loss: `bce` (default), `asl`, `focal`, or `an` (assume-negative)
+  - Default weights: species=1.0, env=0.5
   - Environmental MSE uses `masked_mse()` to skip NaN targets
 - `compute_pos_weights()`: Calculate class weights from training data
 - `focal_loss()`: Alternative loss for severe class imbalance
@@ -214,7 +213,7 @@ Species identifiers from the Global Biodiversity Information Facility (GBIF) tax
 - Optuna-based hyperparameter autotune (`--autotune`)
   - Tunes: pos_lambda, neg_samples, label_smoothing, env_weight, jitter, species_loss, model_scale, coord_harmonics, week_harmonics, asl_gamma_neg, asl_clip, focal_alpha, focal_gamma, label_freq_weight, label_freq_weight_min, label_freq_weight_pct_lo, label_freq_weight_pct_hi
   - Bayesian optimization with TPE sampler and MedianPruner
-  - `--autotune_trials` (default 50), `--autotune_epochs` (default 10)
+  - `--autotune_trials` (default 30), `--autotune_epochs` (default 15)
   - Results saved to `checkpoints/autotune/autotune_results.json`
 
 **Command-line interface:**
@@ -222,7 +221,7 @@ Species identifiers from the Global Biodiversity Information Facility (GBIF) tax
 python train.py \
   --data_path outputs/combined.parquet \
   --model_scale 1.0 \
-  --batch_size 256 \
+  --batch_size 1024 \
   --num_epochs 100 \
   --lr 0.001 \
   --holdout_regions us_northwest benelux  # optional: mask regions from training
@@ -305,7 +304,37 @@ geomodel/
 
 ## Known Issues & TODOs
 
-*None at this time.*
+### Unobserved area coverage
+The model struggles to predict species in areas with no ground-truth observations.
+The env auxiliary task teaches spatial representations but doesn't explicitly link
+"similar environment → similar species."  Approaches to address this (in order of
+implementation priority):
+
+1. **Environmental neighbor label propagation** ✅ (implemented)
+   - For sparse/unobserved cells, find K nearest observed cells in env feature space
+   - Propagate their species lists as soft pseudo-labels (weighted by env similarity)
+   - Geographic radius cap prevents biogeographically nonsensical transfers
+   - Lives in the data pipeline (`H3DataPreprocessor.propagate_env_labels()`)
+
+2. **Range map weak supervision** (future)
+   - Use published range polygons (BirdLife/IUCN, eBird Status & Trends) as weak labels
+   - Cells inside a species' known range get soft positive labels (e.g. weight 0.3)
+   - Could be an additional `range_map_loss` term alongside species and env losses
+
+3. **Self-training / pseudo-labeling** (future)
+   - Train model, predict species in unobserved cells at high confidence (>0.9)
+   - Add as pseudo-labels and retrain; can iterate multiple rounds
+   - Risk of reinforcing biases — mitigate with strict confidence threshold
+
+4. **Contrastive embedding loss** (future)
+   - Pull spatial embeddings together for locations with similar environments
+   - Forces encoder to produce similar embeddings → species head transfers naturally
+   - Requires careful pair/triplet mining; added as third multi-task loss term
+
+5. **Habitat-species association head** (future)
+   - Branch: predicted env features → species probabilities
+   - Makes the env→species link explicit rather than relying on shared encoder
+   - Combine with direct species head via learned gating
 
 ## Project Goals
 - Predict which bird species are likely to occur in specific locations (H3 cells) during specific weeks of the year
