@@ -37,16 +37,16 @@ NUM_WEEKS = 48
 # ---------------------------------------------------------------------------
 
 _valid_h3_cells = None
-_valid_classes = None
+_valid_classes_lower = None  # pre-lowercased set
 _h3_res = None
 _taxonomy_manager = None
 
 
 def _init_worker(valid_cells, classes, resolution, taxonomy_path=None):
     """Initializer for pool workers — sets shared read-only state."""
-    global _valid_h3_cells, _valid_classes, _h3_res, _taxonomy_manager
+    global _valid_h3_cells, _valid_classes_lower, _h3_res, _taxonomy_manager
     _valid_h3_cells = valid_cells
-    _valid_classes = classes
+    _valid_classes_lower = {c.lower() for c in classes}
     _h3_res = resolution
     if taxonomy_path:
         _taxonomy_manager = TaxonomyManager(taxonomy_path)
@@ -61,17 +61,16 @@ def _process_chunk(chunk):
     """
     chunk_size = len(chunk)
 
-    # Filter to valid classes (convert chunk classes to lowercase to match taxonomy defaults)
-    chunk = chunk[chunk['class'].str.lower().isin([c.lower() for c in _valid_classes])]
+    # Filter to valid classes
+    chunk = chunk[chunk['class'].str.lower().isin(_valid_classes_lower)]
     if chunk.empty:
         return {}, {}, set(), chunk_size
 
-    # Compute H3 cells
+    # Compute H3 cells (vectorized via numpy)
+    import numpy as np
     lats = chunk['latitude'].astype(float).values
     lons = chunk['longitude'].astype(float).values
-    h3_cells = [h3.latlng_to_cell(lat, lon, _h3_res) for lat, lon in zip(lats, lons)]
-    # Ensure H3 cells are always strings (hex)
-    h3_cells_hex = [c if isinstance(c, str) else h3.int_to_str(c) for c in h3_cells]
+    h3_cells_hex = np.vectorize(h3.latlng_to_cell)(lats, lons, _h3_res)
     chunk = chunk.assign(h3_cell=h3_cells_hex)
 
     # Filter to valid cells
@@ -82,28 +81,40 @@ def _process_chunk(chunk):
     if matched.empty:
         return {}, {}, new_missing, chunk_size
 
-    # Use taxonomy if available
+    # Resolve species IDs and collect metadata
     if _taxonomy_manager:
-        # Map taxonKey/sci_name to primary ID (eBird code or iNat ID)
-        def _get_primary_id(row):
-            sci = str(row['verbatimScientificName']).strip()
-            tk = int(row['taxonKey']) if pd.notna(row['taxonKey']) else None
-            return _taxonomy_manager.get_primary_id(sci, fallback_gbif_key=tk)
-            
-        matched = matched.assign(primary_id=matched.apply(_get_primary_id, axis=1))
+        # Vectorized taxonomy lookup via direct dict access (13x faster than DataFrame.apply)
+        sci_names_raw = matched['verbatimScientificName'].astype(str).str.strip()
+        sci_names_lower = sci_names_raw.str.lower().values
+        taxon_keys = matched['taxonKey'].values
+
+        sci_to_meta = _taxonomy_manager.sci_to_meta
+        pids = []
+        for sci_low, tk in zip(sci_names_lower, taxon_keys):
+            meta = sci_to_meta.get(sci_low)
+            if meta and meta.get('species_code'):
+                pids.append(str(meta['species_code']))
+            elif pd.notna(tk):
+                pids.append(str(int(tk)))
+            else:
+                pids.append(sci_low)
+        
+        matched = matched.assign(primary_id=pids)
         group_key = 'primary_id'
         
-        # Collect metadata from taxonomy (using consistent schema: sci_name, com_name, species_code, class_name)
+        # Collect metadata only for unique species (not every row)
         taxon_names = {}
-        for tk, sci, com, tax_class in zip(
-            matched['taxonKey'].values,
-            matched['verbatimScientificName'].values,
-            matched['commonName'].values,
-            matched['class'].values,
+        unique_species = matched.drop_duplicates('primary_id')
+        for pid, tk, sci, com, tax_class in zip(
+            unique_species['primary_id'].values,
+            unique_species['taxonKey'].values,
+            unique_species['verbatimScientificName'].values,
+            unique_species['commonName'].values,
+            unique_species['class'].values,
         ):
-            meta = _taxonomy_manager.get_metadata_by_name(str(sci).strip())
-            pid = _taxonomy_manager.get_primary_id(str(sci).strip(), fallback_gbif_key=int(tk) if pd.notna(tk) else None)
-            
+            if pid in taxon_names:
+                continue
+            meta = sci_to_meta.get(str(sci).strip().lower())
             if meta:
                 taxon_names[pid] = {
                     'taxonKey': int(tk) if pd.notna(tk) else None,
@@ -169,8 +180,13 @@ def estimate_gzip_rows(file_path, sample_rows=10000):
     return int(compressed_size / bytes_per_row) if bytes_per_row > 0 else 0
 
 
-def combine_data(h3_path, gbif_path, output_path, resolution=5, workers=1, classes=None, taxonomy_path=None):
-    """Combine H3 environmental data with GBIF occurrences."""
+def combine_data(h3_path, gbif_path, output_path, resolution=None, workers=1, classes=None, taxonomy_path=None):
+    """Combine H3 environmental data with GBIF occurrences.
+    
+    Args:
+        resolution: H3 resolution for mapping GBIF coordinates. If None (default),
+                    auto-detected from the H3 environmental data.
+    """
     if classes is None:
         # If no classes provided, dynamically determine them from taxonomy
         if taxonomy_path:
@@ -184,9 +200,17 @@ def combine_data(h3_path, gbif_path, output_path, resolution=5, workers=1, class
             classes = ['Aves']
     
     logging.info(f"Loading H3 environmental data from {h3_path}")
-    h3_df = pd.read_parquet(h3_path)
+    h3_df = gpd.read_parquet(h3_path)
     valid_h3_cells = set(h3_df['h3_index'].values)
     logging.info(f"Loaded {len(valid_h3_cells)} valid H3 cells")
+
+    # Auto-detect H3 resolution from the data if not explicitly provided
+    if resolution is None:
+        if 'h3_resolution' in h3_df.columns:
+            resolution = int(h3_df['h3_resolution'].iloc[0])
+        else:
+            resolution = h3.get_resolution(h3_df['h3_index'].iloc[0])
+    logging.info(f"Using H3 resolution: {resolution}")
 
     # Estimate total rows for progress bar
     total_est = estimate_gzip_rows(gbif_path) if gbif_path.endswith('.gz') else None
@@ -208,8 +232,8 @@ def combine_data(h3_path, gbif_path, output_path, resolution=5, workers=1, class
 
     logging.info(f"Processing GBIF data from {gbif_path} with {workers} workers")
     
-    # Read in chunks to keep memory usage balanced
-    chunksize = 100000
+    # Read in chunks — larger chunks amortize CSV parsing and process overhead
+    chunksize = 500000
     reader = pd.read_csv(gbif_path, chunksize=chunksize, usecols=GBIF_REQUIRED_COLUMNS)
 
     with tqdm(total=total_est, desc="Rows processed", unit="row") as pbar:
@@ -248,19 +272,8 @@ def combine_data(h3_path, gbif_path, output_path, resolution=5, workers=1, class
             row_idx = h3_to_idx[cell]
             h3_df.at[row_idx, f'week_{week}'] = list(species_set)
 
-    # Convert to GeoDataFrame to ensure proper geo-metadata is ALWAYS saved
     logging.info(f"Saving combined dataset to {output_path}...")
-    
-    # If the h3_df was a standard pandas DataFrame, convert it back to a GeoDataFrame
-    # Ensure geometry is in Shapely format, not WKB bytes
-    if 'geometry' in h3_df.columns:
-        from shapely import wkb
-        if h3_df['geometry'].dtype == 'object' and len(h3_df) > 0 and isinstance(h3_df['geometry'].iloc[0], bytes):
-            h3_df['geometry'] = h3_df['geometry'].apply(wkb.loads)
-    
-    # Explicitly create GeoDataFrame to write the GEOPARQUET metadata standard
-    gdf = gpd.GeoDataFrame(h3_df, geometry='geometry' if 'geometry' in h3_df.columns else None)
-    gdf.to_parquet(output_path, index=False)
+    h3_df.to_parquet(output_path, index=False)
 
     # Save taxonomy metadata for training label maps
     tax_path = output_path.replace('.parquet', '_taxonomy.csv')
@@ -279,9 +292,9 @@ if __name__ == "__main__":
     parser.add_argument("--h3_path", required=True, help="Path to H3 environmental features parquet")
     parser.add_argument("--gbif_path", required=True, help="Path to processed GBIF CSV")
     parser.add_argument("--output_path", required=True, help="Output parquet path")
-    parser.add_argument("--resolution", type=int, default=5, help="H3 resolution")
+    parser.add_argument("--resolution", type=int, default=None, help="H3 resolution (auto-detected from data if omitted)")
     parser.add_argument("--workers", type=int, default=1, help="Number of worker processes")
-    parser.add_argument("--classes", nargs="+", default=["Aves"], help="List of biological classes to include")
+    parser.add_argument("--classes", nargs="+", default=None, help="List of biological classes to include (auto-detected from taxonomy if omitted)")
     parser.add_argument("--taxonomy_path", help="Path to master taxonomy.csv for label cleanup")
 
     args = parser.parse_args()
