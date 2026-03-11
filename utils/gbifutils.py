@@ -143,7 +143,8 @@ def _filter_block(block_bytes):
 
     # Filter to valid taxonomic classes
     if valid_classes_set and not chunk.empty:
-        chunk = chunk[chunk['class'].str.lower().isin(valid_classes_set)]
+        # Normalize GBIF class names to lowercase for comparison with taxonomy classes
+        chunk = chunk[chunk['class'].str.lower().isin([c.lower() for c in valid_classes_set])]
 
     # Keep only full species (exactly one space → binomial name)
     if not chunk.empty:

@@ -63,9 +63,36 @@ TUNABLE_PARAMS = [
 # ---------------------------------------------------------------------------
 
 
+# Watchlist map: species_code → common name
+WATCHLIST_SPECIES: Dict[str, str] = {
+    # Hawaiian endemics
+    'hawgoo': 'Hawaiian Goose',
+    'hawhaw': 'Hawaiian Hawk',
+    'elepai': 'Hawaii Elepaio',
+    'apapan': 'Apapane',
+    'iiwi':   'Iiwi',
+    'hawama': 'Hawaii Amakihi',
+    # New Zealand endemics
+    'kea1':    'Kea',
+    'nibkiw1': 'North Island Brown Kiwi',
+    'takahe3': 'South Island Takahe',
+    'riflem1': 'Rifleman',
+    'tui1':    'Tui',
+    'kokako3': 'North Island Kokako',
+    # Galápagos endemics
+    'hawhaw-gal': 'Galápagos Hawk',  # eBird code for Galápagos subspecies/population fallback
+    'galrai1':    'Galápagos Rail',
+    'galpet1':    'Galápagos Petrel',
+    # Other restricted-range
+    'kagu1':  'Kagu',
+    'calcon': 'California Condor',
+    'whocra': 'Whooping Crane',
+}
+
+
 def _check_watchlist_coverage(
-    watchlist: Dict[int, str],
-    species_to_idx: Dict[int, int],
+    watchlist: Dict[str, str],
+    species_to_idx: Dict[str, int],
     train_tgt: Dict,
     val_tgt: Dict,
     n_species: int,
@@ -99,68 +126,40 @@ def _check_watchlist_coverage(
     missing_train = []
     missing_val = []
     not_in_vocab = []
-    for taxon_key, name in watchlist.items():
-        idx = species_to_idx.get(taxon_key)
+    for code, name in watchlist.items():
+        idx = species_to_idx.get(code)
         if idx is None:
-            not_in_vocab.append((taxon_key, name))
+            not_in_vocab.append((code, name))
             continue
         if idx not in train_present:
-            missing_train.append((taxon_key, name))
+            missing_train.append((code, name))
         if idx not in val_present:
-            missing_val.append((taxon_key, name))
+            missing_val.append((code, name))
 
     if not_in_vocab:
         warnings.warn(
             f"Watchlist: {len(not_in_vocab)} species not in vocabulary "
             f"(filtered by min_obs?): "
-            + ", ".join(f"{n} ({t})" for t, n in not_in_vocab),
+            + ", ".join(f"{n} ({c})" for c, n in not_in_vocab),
             stacklevel=2,
         )
     if missing_train:
         warnings.warn(
             f"Watchlist: {len(missing_train)} species have ZERO training "
             f"samples after subsampling: "
-            + ", ".join(f"{n} ({t})" for t, n in missing_train),
+            + ", ".join(f"{n} ({c})" for c, n in missing_train),
             stacklevel=2,
         )
     if missing_val:
         warnings.warn(
             f"Watchlist: {len(missing_val)} species have ZERO validation "
             f"samples after subsampling: "
-            + ", ".join(f"{n} ({t})" for t, n in missing_val),
+            + ", ".join(f"{n} ({c})" for c, n in missing_val),
             stacklevel=2,
         )
     if not not_in_vocab and not missing_train and not missing_val:
         print(f"   Watchlist: all {len(watchlist)} species present in "
               f"train & val splits")
-
-
-# TaxonKey → common name for species tracked in ablation study section 3.2.
-# These must appear in the training vocabulary to produce valid AP values.
-WATCHLIST_SPECIES: Dict[int, str] = {
-    # Hawaiian endemics
-    5232445: 'Hawaiian Goose',
-    2480528: 'Hawaiian Hawk',
-    2486699: 'Hawaii Elepaio',
-    2494524: 'Apapane',
-    8070758: 'Iiwi',
-    8346110: 'Hawaii Amakihi',
-    # New Zealand endemics
-    2479593: 'Kea',
-    2495144: 'North Island Brown Kiwi',
-    5228153: 'South Island Takahe',
-    5229954: 'Rifleman',
-    2487029: 'Tui',
-    5817136: 'North Island Kokako',
-    # Galápagos endemics
-    2480569: 'Galápagos Hawk',
-    2474597: 'Galápagos Rail',
-    2481460: 'Galápagos Petrel',
-    # Other restricted-range
-    2474354: 'Kagu',
-    2481920: 'California Condor',
-    2474941: 'Whooping Crane',
-}
 
 
 # ---------------------------------------------------------------------------

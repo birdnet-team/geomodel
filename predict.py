@@ -18,15 +18,15 @@ import torch
 from model.model import create_model
 
 
-def load_labels(labels_path: str) -> Dict[int, Tuple[str, str]]:
+def load_labels(labels_path: str) -> Dict[int, Tuple[str, str, str]]:
     """
     Load labels.txt (saved by train.py) — one line per species in vocab order.
-    Format: taxonKey<TAB>scientificName<TAB>commonName
+    Format: speciesCode<TAB>scientificName<TAB>commonName
 
     Returns:
-        Dict mapping model output index → (scientificName, commonName)
+        Dict mapping model output index → (speciesCode, scientificName, commonName)
     """
-    labels: Dict[int, Tuple[str, str]] = {}
+    labels: Dict[int, Tuple[str, str, str]] = {}
     path = Path(labels_path)
     if not path.exists():
         return labels
@@ -35,13 +35,13 @@ def load_labels(labels_path: str) -> Dict[int, Tuple[str, str]]:
         for idx, line in enumerate(f):
             parts = line.rstrip('\n').split('\t')
             if len(parts) >= 3:
-                _, sci, com = parts[0], parts[1], parts[2]
+                code, sci, com = parts[0], parts[1], parts[2]
             elif len(parts) == 2:
-                _, sci = parts[0], parts[1]
+                code, sci = parts[0], parts[1]
                 com = sci
             else:
-                sci = com = parts[0]
-            labels[idx] = (sci, com)
+                code = sci = com = parts[0]
+            labels[idx] = (code, sci, com)
     return labels
 
 
@@ -53,11 +53,11 @@ def predict(
     top_k: Optional[int] = None,
     threshold: Optional[float] = None,
     device: str = 'auto',
-) -> List[Tuple[int, str, str, float]]:
+) -> List[Tuple[str, str, str, float]]:
     """
     Predict species occurrence for a location and week.
 
-    Returns list of (taxonKey, scientificName, commonName, probability) tuples,
+    Returns list of (speciesCode, scientificName, commonName, probability) tuples,
     sorted by probability descending.
     """
     if device == 'auto':

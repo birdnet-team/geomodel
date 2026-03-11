@@ -40,11 +40,26 @@ class H3DataLoader:
 
     def load_data(self) -> gpd.GeoDataFrame:
         """Load the H3 cell data from parquet file."""
+        # Use geopandas read_parquet as the primary method to preserve metadata
         self.gdf = gpd.read_parquet(self.data_path)
+            
+        # Robust conversion: if for any reason (external tool, etc.) the geometry 
+        # is WKB bytes, ensure it gets converted to shapes so GeoPandas works.
+        if 'geometry' in self.gdf.columns and len(self.gdf) > 0:
+            if isinstance(self.gdf['geometry'].iloc[0], bytes):
+                from shapely import wkb
+                self.gdf['geometry'] = self.gdf['geometry'].apply(wkb.loads)
+            
+        # Ensure h3_index is consistent (hex strings)
+        if 'h3_index' in self.gdf.columns:
+            self.gdf['h3_index'] = self.gdf['h3_index'].apply(
+                lambda x: x if isinstance(x, str) else h3.int_to_str(x)
+            )
+            
         self.week_columns = [c for c in self.gdf.columns if c.startswith('week_')]
         self.env_columns = [
             c for c in self.gdf.columns
-            if c not in self.week_columns and c not in ('h3_index', 'geometry')
+            if c not in self.week_columns and c not in ('h3_index', 'geometry', 'h3_resolution', 'target_km')
         ]
         return self.gdf
 

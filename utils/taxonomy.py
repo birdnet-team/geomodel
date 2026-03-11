@@ -57,15 +57,15 @@ class TaxonomyManager:
         return self.sci_to_meta.get(sci_name.lower())
 
     def get_primary_id(self, sci_name: str, fallback_gbif_key: Optional[int] = None) -> str:
-        """Get the species code (eBird code or iNat ID)."""
+        """Get the species code (eBird code or iNat ID or GBIF taxonKey)."""
         meta = self.get_metadata_by_name(sci_name)
         if meta and meta.get('species_code'):
-            return meta['species_code']
+            return str(meta['species_code'])
         return str(fallback_gbif_key) if fallback_gbif_key is not None else sci_name
 
     def get_label_line(self, sci_name: str, fallback_gbif_key: Optional[int] = None) -> str:
         """Generate a standardized labels.txt line: Code \t SciName \t ComName."""
-        meta = self.get_metadata_by_name(sci_name)
+        meta = self.get_metadata_by_name(sci_name.strip())
         if not meta:
             pid = str(fallback_gbif_key) if fallback_gbif_key is not None else sci_name
             return f"{pid}\t{sci_name}\t{sci_name}"

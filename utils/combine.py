@@ -61,16 +61,18 @@ def _process_chunk(chunk):
     """
     chunk_size = len(chunk)
 
-    # Filter to valid classes
-    chunk = chunk[chunk['class'].isin(_valid_classes)]
+    # Filter to valid classes (convert chunk classes to lowercase to match taxonomy defaults)
+    chunk = chunk[chunk['class'].str.lower().isin([c.lower() for c in _valid_classes])]
     if chunk.empty:
         return {}, {}, set(), chunk_size
 
-    # Compute H3 cells — the main bottleneck
-    lats = chunk['latitude'].values
-    lons = chunk['longitude'].values
+    # Compute H3 cells
+    lats = chunk['latitude'].astype(float).values
+    lons = chunk['longitude'].astype(float).values
     h3_cells = [h3.latlng_to_cell(lat, lon, _h3_res) for lat, lon in zip(lats, lons)]
-    chunk = chunk.assign(h3_cell=h3_cells)
+    # Ensure H3 cells are always strings (hex)
+    h3_cells_hex = [c if isinstance(c, str) else h3.int_to_str(c) for c in h3_cells]
+    chunk = chunk.assign(h3_cell=h3_cells_hex)
 
     # Filter to valid cells
     mask = chunk['h3_cell'].isin(_valid_h3_cells)
@@ -85,13 +87,13 @@ def _process_chunk(chunk):
         # Map taxonKey/sci_name to primary ID (eBird code or iNat ID)
         def _get_primary_id(row):
             sci = str(row['verbatimScientificName']).strip()
-            tk = int(row['taxonKey'])
+            tk = int(row['taxonKey']) if pd.notna(row['taxonKey']) else None
             return _taxonomy_manager.get_primary_id(sci, fallback_gbif_key=tk)
             
         matched = matched.assign(primary_id=matched.apply(_get_primary_id, axis=1))
         group_key = 'primary_id'
         
-        # Collect metadata from taxonomy
+        # Collect metadata from taxonomy (using consistent schema: sci_name, com_name, species_code, class_name)
         taxon_names = {}
         for tk, sci, com, tax_class in zip(
             matched['taxonKey'].values,
@@ -100,23 +102,23 @@ def _process_chunk(chunk):
             matched['class'].values,
         ):
             meta = _taxonomy_manager.get_metadata_by_name(str(sci).strip())
-            pid = _taxonomy_manager.get_primary_id(str(sci).strip(), fallback_gbif_key=int(tk))
+            pid = _taxonomy_manager.get_primary_id(str(sci).strip(), fallback_gbif_key=int(tk) if pd.notna(tk) else None)
             
             if meta:
                 taxon_names[pid] = {
-                    'taxonKey': int(tk),
-                    'scientificName': meta['sci_name'],
-                    'commonName': meta['com_name'],
-                    'primaryId': meta['species_code'],
-                    'class': meta['class_name'],
+                    'taxonKey': int(tk) if pd.notna(tk) else None,
+                    'sci_name': meta['sci_name'],
+                    'com_name': meta['com_name'],
+                    'species_code': meta['species_code'],
+                    'class_name': meta['class_name'],
                 }
             else:
                 taxon_names[pid] = {
-                    'taxonKey': int(tk),
-                    'scientificName': str(sci),
-                    'commonName': str(com),
-                    'primaryId': pid,
-                    'class': str(tax_class).lower(),
+                    'taxonKey': int(tk) if pd.notna(tk) else None,
+                    'sci_name': str(sci),
+                    'com_name': str(com),
+                    'species_code': pid,
+                    'class_name': str(tax_class).lower(),
                 }
     else:
         group_key = 'taxonKey'
@@ -127,7 +129,14 @@ def _process_chunk(chunk):
             taxa['verbatimScientificName'].values,
             taxa['commonName'].values,
         ):
-            taxon_names[str(int(tk))] = (str(sci), str(com))
+            pid = str(int(tk)) if pd.notna(tk) else str(sci)
+            taxon_names[pid] = {
+                'taxonKey': int(tk) if pd.notna(tk) else None,
+                'sci_name': str(sci),
+                'com_name': str(com),
+                'species_code': pid,
+                'class_name': 'unknown',
+            }
 
     # Accumulate species per (cell, week) via groupby
     cell_week_species = {}
@@ -163,7 +172,16 @@ def estimate_gzip_rows(file_path, sample_rows=10000):
 def combine_data(h3_path, gbif_path, output_path, resolution=5, workers=1, classes=None, taxonomy_path=None):
     """Combine H3 environmental data with GBIF occurrences."""
     if classes is None:
-        classes = ['Aves']
+        # If no classes provided, dynamically determine them from taxonomy
+        if taxonomy_path:
+            try:
+                temp_tax = pd.read_csv(taxonomy_path)
+                classes = temp_tax['class_name'].unique().tolist()
+                logging.info(f"Using classes from taxonomy: {classes}")
+            except Exception:
+                classes = ['Aves']
+        else:
+            classes = ['Aves']
     
     logging.info(f"Loading H3 environmental data from {h3_path}")
     h3_df = pd.read_parquet(h3_path)
@@ -219,29 +237,38 @@ def combine_data(h3_path, gbif_path, output_path, resolution=5, workers=1, class
     logging.info("Building final dataset...")
     
     # Pre-generate week columns in the environmental dataframe
+    num_rows = len(h3_df)
     for w in range(1, NUM_WEEKS + 1):
-        h3_df[f'week_{w}'] = [[] for _ in range(len(h3_df))]
+        h3_df[f'week_{w}'] = [[] for _ in range(num_rows)]
 
     # Map global_species dict into the dataframe
-    # Convert cell_h3 -> index for fast lookups
     h3_to_idx = {idx: i for i, idx in enumerate(h3_df['h3_index'].values)}
-    
     for (cell, week), species_set in tqdm(global_species.items(), desc="Pivoting weeks"):
         if cell in h3_to_idx and 1 <= week <= NUM_WEEKS:
             row_idx = h3_to_idx[cell]
             h3_df.at[row_idx, f'week_{week}'] = list(species_set)
 
-    # Save output parquet
-    logging.info(f"Saving combined dataset to {output_path}")
-    h3_df.to_parquet(output_path, index=False)
+    # Convert to GeoDataFrame to ensure proper geo-metadata is ALWAYS saved
+    logging.info(f"Saving combined dataset to {output_path}...")
+    
+    # If the h3_df was a standard pandas DataFrame, convert it back to a GeoDataFrame
+    # Ensure geometry is in Shapely format, not WKB bytes
+    if 'geometry' in h3_df.columns:
+        from shapely import wkb
+        if h3_df['geometry'].dtype == 'object' and len(h3_df) > 0 and isinstance(h3_df['geometry'].iloc[0], bytes):
+            h3_df['geometry'] = h3_df['geometry'].apply(wkb.loads)
+    
+    # Explicitly create GeoDataFrame to write the GEOPARQUET metadata standard
+    gdf = gpd.GeoDataFrame(h3_df, geometry='geometry' if 'geometry' in h3_df.columns else None)
+    gdf.to_parquet(output_path, index=False)
 
     # Save taxonomy metadata for training label maps
     tax_path = output_path.replace('.parquet', '_taxonomy.csv')
     tax_df = pd.DataFrame.from_dict(taxon_metadata, orient='index')
-    # Use index as the identifier column name
-    tax_df.index.name = 'primaryId'
+    # Use species_code as the identifier column name to match the schema
+    tax_df.index.name = 'species_code'
     tax_df.to_csv(tax_path)
-    logging.info(f"Saved taxonomy metadata to {tax_path}")
+    logging.info(f"Saved taxonomy metadata with {len(tax_df)} species to {tax_path}")
 
 
 if __name__ == "__main__":
