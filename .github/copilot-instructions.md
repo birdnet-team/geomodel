@@ -154,10 +154,14 @@ Species identifiers from the Global Biodiversity Information Facility (GBIF) tax
 6. **HabitatSpeciesHead**: Habitat-species association head (optional, `--habitat_head`)
    - Takes predicted env features (from EnvironmentalPredictionHead) → species logits
    - Architecture: Linear projection → residual blocks → bottleneck → n_species
+   - **Detached input**: `env_pred.detach()` prevents species-loss gradients from
+     corrupting the env head's regression objective (env head learns from MSE only)
    - Combined with direct SpeciesPredictionHead via learned per-species gate:
      `logits = gate * direct + (1-gate) * habitat`
-   - Gate = σ(W·embedding + b), initialised with bias=+1 (σ(1) ≈ 0.73, direct dominates)
-   - Gradients flow through env head, strengthening env representation learning
+   - Gate = σ(W·embedding + b), initialised with bias=+3 (σ(3) ≈ 0.95, direct dominates)
+   - Auxiliary habitat species loss (`--habitat_weight`, default 0.5 when habitat head
+     is enabled) applied directly to habitat logits, giving the habitat head a
+     full-strength learning signal independent of the gate
    - Makes env→species link explicit; helps predict species in unobserved areas
 
 7. **BirdNETGeoModel**: Complete multi-task model
@@ -183,8 +187,11 @@ Species identifiers from the Global Biodiversity Information Facility (GBIF) tax
   - Default: λ=4, M=1024, label_smoothing=0.0
 - `MultiTaskLoss`: Weighted combination of species loss + environmental MSE
   - Total Loss = species_weight × species_loss + env_weight × MSE
+    [+ habitat_weight × habitat_species_loss]
   - Species loss: `bce` (default), `asl`, `focal`, or `an` (assume-negative)
-  - Default weights: species=1.0, env=0.5
+  - Default weights: species=1.0, env=0.5, habitat=0.5 (when habitat head active)
+  - Auxiliary habitat loss uses the same loss function on habitat head logits
+    directly (before gating), giving the habitat head a full learning signal
   - Environmental MSE uses `masked_mse()` to skip NaN targets
 - `compute_pos_weights()`: Calculate class weights from training data
 - `focal_loss()`: Alternative loss for severe class imbalance

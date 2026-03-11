@@ -57,7 +57,7 @@ graph TD
         M["gate × direct +<br/>(1−gate) × habitat"]
     end
 
-    J --> K
+    J -.->|detach| K
     K --> M
     I --> M
     H --> L
@@ -116,7 +116,7 @@ Enabled with `--habitat_head`, this head creates an **explicit pathway from pred
 
 **Architecture:**
 
-1. **Input**: predicted environmental features from the environmental head (no gradient detach — gradients flow back, strengthening the env head)
+1. **Input**: predicted environmental features from the environmental head, **detached** (`env_pred.detach()`) so species-loss gradients don't corrupt the env head's MSE regression objective — the env head learns clean environmental representations from MSE alone
 2. **Projection** + residual blocks + **low-rank bottleneck** → species logits (same structure as the species head)
 3. **Learned gate**: a per-species gate $g = \sigma(W \cdot e + b)$ conditioned on the encoder embedding $e$ combines the two pathways:
 
@@ -124,12 +124,15 @@ $$
 \hat{y} = g \cdot y_{\text{direct}} + (1 - g) \cdot y_{\text{habitat}}
 $$
 
-The gate is initialised with zero weights and bias = 1 ($\sigma(1) \approx 0.73$), so the **direct species head dominates initially** while the habitat signal fades in as the environmental and habitat heads learn meaningful representations.
+The gate is initialised with zero weights and bias = 3 ($\sigma(3) \approx 0.95$), so the **direct species head strongly dominates initially** and the habitat contribution only fades in once the env and habitat heads have learned useful representations.
+
+4. **Auxiliary habitat loss**: the same species loss function is applied directly to the habitat head's logits (before gating) with weight `--habitat_weight` (default 0.5). This gives the habitat head a full-strength learning signal independent of the gate value — critical because the gate initially suppresses the habitat contribution to ~5%.
 
 **Why this helps:**
 
 - The direct species head learns spatial-temporal patterns from coordinates alone
 - The habitat head learns explicit environment→species associations (e.g., "high elevation + conifer forest → Clark's Nutcracker")
+- The stop-gradient ensures the env head produces stable, accurate environmental features, while the habitat head learns from those clean representations
 - Together, they enable the model to predict species in **unobserved areas** with similar environments to observed ones — without needing data-level label propagation
 
 **Parameter overhead:** the gate linear layer adds `embed_dim × n_species` parameters; the habitat head itself is similar in size to the environmental head. At scale 0.5 with 12K species, this adds ~3.9M parameters.

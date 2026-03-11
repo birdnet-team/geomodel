@@ -470,12 +470,13 @@ class BirdNETGeoModel(nn.Module):
             # Learned per-species gate conditioned on the encoder embedding.
             # gate = σ(W·embedding + b) ∈ (0, 1) per species.
             # Combined logits = gate * direct + (1 - gate) * habitat.
-            # Bias initialised to +1 → σ(1) ≈ 0.73, so the direct head
-            # dominates at the start and the habitat signal fades in as
-            # the environmental head and habitat head learn.
+            # Bias initialised to +3 → σ(3) ≈ 0.95, so the direct head
+            # strongly dominates at the start.  The habitat contribution
+            # only fades in once the env head and habitat head have learned
+            # useful representations.
             self.species_gate = nn.Linear(embed_dim, n_species)
             nn.init.zeros_(self.species_gate.weight)
-            nn.init.constant_(self.species_gate.bias, 1.0)
+            nn.init.constant_(self.species_gate.bias, 3.0)
         else:
             self.habitat_species_head = None
             self.species_gate = None
@@ -507,14 +508,24 @@ class BirdNETGeoModel(nn.Module):
         direct_logits = self.species_head(encoded)
 
         if self.habitat_species_head is not None:
-            # Habitat path: env head → habitat-species head → gated combination
+            # Habitat path: env head → habitat-species head → gated combination.
+            # env_pred is detached before the habitat head so species-loss
+            # gradients don't flow back into the env head (prevents
+            # gradient conflict with the MSE regression objective).
+            # The env head thus learns clean environmental representations
+            # from MSE alone, while the habitat head learns env→species
+            # associations from those stable features.
             env_pred = self.env_head(encoded)
-            habitat_logits = self.habitat_species_head(env_pred)
+            habitat_logits = self.habitat_species_head(env_pred.detach())
             gate = torch.sigmoid(self.species_gate(encoded))
             species_logits = gate * direct_logits + (1.0 - gate) * habitat_logits
             output: Dict[str, torch.Tensor] = {'species_logits': species_logits}
             if return_env:
                 output['env_pred'] = env_pred
+                # Return habitat logits separately so the loss function can
+                # apply an auxiliary species loss directly on the habitat
+                # head (independent of the gate scaling).
+                output['habitat_logits'] = habitat_logits
             return output
 
         output = {'species_logits': direct_logits}

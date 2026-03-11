@@ -57,6 +57,7 @@ def load_model(checkpoint_path: str, device: torch.device):
         model_scale=model_config.get('model_scale', 1.0),
         coord_harmonics=model_config.get('coord_harmonics', 8),
         week_harmonics=model_config.get('week_harmonics', 4),
+        habitat_head=model_config.get('habitat_head', False),
     )
     model.load_state_dict(ckpt['model_state_dict'])
     model.to(device)

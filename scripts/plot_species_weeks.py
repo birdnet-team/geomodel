@@ -58,6 +58,7 @@ def predict_all_weeks(checkpoint_path: str, lat: float, lon: float, device: str 
         model_scale=model_config.get('model_scale', 1.0),
         coord_harmonics=model_config.get('coord_harmonics', 8),
         week_harmonics=model_config.get('week_harmonics', 4),
+        habitat_head=model_config.get('habitat_head', False),
     )
     model.load_state_dict(ckpt['model_state_dict'])
     model.to(dev)

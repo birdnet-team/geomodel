@@ -247,12 +247,20 @@ class MultiTaskLoss(nn.Module):
     Weighted multi-task loss: species (BCE, ASL, focal, or AN) + environmental (MSE).
 
     Total = species_weight × species_loss  +  env_weight × env_loss
+           [+ habitat_weight × habitat_species_loss]
+
+    When the habitat-species head is enabled, an auxiliary species loss is
+    computed directly on the habitat head's logits (before gating).  This
+    gives the habitat head a full-strength learning signal independent of
+    the gate value, which is critical because the gate initially suppresses
+    the habitat contribution (σ(3) ≈ 0.05).
     """
 
     def __init__(
         self,
         species_weight: float = 1.0,
         env_weight: float = 0.5,
+        habitat_weight: float = 0.0,
         pos_weight: Optional[torch.Tensor] = None,
         species_loss: str = 'bce',
         focal_alpha: float = 0.5,
@@ -269,6 +277,11 @@ class MultiTaskLoss(nn.Module):
         Args:
             species_weight: Multiplier for species loss.
             env_weight: Multiplier for environmental loss.
+            habitat_weight: Multiplier for auxiliary habitat-species loss
+                (applied to habitat head logits before gating).  Only used
+                when the model returns ``'habitat_logits'``.  Default 0
+                (disabled); 0.5 is a reasonable starting point when
+                ``--habitat_head`` is enabled.
             pos_weight: Positive-class weights for BCE mode (ignored for focal/an/asl).
             species_loss: 'bce' (default), 'asl' (asymmetric), 'focal', or 'an'.
             focal_alpha: Alpha for focal loss (default 0.5 = neutral).
@@ -283,6 +296,7 @@ class MultiTaskLoss(nn.Module):
         super().__init__()
         self.species_weight = species_weight
         self.env_weight = env_weight
+        self.habitat_weight = habitat_weight
         self.reduction = reduction
 
         self.species_loss_type = species_loss
@@ -346,7 +360,33 @@ class MultiTaskLoss(nn.Module):
         if compute_env_loss and 'env_pred' in predictions:
             env_loss = masked_mse(predictions['env_pred'], targets['env_features'])
             losses['env'] = env_loss
-            losses['total'] = total + self.env_weight * env_loss
+            losses['total'] = losses['total'] + self.env_weight * env_loss
+
+        # Auxiliary habitat-species loss: same loss function applied directly
+        # to the habitat head's logits (before gating), giving it a
+        # full-strength learning signal.
+        if self.habitat_weight > 0 and 'habitat_logits' in predictions:
+            h_logits = predictions['habitat_logits']
+            if self.species_loss_type == 'focal':
+                habitat_loss = focal_loss(
+                    h_logits, species_t,
+                    alpha=self.focal_alpha, gamma=self.focal_gamma,
+                    reduction=self.reduction,
+                )
+            elif self.species_loss_type == 'asl':
+                habitat_loss = asymmetric_loss(
+                    h_logits, species_t,
+                    gamma_pos=self.asl_gamma_pos,
+                    gamma_neg=self.asl_gamma_neg,
+                    clip=self.asl_clip,
+                    reduction=self.reduction,
+                )
+            elif self.species_loss_type == 'an':
+                habitat_loss = self.species_criterion(h_logits, species_t)
+            else:
+                habitat_loss = self.species_criterion(h_logits, species_t)
+            losses['habitat'] = habitat_loss
+            losses['total'] = losses['total'] + self.habitat_weight * habitat_loss
 
         return losses
 

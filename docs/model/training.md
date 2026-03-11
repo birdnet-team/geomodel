@@ -44,6 +44,7 @@ The training script handles the full pipeline automatically:
 | `--coord_harmonics` | `4` | Harmonics for lat/lon encoding |
 | `--week_harmonics` | `8` | Harmonics for week encoding |
 | `--habitat_head` | off | Enable habitat-species association head (env → species pathway with learned gate) |
+| `--habitat_weight` | `0.5` | Weight for auxiliary habitat-species loss (only used with `--habitat_head`) |
 
 ### Training
 

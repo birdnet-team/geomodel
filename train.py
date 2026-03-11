@@ -287,7 +287,9 @@ class Trainer:
 
         self.history = {
             'train_loss': [], 'train_species_loss': [], 'train_env_loss': [],
+            'train_habitat_loss': [],
             'val_loss': [], 'val_species_loss': [], 'val_env_loss': [],
+            'val_habitat_loss': [],
             'val_map': [], 'val_top10_recall': [], 'val_top30_recall': [],
             'val_f1_5': [], 'val_f1_10': [], 'val_f1_25': [],
             'val_list_ratio_5': [], 'val_list_ratio_10': [], 'val_list_ratio_25': [],
@@ -326,7 +328,7 @@ class Trainer:
             all batches.
         """
         self.model.train()
-        total_loss = total_species = total_env = 0.0
+        total_loss = total_species = total_env = total_habitat = 0.0
         n_batches = 0
         n_total = len(train_loader)
 
@@ -358,15 +360,26 @@ class Trainer:
             total_loss += losses['total'].item()
             total_species += losses['species'].item()
             total_env += losses['env'].item()
+            if 'habitat' in losses:
+                total_habitat += losses['habitat'].item()
             n_batches += 1
 
             if (batch_idx + 1) % self.log_interval == 0:
-                pbar.set_postfix(loss=f"{losses['total'].item():.4f}",
-                                 species=f"{losses['species'].item():.4f}",
-                                 env=f"{losses['env'].item():.4f}")
+                postfix = dict(
+                    loss=f"{losses['total'].item():.4f}",
+                    species=f"{losses['species'].item():.4f}",
+                    env=f"{losses['env'].item():.4f}",
+                )
+                if 'habitat' in losses:
+                    postfix['habitat'] = f"{losses['habitat'].item():.4f}"
+                pbar.set_postfix(**postfix)
 
-        return {'loss': total_loss / n_batches, 'species_loss': total_species / n_batches,
-                'env_loss': total_env / n_batches}
+        result = {'loss': total_loss / n_batches,
+                  'species_loss': total_species / n_batches,
+                  'env_loss': total_env / n_batches}
+        if total_habitat > 0:
+            result['habitat_loss'] = total_habitat / n_batches
+        return result
 
     @torch.no_grad()
     def validate(self, val_loader: DataLoader) -> Dict[str, float]:
@@ -392,7 +405,7 @@ class Trainer:
             per-species AP for watchlist species, and density metrics.
         """
         self.model.eval()
-        total_loss = total_species = total_env = 0.0
+        total_loss = total_species = total_env = total_habitat = 0.0
         n_batches = 0
 
         # Metric accumulators
@@ -445,6 +458,8 @@ class Trainer:
             total_loss += losses['total'].item()
             total_species += losses['species'].item()
             total_env += losses['env'].item()
+            if 'habitat' in losses:
+                total_habitat += losses['habitat'].item()
             n_batches += 1
 
             # --- Species prediction metrics ---
@@ -531,6 +546,8 @@ class Trainer:
             'top10_recall': total_hits_10 / max(total_positives, 1),
             'top30_recall': total_hits_30 / max(total_positives, 1),
         }
+        if total_habitat > 0:
+            metrics['habitat_loss'] = total_habitat / n_batches
         for t in THRESHOLDS:
             pct = int(t * 100)
             tp, fp, fn = thresh_tp[t], thresh_fp[t], thresh_fn[t]
@@ -704,6 +721,11 @@ class Trainer:
                 for k in ('loss', 'species_loss', 'env_loss'):
                     self.history[f'train_{k}'].append(train_m[k])
                     self.history[f'val_{k}'].append(val_m[k])
+                # Habitat loss (only populated when habitat head is active)
+                self.history['train_habitat_loss'].append(
+                    train_m.get('habitat_loss', float('nan')))
+                self.history['val_habitat_loss'].append(
+                    val_m.get('habitat_loss', float('nan')))
                 for k in ('map', 'top10_recall', 'top30_recall',
                           'f1_5', 'f1_10', 'f1_25',
                           'list_ratio_5', 'list_ratio_10', 'list_ratio_25'):
@@ -738,9 +760,13 @@ class Trainer:
                     val_m['geoscore'] = compute_geoscore(val_m)
                     self.history['val_geoscore'][-1] = val_m['geoscore']
 
+                _hab_t = train_m.get('habitat_loss', float('nan'))
+                _hab_v = val_m.get('habitat_loss', float('nan'))
+                _hab_train = f" hab={_hab_t:.4f}" if not math.isnan(_hab_t) else ""
+                _hab_val = f" hab={_hab_v:.4f}" if not math.isnan(_hab_v) else ""
                 print(f"\nEpoch {epoch + 1} \u2014 lr={lr:.2e}  "
-                      f"Train: {train_m['loss']:.4f} (sp={train_m['species_loss']:.4f} env={train_m['env_loss']:.4f})  "
-                      f"Val: {val_m['loss']:.4f} (sp={val_m['species_loss']:.4f} env={val_m['env_loss']:.4f})")
+                      f"Train: {train_m['loss']:.4f} (sp={train_m['species_loss']:.4f} env={train_m['env_loss']:.4f}{_hab_train})  "
+                      f"Val: {val_m['loss']:.4f} (sp={val_m['species_loss']:.4f} env={val_m['env_loss']:.4f}{_hab_val})")
                 print(f"  Metrics: mAP={val_m['map']:.4f}  "
                       f"top-10={val_m['top10_recall']:.4f}  "
                       f"top-30={val_m['top30_recall']:.4f}")
@@ -1040,6 +1066,7 @@ def run_autotune(args, device: torch.device):
         criterion = MultiTaskLoss(
             species_weight=args.species_weight,
             env_weight=float(p['env_weight']),
+            habitat_weight=args.habitat_weight if args.habitat_head else 0.0,
             species_loss=str(p.get('species_loss', args.species_loss)),
             focal_alpha=float(p.get('focal_alpha', args.focal_alpha)),
             focal_gamma=float(p.get('focal_gamma', args.focal_gamma)),
@@ -1232,6 +1259,10 @@ def main():
                         help='Enable habitat-species association head: predicted env features '
                              'feed a secondary species head, combined with the direct head '
                              'via a learned per-species gate')
+    parser.add_argument('--habitat_weight', type=float, default=0.1,
+                        help='Weight for auxiliary habitat-species loss (applied to habitat '
+                             'head logits directly, independent of the gate). '
+                             'Only used when --habitat_head is set. Default: 0.1')
 
     # Training
     parser.add_argument('--batch_size', type=int, default=1024)
@@ -1275,11 +1306,11 @@ def main():
                              '(common=1.0, rare=min_weight, linear '
                              'interpolation between lo/hi percentile)')
     parser.add_argument('--label_freq_weight_min', type=float, default=0.01,
-                        help='Minimum label weight for rare species (default: 0.01)')
-    parser.add_argument('--label_freq_weight_pct_lo', type=float, default=1.0,
-                        help='Lower percentile: species at or below get min_weight (default: 1)')
-    parser.add_argument('--label_freq_weight_pct_hi', type=float, default=99.0,
-                        help='Upper percentile: species at or above get weight 1.0 (default: 99)')
+                        help='Minimum label weight for rare species (default: 0.1)')
+    parser.add_argument('--label_freq_weight_pct_lo', type=float, default=10.0,
+                        help='Lower percentile: species at or below get min_weight (default: 10)')
+    parser.add_argument('--label_freq_weight_pct_hi', type=float, default=95.0,
+                        help='Upper percentile: species at or above get weight 1.0 (default: 95)')
 
     # Label propagation (env neighbor)
     parser.add_argument('--propagate_labels', action='store_true',
@@ -1589,6 +1620,7 @@ def main():
     # -- Criterion, optimizer, scheduler --
     criterion = MultiTaskLoss(
         species_weight=args.species_weight, env_weight=args.env_weight,
+        habitat_weight=args.habitat_weight if args.habitat_head else 0.0,
         species_loss=args.species_loss,
         focal_alpha=args.focal_alpha, focal_gamma=args.focal_gamma,
         pos_lambda=args.pos_lambda, neg_samples=args.neg_samples,
