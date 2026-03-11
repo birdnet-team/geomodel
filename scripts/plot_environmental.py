@@ -3,7 +3,7 @@
 Reads a GeoParquet produced by `utils/geoutils.py` and writes publication-
 quality PNG maps for common environmental columns. The script downsamples
 large GeoDataFrames by default for plotting speed but accepts `--sample-limit`
-to control behaviour.
+to control behavior.
 
 Example:
     python scripts/plot_environmental.py --input outputs/chunk_000.parquet \

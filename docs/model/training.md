@@ -97,7 +97,7 @@ $$
 \text{GeoScore} = \frac{\sum_{i} w_i \cdot s_i}{\sum_{i} w_i}
 $$
 
-where each $s_i$ is a component score normalised to $[0, 1]$ (higher = better):
+where each $s_i$ is a component score normalized to $[0, 1]$ (higher = better):
 
 | Component | Key | Weight | Transform |
 |---|---|---|---|
@@ -105,13 +105,13 @@ where each $s_i$ is a component score normalised to $[0, 1]$ (higher = better):
 | Classification quality | `F1 @ 10%` | 0.20 | as-is |
 | List-length calibration | `list_ratio @ 10%` | 0.15 | $\max(0,\; 1 - \lvert\ln(\text{LR})\rvert)$ |
 | Endemic species | `watchlist_mean_ap` | 0.10 | as-is |
-| Geographic generalisation | `holdout_map` | 0.10 | as-is (out-of-region mAP) |
+| Geographic generalization | `holdout_map` | 0.10 | as-is (out-of-region mAP) |
 | Density robustness | `mAP_density_ratio` | 0.20 | as-is (sparse / dense) |
 | Decorrelation | `pred_density_corr` | 0.05 | $\max(0,\; 1 - \lvert r\rvert)$ |
 
 !!! info "Why a composite metric?"
 
-    Optimising mAP alone can push the model toward over-predicting species
+    Optimizing mAP alone can push the model toward over-predicting species
     (inflating recall at the cost of precision) or ignoring rare/endemic
     species.  GeoScore guards against this by explicitly rewarding:
 
@@ -119,9 +119,9 @@ where each $s_i$ is a component score normalised to $[0, 1]$ (higher = better):
       species lists are close in length to observed lists.
     - **Endemic coverage** — watchlist AP prevents the model from focusing
       exclusively on common species.
-    - **Bias robustness** — density ratio and decorrelation penalise
+    - **Bias robustness** — density ratio and decorrelation penalize
       models that merely mirror observer effort patterns.
-    - **Geographic generalisation** — holdout mAP measures performance
+    - **Geographic generalization** — holdout mAP measures performance
       on geographically held-out regions, rewarding models that
       extrapolate beyond their training distribution.
 
@@ -484,16 +484,19 @@ species encoding, so propagated species participate fully in training.
 2. **Normalize environmental features** — StandardScaler fit on all
    samples, NaN columns dropped.
 3. **Build a KD-tree** on the observed (non-sparse) samples'
-   normalised env vectors, grouped by week (each of the 48 weeks
+   normalized env vectors, grouped by week (each of the 48 weeks
    plus week 0 gets its own tree so that seasonal species don't
    leak across weeks).
 4. **Query** *k* nearest neighbors (`--propagate_k`, default 5) in
    env-feature space for each sparse sample.
 5. **Filter by geographic distance** — discard any neighbor farther than
    `--propagate_max_radius` km (default 2000) using haversine distance.
-   This prevents biogeographically nonsensical transfers (e.g. copying
-   Himalayan species to the Andes just because both are high-elevation).
-6. **Merge** the neighbor species into the sparse sample's list
+6. **Filter by species range** — for each species in a neighbor list,
+   check if the target cell is within `--propagate_max_spread` (default 2.0)
+   multiples of the species' observed range radius from its centroid.
+   This prevents island endemics (e.g. Hawaii-specific birds) from
+   leaking onto the mainland just because the environment matches.
+7. **Merge** the neighbor species into the sparse sample's list
    (union, no duplicates).
 
 #### Parameters
@@ -503,6 +506,7 @@ species encoding, so propagated species participate fully in training.
 | `--propagate_labels` | off | Enable env-neighbor label propagation |
 | `--propagate_k` | 5 | Number of nearest env-space neighbors |
 | `--propagate_max_radius` | 2000 | Geographic radius cap (km) |
+| `--propagate_max_spread` | 2.0 | Species range expansion multiplier |
 | `--propagate_min_obs` | 3 | Sparsity threshold (species count) |
 
 !!! tip
@@ -530,7 +534,7 @@ $$
 The environmental MSE loss regularizes the spatial embedding. Default weights: species=1.0, env=0.5.
 
 Environmental features with missing values (NaN) are excluded from the MSE
-computation via masked loss — the model is not penalised for positions where
+computation via masked loss — the model is not penalized for positions where
 the ground truth is unknown.
 
 ## Training Features
@@ -581,7 +585,7 @@ During each validation epoch, the following metrics are computed and recorded:
 | **mAP density ratio** | sparse/dense ratio (1.0 = no observation bias effect) |
 | **pred–density _r_** | Pearson correlation between obs density and predicted species count |
 
-Metrics are printed after each epoch and saved in `training_history.json`. Use [`scripts/plot_training.py`](../plotting/training-curves.md) to visualise them.
+Metrics are printed after each epoch and saved in `training_history.json`. Use [`scripts/plot_training.py`](../plotting/training-curves.md) to visualize them.
 
 ### Watchlist Species
 
@@ -649,7 +653,7 @@ the CLI and stay fixed across all trials.
 | `--autotune_trials` | `30` | Number of Optuna trials |
 | `--autotune_epochs` | `15` | Epochs per trial |
 
-Each trial trains a fresh model and optimises towards validation GeoScore.  Optuna's `MedianPruner` kills unpromising trials early (after 3 warmup epochs).  Results are saved to `checkpoints/autotune/autotune_results.json`, and a suggested `train.py` command with the best parameters is printed.
+Each trial trains a fresh model and optimizes towards validation GeoScore.  Optuna's `MedianPruner` kills unpromising trials early (after 3 warmup epochs).  Results are saved to `checkpoints/autotune/autotune_results.json`, and a suggested `train.py` command with the best parameters is printed.
 
 ## References
 

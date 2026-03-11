@@ -3,7 +3,7 @@
 Maps each GBIF record to its H3 cell and week, producing a combined
 parquet with per-week species lists and an accompanying taxonomy CSV.
 
-Supports multiprocessing (``--workers``) to parallelise the expensive
+Supports multiprocessing (``--workers``) to parallelize the expensive
 per-row H3 cell computation across CPU cores.
 """
 

@@ -1,6 +1,6 @@
 # Environmental Feature Maps
 
-The `scripts/plot_environmental.py` script visualises the raw environmental
+The `scripts/plot_environmental.py` script visualizes the raw environmental
 data sampled onto the H3 grid by `utils/geoutils.py`.  It produces
 publication-quality PNG maps for elevation, temperature, precipitation, land
 cover, and other features — useful for sanity-checking the input data before
@@ -30,5 +30,5 @@ python scripts/plot_environmental.py --input data/global_350km_ee.parquet \
 ## Output
 
 One PNG per environmental column (e.g. `elevation.png`, `temperature_mean.png`).
-Land-cover maps use a categorical colour palette with a legend; continuous
-variables use sequential colour maps.
+Land-cover maps use a categorical color palette with a legend; continuous
+variables use sequential color maps.

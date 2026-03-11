@@ -13,7 +13,7 @@ Supported formats:
     tf          TensorFlow SavedModel
     all         All of the above
 
-FP16 I/O behaviour:
+FP16 I/O behavior:
     By default, ONNX FP16 exports keep model inputs and outputs in FP32
     (``keep_io_fp32=True``).  This preserves full coordinate precision
     (latitude, longitude, week) and reduces numerical differences versus

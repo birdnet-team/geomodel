@@ -379,7 +379,7 @@ class H3DataPreprocessor:
         A well-surveyed H3 cell (e.g. Central Park, NYC) will have a high
         density value; a poorly surveyed cell (e.g. rural Siberia) will have
         a low value.  During validation the density is used to stratify
-        metrics — a model that generalises well should have similar mAP in
+        metrics — a model that generalizes well should have similar mAP in
         dense and sparse strata.
 
         Args:
@@ -476,6 +476,7 @@ class H3DataPreprocessor:
         max_radius_km: float = 2000.0,
         min_obs_threshold: int = 3,
         soft_weight: float = 0.5,
+        max_spread_factor: float = 2.0,
     ) -> List[List[int]]:
         """Propagate species labels from observed to sparse/unobserved cells.
 
@@ -497,6 +498,11 @@ class H3DataPreprocessor:
             min_obs_threshold: Samples with fewer species than this are
                 considered sparse and receive propagated labels (default 3).
             soft_weight: Reserved for future soft-label support.
+            max_spread_factor: Restrict species propagation based on their
+                observed geographic range.  A species will only propagate to a
+                cell if the cell is within distance D of the nearest original
+                observation, where D = *max_spread_factor* × (observed range
+                diameter / 2). Set to 0 to disable range filtering (default 2.0).
 
         Returns:
             Modified species_lists with propagated labels (also mutated
@@ -518,6 +524,36 @@ class H3DataPreprocessor:
             print(f"   Env label propagation: nothing to propagate "
                   f"({n_observed:,} observed, {n_sparse:,} sparse)")
             return species_lists
+
+        # --- Species Range Computation ---
+        # For range-aware propagation, we need the centroid and approximate
+        # "radius" of each species' observed distribution.
+        species_info = {}
+        if max_spread_factor > 0:
+            from collections import defaultdict
+            sp_coords = defaultdict(list)
+            for i in np.where(observed_mask)[0]:
+                for tk in species_lists[i]:
+                    sp_coords[tk].append((lats[i], lons[i]))
+            
+            for tk, coords in sp_coords.items():
+                c_arr = np.array(coords)
+                lat_c, lon_c = np.mean(c_arr, axis=0)
+                # Compute diameter (max distance between any two points in the range)
+                # For efficiency, use a bounding box diagonal as proxy if range is small, 
+                # or just use the max distance from centroid.
+                dlat = np.max(c_arr[:, 0]) - np.min(c_arr[:, 0])
+                dlon = np.max(c_arr[:, 1]) - np.min(c_arr[:, 1])
+                # Haversine proxy for range radius in km
+                R_earth = 6371.0
+                phi1, phi2 = np.radians(np.min(c_arr[:, 0])), np.radians(np.max(c_arr[:, 0]))
+                dist_lat = R_earth * np.radians(dlat)
+                dist_lon = R_earth * np.radians(dlon) * np.cos(np.radians(lat_c))
+                # Species "radius": distance from centroid to edge of observed range
+                radius = 0.5 * np.sqrt(dist_lat**2 + dist_lon**2)
+                # Floor radius at 50km to avoid zero-range issues for single-cell endemics
+                radius = max(radius, 50.0)
+                species_info[tk] = (lat_c, lon_c, radius)
 
         # Normalize environmental features (vectorized NaN fill)
         env_arr = env_features.values.astype(np.float64)
@@ -561,12 +597,12 @@ class H3DataPreprocessor:
                 dists = dists[:, None]
                 nb_local = nb_local[:, None]
 
-            # Map local neighbour indices back to global indices
+            # Map local neighbor indices back to global indices
             nb_global = obs_in[nb_local]  # shape (n_sparse_bucket, k_use)
 
-            # Vectorized haversine for ALL (sparse, neighbour) pairs at once
+            # Vectorized haversine for ALL (sparse, neighbor) pairs at once
             sp_idx = np.repeat(sparse_in, k_use)        # each sparse repeated k times
-            nb_idx = nb_global.ravel()                    # all neighbours flat
+            nb_idx = nb_global.ravel()                    # all neighbors flat
 
             dlat = lats_rad[nb_idx] - lats_rad[sp_idx]
             dlon = lons_rad[nb_idx] - lons_rad[sp_idx]
@@ -578,10 +614,10 @@ class H3DataPreprocessor:
             # Reshape back to (n_sparse_bucket, k_use)
             geo_km = geo_km.reshape(len(sparse_in), k_use)
 
-            # Mask: valid neighbours (finite dist AND within radius)
+            # Mask: valid neighbors (finite dist AND within radius)
             valid = (dists < np.inf) & (geo_km <= max_radius_km)
 
-            # Merge species from valid neighbours
+            # Merge species from valid neighbors
             for row_i in range(len(sparse_in)):
                 si = sparse_in[row_i]
                 cols = np.where(valid[row_i])[0]
@@ -591,7 +627,21 @@ class H3DataPreprocessor:
                 new_species = set(species_lists[si])
                 before = len(new_species)
                 for c in cols:
-                    new_species.update(species_lists[nb_global[row_i, c]])
+                    neighbor_idx = nb_global[row_i, c]
+                    for tk in species_lists[neighbor_idx]:
+                        # Optional species range diameter constraint
+                        if max_spread_factor > 0 and tk in species_info:
+                            lat_c, lon_c, r = species_info[tk]
+                            # Distance from centroid to target cell (haversine)
+                            dlat = np.radians(lats[si] - lat_c)
+                            dlon = np.radians(lons[si] - lon_c)
+                            a = (np.sin(dlat * 0.5) ** 2 +
+                                 np.cos(np.radians(lat_c)) * np.cos(np.radians(lats[si])) *
+                                 np.sin(dlon * 0.5) ** 2)
+                            dist_to_centroid = R * 2.0 * np.arcsin(np.sqrt(np.clip(a, 0.0, 1.0)))
+                            if dist_to_centroid > (r * max_spread_factor):
+                                continue
+                        new_species.add(tk)
 
                 added = len(new_species) - before
                 if added > 0:

@@ -1,6 +1,6 @@
 # Training Curves
 
-`scripts/plot_training.py` visualises the training history saved by `train.py` in `training_history.json`.
+`scripts/plot_training.py` visualizes the training history saved by `train.py` in `training_history.json`.
 
 ## Usage
 

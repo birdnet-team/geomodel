@@ -124,7 +124,7 @@ $$
 \hat{y} = g \cdot y_{\text{direct}} + (1 - g) \cdot y_{\text{habitat}}
 $$
 
-The gate is initialised with zero weights and bias = 3 ($\sigma(3) \approx 0.95$), so the **direct species head strongly dominates initially** and the habitat contribution only fades in once the env and habitat heads have learned useful representations.
+The gate is initialized with zero weights and bias = 3 ($\sigma(3) \approx 0.95$), so the **direct species head strongly dominates initially** and the habitat contribution only fades in once the env and habitat heads have learned useful representations.
 
 4. **Auxiliary habitat loss**: the same species loss function is applied directly to the habitat head's logits (before gating) with weight `--habitat_weight` (default 0.5). This gives the habitat head a full-strength learning signal independent of the gate value — critical because the gate initially suppresses the habitat contribution to ~5%.
 

@@ -34,7 +34,7 @@ Use `--formats all` to export everything at once.
 | `--device` | `auto` | Device for PyTorch reference model |
 | `--fp16_io` | off | Convert model I/O to FP16 as well (see below) |
 
-## FP16 I/O Behaviour
+## FP16 I/O Behavior
 
 By default, ONNX FP16 exports keep model **inputs and outputs in FP32** while
 converting internal weights and activations to FP16.  This preserves full

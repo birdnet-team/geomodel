@@ -296,6 +296,8 @@ def main():
                         help='Max geographic radius in km (default: 2000)')
     parser.add_argument('--propagate_min_obs', type=int, default=3,
                         help='Sparsity threshold (default: 3)')
+    parser.add_argument('--propagate_max_spread', type=float, default=2.0,
+                        help='Restrict propagation distance by species range radius factor')
     parser.add_argument('--no_yearly', action='store_true',
                         help='Exclude yearly (week 0) samples')
     parser.add_argument('--outdir', type=str, default='outputs/plots/propagation',
@@ -323,11 +325,13 @@ def main():
 
     # Run propagation on the copy
     print("Running label propagation...")
+    
     H3DataPreprocessor.propagate_env_labels(
         lats, lons, weeks, species_after, env_features,
         k=args.propagate_k,
         max_radius_km=args.propagate_max_radius,
         min_obs_threshold=args.propagate_min_obs,
+        max_spread_factor=args.propagate_max_spread,
     )
 
     # Global summary plot

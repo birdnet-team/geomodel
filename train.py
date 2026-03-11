@@ -37,7 +37,7 @@ from tqdm import tqdm
 from model.model import create_model
 from model.loss import MultiTaskLoss
 from utils.data import H3DataLoader, H3DataPreprocessor, create_dataloaders
-from utils.regions import HOLDOUT_REGIONS, resolve_holdout_regions
+from utils.regions import HOLDOUT_REGIONS, resolve_holdout_regions, REGION_BOUNDS
 
 
 # ---------------------------------------------------------------------------
@@ -925,11 +925,13 @@ def run_autotune(args, device: torch.device):
     # Environmental neighbor label propagation (before preprocessing)
     if args.propagate_labels:
         print("   Propagating labels from observed to sparse cells...")
+        
         species_lists = H3DataPreprocessor.propagate_env_labels(
             lats, lons, weeks, species_lists, env_features,
             k=args.propagate_k,
             max_radius_km=args.propagate_max_radius,
             min_obs_threshold=args.propagate_min_obs,
+            max_spread_factor=args.propagate_max_spread,
         )
 
     print("3. Preprocessing...")
@@ -1322,6 +1324,9 @@ def main():
                         help='Geographic radius cap in km for label propagation (default: 2000)')
     parser.add_argument('--propagate_min_obs', type=int, default=3,
                         help='Samples with fewer species than this receive propagated labels (default: 3)')
+    parser.add_argument('--propagate_max_spread', type=float, default=2.0,
+                        help='Restrict propagation distance by observed species range radius '
+                             'multiplied by this factor (default: 2.0).  Set to 0 to disable.')
 
     # LR schedule
     parser.add_argument('--lr_schedule', type=str, default='cosine', choices=['cosine', 'none'],
@@ -1446,11 +1451,13 @@ def main():
     # Environmental neighbor label propagation (before preprocessing)
     if args.propagate_labels:
         print("   Propagating labels from observed to sparse cells...")
+        
         species_lists = H3DataPreprocessor.propagate_env_labels(
             lats, lons, weeks, species_lists, env_features,
             k=args.propagate_k,
             max_radius_km=args.propagate_max_radius,
             min_obs_threshold=args.propagate_min_obs,
+            max_spread_factor=args.propagate_max_spread,
         )
 
     print("3. Preprocessing...")
