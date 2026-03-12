@@ -10,10 +10,12 @@ Each row represents an H3 cell and contains:
 - **h3_index**: H3 geospatial hexagonal grid cell identifier
 - **Environmental features**: Multiple geographic/environmental attributes for the cell (elevation, climate data, land cover, etc.)
   - May contain NaN values (handled via masked MSE loss during training)
-- **48 week columns** (week_1 through week_48): Each column contains a list of GBIF taxonKeys representing bird species observed in that cell during that specific week of the year
+- **48 week columns** (week_1 through week_48): Each column contains a list of species codes representing bird species observed in that cell during that specific week of the year
 
-### GBIF TaxonKeys
-Species identifiers from the Global Biodiversity Information Facility (GBIF) taxonomy system. Used to represent which bird species were observed.
+### Species Codes
+Species are identified by eBird species codes (e.g. `eurbla`, `gretit1`) for birds
+and iNaturalist numeric-string IDs for non-bird taxa.  These replace the legacy
+GBIF integer taxonKeys used in earlier versions of the pipeline.
 
 ## Model Architecture & Approach
 
@@ -35,7 +37,7 @@ Species identifiers from the Global Biodiversity Information Facility (GBIF) tax
 **Total Input Features**: 16 spatial (lat+lon) + 16 temporal (week FiLM)
 
 **Training Targets:**
-- **Primary target**: Species list (GBIF taxonKeys) for that location/week combination
+- **Primary target**: Species list (species codes) for that location/week combination
   - Encoded as multi-label binary classification
   - BCE (default); ASL (asymmetric), focal, and assume-negative (AN) loss also available via `--species_loss`
 - **Auxiliary target**: Environmental/geographic features for that cell
@@ -72,7 +74,7 @@ Species identifiers from the Global Biodiversity Information Facility (GBIF) tax
   - Categorical columns → one-hot encoded (NaN → all-zero row)
   - Fraction columns → passed through as-is (NaN → 0)
   - Continuous columns → StandardScaler (NaN positions preserved for masked MSE loss)
-- `build_species_vocabulary()`: Creates vocabulary of all unique GBIF taxonKeys
+- `build_species_vocabulary()`: Creates vocabulary of all unique species codes
 - `encode_species_multilabel()`: Converts species lists to multi-label dense binary matrix
 - `encode_species_sparse()`: Converts species lists to sparse index arrays (used when dense would exceed 8 GiB)
 - `prepare_training_data()`: Complete preprocessing pipeline
@@ -84,7 +86,7 @@ Species identifiers from the Global Biodiversity Information Facility (GBIF) tax
     percentile as the weight basis
   - Prevents heavily surveyed regions (e.g. US) from biasing weights against
     species-rich but less-surveyed areas (e.g. Neotropics)
-  - Common species (>=pct_hi percentile, default 99) -> weight 1.0; rare (<=pct_lo, default 1) -> min_weight (default 0.01)
+  - Common species (>=pct_hi percentile, default 95) -> weight 1.0; rare (<=pct_lo, default 10) -> min_weight (default 0.01)
   - `pct_lo` / `pct_hi` configurable via CLI (`--label_freq_weight_pct_lo`, `--label_freq_weight_pct_hi`)
   - Linear interpolation between percentiles; stored as `self.species_freq_weights`
 - `compute_obs_density()`: Per-sample observation density (total species detections
@@ -99,6 +101,12 @@ Species identifiers from the Global Biodiversity Information Facility (GBIF) tax
 - `subsample_by_samples()`: Randomly subsample a fraction of individual
   week@location rows. Used when dropping entire locations is undesirable
   (e.g. small islands with endemic species).
+- `propagate_env_labels()`: Environmental neighbor label propagation
+  - For sparse/unobserved cells, find K nearest observed cells in env feature space
+  - Propagate species lists as soft pseudo-labels (weighted by env similarity)
+  - Geographic radius cap (`max_radius_km`) prevents nonsensical transfers
+  - `max_spread_factor` limits species list growth relative to regional median
+  - Vectorized via scipy sparse matrix multiplication for performance
 
 **data.py** - PyTorch Dataset:
 - `BirdSpeciesDataset`: PyTorch Dataset wrapper with sparse-to-dense conversion
@@ -159,7 +167,7 @@ Species identifiers from the Global Biodiversity Information Facility (GBIF) tax
    - Combined with direct SpeciesPredictionHead via learned per-species gate:
      `logits = gate * direct + (1-gate) * habitat`
    - Gate = σ(W·embedding + b), initialised with bias=+3 (σ(3) ≈ 0.95, direct dominates)
-   - Auxiliary habitat species loss (`--habitat_weight`, default 0.5 when habitat head
+   - Auxiliary habitat species loss (`--habitat_weight`, default 0.1 when habitat head
      is enabled) applied directly to habitat logits, giving the habitat head a
      full-strength learning signal independent of the gate
    - Makes env→species link explicit; helps predict species in unobserved areas
@@ -189,7 +197,7 @@ Species identifiers from the Global Biodiversity Information Facility (GBIF) tax
   - Total Loss = species_weight × species_loss + env_weight × MSE
     [+ habitat_weight × habitat_species_loss]
   - Species loss: `bce` (default), `asl`, `focal`, or `an` (assume-negative)
-  - Default weights: species=1.0, env=0.5, habitat=0.5 (when habitat head active)
+  - Default weights: species=1.0, env=0.5, habitat=0.1 (when habitat head active)
   - Auxiliary habitat loss uses the same loss function on habitat head logits
     directly (before gating), giving the habitat head a full learning signal
   - Environmental MSE uses `masked_mse()` to skip NaN targets
@@ -207,7 +215,7 @@ Species identifiers from the Global Biodiversity Information Facility (GBIF) tax
 - Checkpoint management:
   - `checkpoint_latest.pt`: Latest model state
   - `checkpoint_best.pt`: Best validation GeoScore
-- `labels.txt`: Species vocabulary (taxonKey → scientific name → common name)
+- `labels.txt`: Species vocabulary (speciesCode → scientific name → common name)
 - `training_history.json`: Per-epoch loss, LR, and evaluation metrics
 - Evaluation metrics computed during validation:
   - **GeoScore**: composite quality metric (primary optimisation target)
@@ -225,7 +233,7 @@ Species identifiers from the Global Biodiversity Information Facility (GBIF) tax
   - Density-stratified mAP (sparse/dense quartiles by observation density)
   - Prediction-density correlation (Pearson r between obs density and predicted count)
   - Holdout region metrics (mAP, F1@10% on held-out geographic regions)
-- `WATCHLIST_SPECIES` dict in train.py maps taxonKeys to common names
+- `WATCHLIST_SPECIES` dict in train.py maps species codes to common names
 - Progress tracking with tqdm
 - GPU/CPU support with automatic device selection
 - Optuna-based hyperparameter autotune (`--autotune`)
@@ -233,6 +241,10 @@ Species identifiers from the Global Biodiversity Information Facility (GBIF) tax
   - Bayesian optimization with TPE sampler and MedianPruner
   - `--autotune_trials` (default 30), `--autotune_epochs` (default 15)
   - Results saved to `checkpoints/autotune/autotune_results.json`
+- **Data preprocessing cache**: Preprocessed data is cached to
+  `checkpoints/.data_cache/` keyed by a SHA-256 hash of the data file
+  metadata and all relevant CLI arguments.  Subsequent runs with the same
+  configuration load instantly.  Use `--no_cache` to bypass.
 
 **Command-line interface:**
 ```bash
@@ -311,11 +323,6 @@ geomodel/
 │   ├── plot_variable_importance.py  # Feature importance analysis
 │   ├── plot_environmental.py   # Environmental feature visualization
 │   └── plot_propagation.py     # Before/after label propagation comparison
-├── report/
-│   ├── ablation.md             # Ablation study plan, hypotheses, and results
-│   ├── run_ablation.sh         # Run all ablation experiments sequentially
-│   ├── collect_ablation_results.py  # Collect ablation results into Markdown/CSV tables
-│   └── ablation/               # Ablation experiment checkpoints and logs
 ├── docs/                       # MkDocs documentation
 ├── checkpoints/                # Saved model checkpoints
 └── outputs/                    # Generated data and plots

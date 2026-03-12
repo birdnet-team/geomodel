@@ -27,8 +27,8 @@ graph LR
 
 **What it produces:**
 
-- A combined parquet with `h3_index`, environmental features, and `week_1`…`week_48` columns (each containing a list of taxonKeys observed that week)
-- A taxonomy CSV mapping taxonKey to scientific and common names
+- A combined parquet with `h3_index`, environmental features, and `week_1`…`week_48` columns (each containing a list of species codes observed that week)
+- A taxonomy CSV mapping species codes to scientific and common names
 
 ## H3 Hexagonal Grid
 

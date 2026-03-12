@@ -24,7 +24,7 @@
   // Perceptual scaling: gamma < 1 stretches low values for visibility
   var DISPLAY_GAMMA = 0.5;
 
-  // Preselected species (taxonKey for quick access)
+  // Preselected species (species code for quick access)
   var FEATURED_SPECIES = [
     { key: "9515886", sci: "Hirundo rustica", common: "Barn Swallow" },
     { key: "5229230", sci: "Sterna paradisaea", common: "Arctic Tern" },

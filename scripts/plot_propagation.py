@@ -35,27 +35,30 @@ from utils.data import H3DataLoader, H3DataPreprocessor
 
 
 def load_taxonomy(taxonomy_path: Optional[str] = None) -> Dict[str, Tuple[str, str]]:
-    """Load taxonomy CSV mapping speciesCode → (scientificName, commonName)."""
+    """Load taxonomy CSV mapping speciesCode → (scientificName, commonName).
+
+    Auto-detects taxonomy.csv or data/taxonomy.csv if *taxonomy_path* is not
+    provided, falling back to checkpoints/labels.txt (tab-separated
+    code/sciName/comName format).
+    """
     taxonomy: Dict[str, Tuple[str, str]] = {}
 
     if taxonomy_path is None:
-        # Auto-detect: try taxonomy.csv first
         for candidate in ['taxonomy.csv', 'data/taxonomy.csv']:
             if Path(candidate).exists():
                 taxonomy_path = candidate
                 break
 
     if taxonomy_path is None or not Path(taxonomy_path).exists():
-        # Try labels.txt as fallback (code\tsciName\tcomName)
-        for labels_candidate in ['checkpoints/labels.txt', 'demo/labels.txt']:
-            p = Path(labels_candidate)
-            if p.exists():
-                with open(p, encoding='utf-8') as f:
-                    for line in f:
-                        parts = line.rstrip('\n').split('\t')
-                        if len(parts) >= 3:
-                            taxonomy[parts[0]] = (parts[1], parts[2])
-                return taxonomy
+        # Fallback: labels.txt (code\tsciName\tcomName)
+        labels_path = Path('checkpoints/labels.txt')
+        if labels_path.exists():
+            with open(labels_path, encoding='utf-8') as f:
+                for line in f:
+                    parts = line.rstrip('\n').split('\t')
+                    if len(parts) >= 3:
+                        taxonomy[parts[0]] = (parts[1], parts[2])
+            return taxonomy
         return taxonomy
 
     with open(taxonomy_path, encoding='utf-8') as f:

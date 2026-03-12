@@ -437,7 +437,7 @@ class BirdNETGeoModel(nn.Module):
                 True, predicted environmental features are fed through a
                 secondary species head whose logits are combined with the
                 direct species head via a learned per-species gate.
-            habitat_head_dim: Hidden dim for habiat-species head.
+            habitat_head_dim: Hidden dim for habitat-species head.
             habitat_head_blocks: Residual blocks in habitat-species head.
             habitat_bottleneck: Low-rank bottleneck for habitat-species head.
         """

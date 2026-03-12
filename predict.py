@@ -111,6 +111,13 @@ def predict(
     if not labels_path.exists():
         labels_path = ckpt_dir / 'labels.txt'
     labels = load_labels(str(labels_path)) if labels_path.exists() else {}
+    if not labels:
+        import warnings
+        warnings.warn(
+            f"No labels file found in {ckpt_dir} — output will use species "
+            f"codes only. Expected: {ckpt_stem}_labels.txt or labels.txt",
+            stacklevel=2,
+        )
 
     # Build results
     results = []
@@ -140,14 +147,14 @@ def main():
     parser.add_argument('--checkpoint', type=str, default='checkpoints/checkpoint_best.pt', help='Path to model checkpoint')
     parser.add_argument('--lat', type=float, required=True, help='Latitude (-90 to 90)')
     parser.add_argument('--lon', type=float, required=True, help='Longitude (-180 to 180)')
-    parser.add_argument('--week', type=int, required=True, help='Week number (1-48, or -1 for yearly)')
+    parser.add_argument('--week', type=int, required=True, help='Week number (1-48, or -1/0 for yearly)')
     parser.add_argument('--top_k', type=int, default=100, help='Show top K species')
     parser.add_argument('--threshold', type=float, default=0.15, help='Min probability threshold')
     parser.add_argument('--device', type=str, default='auto', choices=['auto', 'cuda', 'cpu'])
     args = parser.parse_args()
 
-    if not (args.week == -1 or 1 <= args.week <= 48):
-        parser.error("Week must be between 1 and 48, or -1 for yearly")
+    if not (args.week in (-1, 0) or 1 <= args.week <= 48):
+        parser.error("Week must be between 1 and 48, or -1/0 for yearly")
 
     # Map CLI -1 → internal week 0 (yearly)
     internal_week = 0 if args.week == -1 else args.week

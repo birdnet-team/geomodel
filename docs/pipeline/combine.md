@@ -7,7 +7,7 @@
 1. **Load the H3 grid** — reads the GeoParquet with environmental features
 2. **Stream GBIF observations** — reads the processed CSV in chunks
 3. **Map observations to cells** — each observation's (lat, lon) is mapped to its containing H3 cell using `h3.latlng_to_cell()`
-4. **Aggregate by week** — for each cell, observations are grouped by BirdNET week number (1–48), producing a list of taxonKeys per week
+4. **Aggregate by week** — for each cell, observations are grouped by BirdNET week number (1–48), producing a list of species codes per week
 5. **Write outputs** — combined parquet and a taxonomy CSV
 
 ## CLI Options
@@ -40,7 +40,7 @@ Each row is an H3 cell with:
 | `h3_index` | H3 cell identifier |
 | `geometry` | Cell polygon |
 | Environmental columns | `elevation_m`, `temperature_c`, etc. |
-| `week_1` … `week_48` | List of taxonKeys observed in that week |
+| `week_1` … `week_48` | List of species codes observed in that week |
 
 ### Taxonomy CSV
 
@@ -48,6 +48,6 @@ Auto-generated alongside the parquet (with `_taxonomy.csv` suffix):
 
 | Column | Description |
 |---|---|
-| `taxonKey` | GBIF taxonomic identifier |
+| `species_code` | eBird species code or iNat ID |
 | `scientificName` | Binomial scientific name |
 | `commonName` | Common name (if available) |

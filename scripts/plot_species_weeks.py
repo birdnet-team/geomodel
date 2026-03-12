@@ -38,7 +38,7 @@ def predict_all_weeks(checkpoint_path: str, lat: float, lon: float, device: str 
     Run inference for all 48 weeks.
 
     Returns:
-        idx_to_species: dict mapping model index → taxonKey
+        idx_to_species: dict mapping model index → species code
         labels: dict mapping model index → (sciName, comName)
         probs: np.ndarray of shape (48, n_species) — rows 0–47 = weeks 1–48
     """
@@ -152,15 +152,15 @@ def load_ground_truth(data_path: str, lat: float, lon: float) -> Dict[int, Set[s
 
 
 def _add_gt_markers(
-    ax, taxon_key: str, gt_by_week: Dict[int, Set[str]],
+    ax, species_code: str, gt_by_week: Dict[int, Set[str]],
     weeks: np.ndarray, yearly_x: float,
 ):
     """Overlay ground truth presence markers (green ◆) on a species subplot."""
     if not gt_by_week:
         return
-    present_weeks = [w for w in weeks if taxon_key in gt_by_week.get(int(w), set())]
+    present_weeks = [w for w in weeks if species_code in gt_by_week.get(int(w), set())]
     yearly_present = any(
-        taxon_key in gt_by_week.get(w, set()) for w in range(1, NUM_WEEKS + 1)
+        species_code in gt_by_week.get(w, set()) for w in range(1, NUM_WEEKS + 1)
     )
     xs = list(present_weeks)
     if yearly_present:

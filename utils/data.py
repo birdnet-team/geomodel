@@ -104,7 +104,7 @@ class H3DataLoader:
         ocean_sample_rate: float = 1.0,
         water_threshold: float = 0.9,
         include_yearly: bool = True,
-    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, List[List[int]], pd.DataFrame]:
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, List[List[str]], pd.DataFrame]:
         """
         Flatten H3-cell × weeks to individual (lat, lon, week, species, env) samples.
 
@@ -202,9 +202,9 @@ class H3DataPreprocessor:
     def __init__(self):
         """Initialize the preprocessor with empty state."""
         self.env_scaler = StandardScaler()
-        self.species_vocab: Set[int] = set()
-        self.species_to_idx: Dict[int, int] = {}
-        self.idx_to_species: Dict[int, int] = {}
+        self.species_vocab: Set[str] = set()
+        self.species_to_idx: Dict[str, int] = {}
+        self.idx_to_species: Dict[int, str] = {}
         self.env_feature_names: Optional[List[str]] = None
 
         # Column classification for proper encoding
@@ -307,13 +307,14 @@ class H3DataPreprocessor:
 
     def build_species_vocabulary(
         self,
-        species_lists: List[List[int]],
+        species_lists: List[List[str]],
         min_obs_per_species: int = 0,
     ) -> None:
-        """Build vocabulary of all unique GBIF taxonKeys.
+        """Build vocabulary of all unique species codes.
 
         Args:
-            species_lists: Per-sample lists of taxonKeys.
+            species_lists: Per-sample lists of species codes (eBird codes
+                for birds, iNat IDs for non-birds).
             min_obs_per_species: If >0, exclude species observed in fewer
                 than this many samples.  Default 0 (keep all).
         """
@@ -342,7 +343,7 @@ class H3DataPreprocessor:
         self.species_to_idx = {s: i for i, s in enumerate(sorted(all_species))}
         self.idx_to_species = {i: s for s, i in self.species_to_idx.items()}
 
-    def encode_species_multilabel(self, species_lists: List[List[int]]) -> np.ndarray:
+    def encode_species_multilabel(self, species_lists: List[List[str]]) -> np.ndarray:
         """Convert species lists to multi-label binary matrix.
 
         NOTE: only used for small datasets. For large datasets use
@@ -360,7 +361,7 @@ class H3DataPreprocessor:
                     matrix[i, idx] = 1.0
         return matrix
 
-    def encode_species_sparse(self, species_lists: List[List[int]]) -> List[np.ndarray]:
+    def encode_species_sparse(self, species_lists: List[List[str]]) -> List[np.ndarray]:
         """Convert species lists to a list of sparse index arrays.
 
         Each element is an int32 array of active species indices for that
@@ -382,7 +383,7 @@ class H3DataPreprocessor:
     @staticmethod
     def compute_obs_density(
         inputs: Dict[str, np.ndarray],
-        species_lists: List[List[int]],
+        species_lists: List[List[str]],
     ) -> np.ndarray:
         """Compute per-sample observation density for density-stratified evaluation.
 
@@ -399,7 +400,7 @@ class H3DataPreprocessor:
 
         Args:
             inputs: Dict with 'lat', 'lon' float32 arrays.
-            species_lists: Per-sample lists of taxonKeys (before encoding).
+            species_lists: Per-sample lists of species codes (before encoding).
 
         Returns:
             Float32 array of shape ``(n_samples,)`` with per-location density.
@@ -485,14 +486,14 @@ class H3DataPreprocessor:
         lats: np.ndarray,
         lons: np.ndarray,
         weeks: np.ndarray,
-        species_lists: List[List[int]],
+        species_lists: List[List[str]],
         env_features: pd.DataFrame,
         k: int = 5,
         max_radius_km: float = 2000.0,
         min_obs_threshold: int = 3,
         soft_weight: float = 0.5,
         max_spread_factor: float = 2.0,
-    ) -> List[List[int]]:
+    ) -> List[List[str]]:
         """Propagate species labels from observed to sparse/unobserved cells.
 
         For each sample whose species list is shorter than *min_obs_threshold*,
@@ -770,7 +771,7 @@ class H3DataPreprocessor:
         lats: np.ndarray,
         lons: np.ndarray,
         weeks: np.ndarray,
-        species_lists: List[List[int]],
+        species_lists: List[List[str]],
         env_features: pd.DataFrame,
         fit: bool = True,
         max_obs_per_species: int = 0,
@@ -836,7 +837,7 @@ class H3DataPreprocessor:
 
     def compute_species_freq_weights(
         self,
-        species_lists: List[List[int]],
+        species_lists: List[List[str]],
         lats: np.ndarray,
         lons: np.ndarray,
         min_weight: float = 0.1,
@@ -949,9 +950,9 @@ class H3DataPreprocessor:
 
     def _cap_observations(
         self,
-        species_lists: List[List[int]],
+        species_lists: List[List[str]],
         max_obs: int,
-    ) -> Tuple[List[List[int]], int]:
+    ) -> Tuple[List[List[str]], int]:
         """Cap per-species observations to reduce dominance of common species.
 
         For each species that appears in more than *max_obs* samples, a random
@@ -960,7 +961,7 @@ class H3DataPreprocessor:
         that lose all species remain as valid all-negative training examples.
 
         Args:
-            species_lists: List of taxonKey lists per sample.
+            species_lists: List of species-code lists per sample.
             max_obs: Maximum positive samples per species.
 
         Returns:

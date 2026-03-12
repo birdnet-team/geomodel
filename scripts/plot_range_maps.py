@@ -12,9 +12,6 @@ Usage:
     # By common name (case-insensitive substring match):
     python scripts/plot_range_maps.py --species "Eurasian Blackbird" "House Sparrow"
 
-    # By taxonKey:
-    python scripts/plot_range_maps.py --taxon_keys 9750029 9747657
-
     # Animated GIF with 4 species in a 2×2 grid:
     python scripts/plot_range_maps.py --species "Barn Swallow" "House Sparrow" \
         "European Robin" "Blue Jay" --gif --cols 2

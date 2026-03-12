@@ -12,11 +12,11 @@ Output (sorted by probability):
 
 ```
 Predictions for lat=52.5, lon=13.4, week=22
-Rank  TaxonKey     Probability  Common Name                    Scientific Name
+Rank  Code         Probability  Common Name                    Scientific Name
 ----------------------------------------------------------------------------------------------------
-1     2488027      0.9824       Eurasian Blackbird             Turdus merula
-2     9596869      0.9651       Great Tit                      Parus major
-3     5231191      0.9203       Eurasian Blackcap              Sylvia atricapilla
+1     eurbla       0.9824       Eurasian Blackbird             Turdus merula
+2     gretit1      0.9651       Great Tit                      Parus major
+3     eurcap       0.9203       Eurasian Blackcap              Sylvia atricapilla
 ...
 ```
 
@@ -26,7 +26,7 @@ Rank  TaxonKey     Probability  Common Name                    Scientific Name
 |---|---|---|
 | `--lat` | required | Latitude (-90 to 90) |
 | `--lon` | required | Longitude (-180 to 180) |
-| `--week` | required | Week number (1–48, or -1 for yearly) |
+| `--week` | required | Week number (1–48, or -1/0 for yearly) |
 
 !!! note "Yearly predictions"
     The CLI maps `--week -1` to `week=0` internally. When calling `predict()` programmatically, pass `week=0` (not `-1`) for yearly predictions. Yearly mode computes the max probability across all 48 weeks for each species.
@@ -48,11 +48,11 @@ results = predict(
     threshold=0.1,
 )
 
-for taxon_key, scientific_name, common_name, prob in results:
+for code, scientific_name, common_name, prob in results:
     print(f"{common_name}: {prob:.3f}")
 ```
 
-The `predict()` function returns a list of `(taxonKey, scientificName, commonName, probability)` tuples, sorted by probability descending.
+The `predict()` function returns a list of `(speciesCode, scientificName, commonName, probability)` tuples, sorted by probability descending.
 
 ## Checkpoint Format
 
@@ -75,12 +75,12 @@ A checkpoint `.pt` file contains:
 The `labels.txt` file (saved alongside checkpoints) maps model output indices to species:
 
 ```
-2488027	Turdus merula	Eurasian Blackbird
-9596869	Parus major	Great Tit
+eurbla	Turdus merula	Eurasian Blackbird
+gretit1	Parus major	Great Tit
 ...
 ```
 
-Format: `taxonKey<TAB>scientificName<TAB>commonName`, one line per species in vocabulary order.
+Format: `speciesCode<TAB>scientificName<TAB>commonName`, one line per species in vocabulary order.
 
 ## How Inference Works
 

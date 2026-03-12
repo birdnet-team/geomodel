@@ -20,11 +20,6 @@ This reveals **which environmental factors the model associates with each specie
 python scripts/plot_variable_importance.py \
     --data_path outputs/combined.parquet \
     --species "Eurasian Blackbird" "Great Tit"
-
-# By taxonKey
-python scripts/plot_variable_importance.py \
-    --data_path outputs/combined.parquet \
-    --taxon_keys 2488027
 ```
 
 ## CLI Reference
@@ -34,7 +29,6 @@ python scripts/plot_variable_importance.py \
 | `--data_path` | required | Combined parquet file with environmental features |
 | `--checkpoint` | `checkpoints/checkpoint_best.pt` | Model checkpoint |
 | `--species` | all species | Common or scientific names |
-| `--taxon_keys` | — | GBIF taxonKey integers |
 | `--max_samples` | `200000` | Max data samples (for speed) |
 | `--outdir` | `outputs/plots/variable_importance` | Output directory |
 | `--batch_size` | `4096` | Batch size for inference |

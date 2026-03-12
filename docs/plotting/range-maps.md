@@ -15,9 +15,6 @@ Two modes are available:
 # By common name (partial match)
 python scripts/plot_range_maps.py --species "Eurasian Blackbird" "Great Tit"
 
-# By GBIF taxonKey
-python scripts/plot_range_maps.py --taxon_keys 2488027
-
 # Specific region at higher resolution
 python scripts/plot_range_maps.py --species "Barn Swallow" --bounds europe --resolution 0.5
 ```
@@ -50,7 +47,6 @@ python scripts/plot_range_maps.py --species "Great Tit" --gif --fps 2
 |---|---|---|
 | `--checkpoint` | `checkpoints/checkpoint_best.pt` | Model checkpoint |
 | `--species` | — | Common or scientific names (partial match) |
-| `--taxon_keys` | — | GBIF taxonKey integers |
 | `--resolution` | `2.0` | Grid spacing in degrees |
 | `--bounds` | `world` | Named region or 4 floats (west south east north) |
 | `--outdir` | `outputs/plots/range_maps` | Output directory |

@@ -14,7 +14,6 @@ environmental features are not direct model inputs.
 
 Usage:
     python scripts/plot_variable_importance.py --species "Barn Swallow" "House Sparrow"
-    python scripts/plot_variable_importance.py --taxon_keys 9750029
     python scripts/plot_variable_importance.py --species "European Robin" \
         --data_path /path/to/data.parquet \
         --max_samples 100000 --top_k 20
@@ -350,7 +349,7 @@ def _group_order(
 def plot_variable_importance(
     correlations: np.ndarray,
     variable_names: List[str],
-    species_info: Tuple[int, int, str, str],
+    species_info: Tuple[int, str, str, str],
     outdir: str,
 ):
     """
@@ -362,10 +361,10 @@ def plot_variable_importance(
     Parameters:
         correlations: Spearman rho per variable
         variable_names: corresponding labels
-        species_info: (model_idx, taxonKey, sciName, comName)
+        species_info: (model_idx, species_code, sciName, comName)
         outdir: output directory
     """
-    _, taxon_key, sci_name, com_name = species_info
+    _, species_code, sci_name, com_name = species_info
 
     # Order by semantic groups
     order = _group_order(variable_names)

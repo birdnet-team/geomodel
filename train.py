@@ -29,7 +29,7 @@ import math
 import os
 import pickle
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import torch
 import torch.nn as nn
@@ -120,8 +120,8 @@ def _load_data_cache(path: Path) -> Optional[dict]:
     try:
         with open(path, 'rb') as f:
             return pickle.load(f)
-    except Exception as e:
-        print(f"   Cache load failed ({e}), reprocessing...")
+    except (pickle.UnpicklingError, EOFError, ValueError, ModuleNotFoundError) as e:
+        print(f"   Cache load failed ({type(e).__name__}: {e}), reprocessing...")
         path.unlink(missing_ok=True)
         return None
 
@@ -344,10 +344,10 @@ class Trainer:
         # Optional holdout DataLoader for region hold-out evaluation
         self.holdout_loader = holdout_loader
 
-        # Resolve watchlist taxonKeys to model column indices
+        # Resolve watchlist species codes to model column indices
         self.watchlist: Dict[int, str] = watchlist or {}
         s2i = self.species_vocab.get('species_to_idx', {})
-        self.watchlist_indices: Dict[int, int] = {}  # taxonKey → model index
+        self.watchlist_indices: Dict[int, int] = {}  # species code → model index
         for tk in self.watchlist:
             if tk in s2i:
                 self.watchlist_indices[tk] = s2i[tk]
@@ -1389,7 +1389,7 @@ def main():
     parser.add_argument('--species_weight', type=float, default=1.0)
     parser.add_argument('--env_weight', type=float, default=0.5)
     parser.add_argument('--species_loss', type=str, default='bce', choices=['asl', 'bce', 'focal', 'an'],
-                        help='Species loss function: bce (cross entropy, default), bce, focal, or an')
+                        help='Species loss function: bce (default), asl (asymmetric), focal, or an')
     parser.add_argument('--asl_gamma_pos', type=float, default=0.0,
                         help='ASL positive focusing parameter (default: 0, no down-weighting)')
     parser.add_argument('--asl_gamma_neg', type=float, default=2.0,
@@ -1423,7 +1423,7 @@ def main():
                              '(common=1.0, rare=min_weight, linear '
                              'interpolation between lo/hi percentile)')
     parser.add_argument('--label_freq_weight_min', type=float, default=0.01,
-                        help='Minimum label weight for rare species (default: 0.1)')
+                        help='Minimum label weight for rare species (default: 0.01)')
     parser.add_argument('--label_freq_weight_pct_lo', type=float, default=10.0,
                         help='Lower percentile: species at or below get min_weight (default: 10)')
     parser.add_argument('--label_freq_weight_pct_hi', type=float, default=95.0,

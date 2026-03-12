@@ -1,13 +1,20 @@
 """Plot environmental H3-grid data.
 
-Reads a GeoParquet produced by `utils/geoutils.py` and writes publication-
+Reads a GeoParquet produced by ``utils/geoutils.py`` and writes publication-
 quality PNG maps for common environmental columns. The script downsamples
-large GeoDataFrames by default for plotting speed but accepts `--sample-limit`
+large GeoDataFrames by default for plotting speed but accepts ``--sample-limit``
 to control behavior.
 
-Example:
-    python scripts/plot_environmental.py --input outputs/chunk_000.parquet \
+Usage::
+
+    python scripts/plot_environmental.py --input outputs/chunk_000.parquet \\
         --outdir outputs/plots --sample-limit 100000
+
+    # Plot only specific columns
+    python scripts/plot_environmental.py --input data.parquet --columns elevation_m,temperature_c
+
+    # Restrict to a named region
+    python scripts/plot_environmental.py --input data.parquet --bounds europe
 """
 
 
@@ -15,6 +22,11 @@ import os, sys
 from pathlib import Path
 import argparse
 from typing import Optional, Tuple, List
+
+# Ensure repo root is on sys.path so utils/ is importable
+_repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+if _repo_root not in sys.path:
+    sys.path.insert(0, _repo_root)
 
 import geopandas as gpd
 import matplotlib.pyplot as plt
@@ -24,13 +36,7 @@ import cartopy.crs as ccrs
 import cartopy.feature as cfeature
 import matplotlib.patches as mpatches
 from matplotlib.colors import ListedColormap
-try:
-    from utils.regions import resolve_bounds_arg
-except Exception:
-    _repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-    if _repo_root not in sys.path:
-        sys.path.insert(0, _repo_root)
-    from utils.regions import resolve_bounds_arg
+from utils.regions import resolve_bounds_arg
 
 
 LANDCOVER_NAMES = {
@@ -63,12 +69,8 @@ def load_gdf(path: str) -> gpd.GeoDataFrame:
     if not path.exists():
         raise FileNotFoundError(f"Input file not found: {path}")
     gdf = gpd.read_parquet(path)
-    # Ensure CRS if missing (best effort)
-    try:
-        if gdf.crs is None:
-            gdf = gdf.set_crs(epsg=4326, allow_override=True)
-    except Exception:
-        pass
+    if gdf.crs is None:
+        gdf = gdf.set_crs(epsg=4326, allow_override=True)
     print(f"Loaded {path} — {len(gdf)} rows")
     return gdf
 
@@ -148,11 +150,7 @@ def plot_variable(
     # aspect on map projections (this distorts Robinson and causes cropping).
     fig.subplots_adjust(left=0.02, right=0.98, top=0.95, bottom=0.05)
     ax.set_global()
-    # Ensure full globe extent in PlateCarree lon/lat coordinates to avoid vertical cropping
-    try:
-        ax.set_extent([-180, 180, -90, 90], crs=ccrs.PlateCarree())
-    except Exception:
-        pass
+    ax.set_extent([-180, 180, -90, 90], crs=ccrs.PlateCarree())
     ax.add_feature(cfeature.OCEAN, zorder=0)
     ax.add_feature(cfeature.LAND, zorder=0, edgecolor="black", linewidth=0.2)
     ax.add_feature(cfeature.COASTLINE, linewidth=0.4)
@@ -162,53 +160,35 @@ def plot_variable(
         if not vals:
             return
         # Sanitize landcover values: restrict to plausible MODIS LC_Type1 codes
-        try:
-            valid_range = set(range(0, 18))
-            vals_clean = [int(v) for v in vals if int(v) in valid_range]
-        except Exception:
-            vals_clean = vals
+        valid_range = set(range(0, 18))
+        vals_clean = [int(v) for v in vals if int(v) in valid_range]
         if len(vals_clean) == 0:
-            # nothing sensible to plot
             return
         vals = sorted(vals_clean)
-        # Compute a simple proxy area (bbox area in deg^2) and draw smaller
-        # polygons last so large, possibly-wrapping polygons don't obscure
-        # detailed features when plotting global datasets.
-        try:
-            b = gdf_plot.geometry.bounds
-            proxy_area = (b['maxx'] - b['minx']).abs() * (b['maxy'] - b['miny']).abs()
-            gdf_plot = gdf_plot.assign(_area=proxy_area).sort_values('_area', ascending=True)
-        except Exception:
-            pass
+        # Compute a proxy area (bbox area in deg²) and draw smaller polygons
+        # last so large, possibly-wrapping polygons don't obscure detail.
+        b = gdf_plot.geometry.bounds
+        proxy_area = (b['maxx'] - b['minx']).abs() * (b['maxy'] - b['miny']).abs()
+        gdf_plot = gdf_plot.assign(_area=proxy_area).sort_values('_area', ascending=True)
         # Build a stable color mapping keyed by MODIS class code (0..17).
         base_colors = list(plt.get_cmap("tab20").colors)
-        # Map class code -> color by using class_code modulo palette length.
         color_for = {int(c): base_colors[int(c) % len(base_colors)] for c in range(0, 18)}
         # Plot each present class separately so colors map to class codes
         patches = []
         for c in vals:
-            try:
-                ci = int(c)
-            except Exception:
-                continue
+            ci = int(c)
             subset = gdf_plot[gdf_plot[column] == c]
             if subset.empty:
                 continue
             col_color = color_for.get(ci, base_colors[ci % len(base_colors)])
             subset.plot(ax=ax, color=col_color, transform=ccrs.PlateCarree(), linewidth=0, alpha=0.95)
-            # Label handling: map water aliases to 'Water'
             lab = LANDCOVER_NAMES.get(ci, str(ci))
             if ci in WATER_ALIASES:
                 lab = 'Water'
             patches.append(mpatches.Patch(color=col_color, label=lab))
         if patches:
             ax.legend(handles=patches, loc="lower left", fontsize="small", framealpha=0.9)
-        # GeoPandas may force an 'equal' aspect which keeps the globe square; allow
-        # the map projection to fill the axes by using an automatic aspect.
-        try:
-            ax.set_aspect('auto')
-        except Exception:
-            pass
+        ax.set_aspect('auto')
     else:
         # Handle canopy height specially: if zeros dominate the data (likely
         # widespread masked/no-data), treat zeros as missing when computing
@@ -218,7 +198,6 @@ def plot_variable(
             nonzero_count = (series != 0).sum()
             frac_nonzero = float(nonzero_count) / float(series.size)
             if frac_nonzero < 0.02 and nonzero_count > 0:
-                # Treat zeros as NA for scaling
                 tmp_series = series[series != 0]
                 vmin, vmax = safe_vmin_vmax(tmp_series)
             else:
@@ -229,40 +208,25 @@ def plot_variable(
             return
         norm = mpl.colors.Normalize(vmin=vmin, vmax=vmax)
         sm = plt.cm.ScalarMappable(norm=norm, cmap=cmap)
-        try:
-            b = gdf_plot.geometry.bounds
-            proxy_area = (b['maxx'] - b['minx']).abs() * (b['maxy'] - b['miny']).abs()
-            gdf_plot = gdf_plot.assign(_area=proxy_area).sort_values('_area', ascending=True)
-        except Exception:
-            pass
-        # For canopy height, avoid plotting the many zero cells which
-        # otherwise dominate the color scale and render the map as
-        # visually 'empty'. Plot only non-zero canopy values.
+        b = gdf_plot.geometry.bounds
+        proxy_area = (b['maxx'] - b['minx']).abs() * (b['maxy'] - b['miny']).abs()
+        gdf_plot = gdf_plot.assign(_area=proxy_area).sort_values('_area', ascending=True)
+        # For canopy height, plot only non-zero values to keep the scale visible
         if column == 'canopy_height_m':
-            try:
-                nonzero = gdf_plot[gdf_plot[column] > 0]
-                if nonzero.empty:
-                    return
-                nonzero.plot(column=column, cmap=cmap, ax=ax, transform=ccrs.PlateCarree(), linewidth=0, alpha=0.95, norm=norm)
-            except Exception:
-                gdf_plot.plot(column=column, cmap=cmap, ax=ax, transform=ccrs.PlateCarree(), linewidth=0, alpha=0.95, norm=norm)
+            nonzero = gdf_plot[gdf_plot[column] > 0]
+            if nonzero.empty:
+                return
+            nonzero.plot(column=column, cmap=cmap, ax=ax, transform=ccrs.PlateCarree(), linewidth=0, alpha=0.95, norm=norm)
         else:
             gdf_plot.plot(column=column, cmap=cmap, ax=ax, transform=ccrs.PlateCarree(), linewidth=0, alpha=0.95, norm=norm)
         cbar = fig.colorbar(sm, ax=ax, orientation="horizontal", fraction=0.04, pad=0.05)
         cbar.set_label(column)
-        try:
-            ax.set_aspect('auto')
-        except Exception:
-            pass
+        ax.set_aspect('auto')
 
     ax.set_title(column.replace("_", " ").title())
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    # Ensure the figure uses the requested figsize when saving so PNG keeps 16:9
-    try:
-        fig.set_size_inches(figsize, forward=True)
-    except Exception:
-        pass
+    fig.set_size_inches(figsize, forward=True)
     fig.savefig(out_path, dpi=300)
     plt.close(fig)
     print(f"Saved {out_path}")
@@ -322,8 +286,6 @@ def main():
     args = parser.parse_args()
 
     cols = parse_columns(args.columns)
-
-
     bounds = resolve_bounds_arg(args.bounds)
 
     plot_all(args.input, args.outdir, sample_limit=args.sample_limit, columns=cols, bounds=bounds)
@@ -331,7 +293,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-    
-    # Basic use command (Europe only)
-    # python scripts/plot_environmental.py --input outputs/europe_25km.parquet --outdir outputs/plots/europe_25km --sample-limit None
-    # python scripts/plot_environmental.py --input outputs/global_50km.parquet --outdir outputs/plots/europe_50km --sample-limit None --bounds europe

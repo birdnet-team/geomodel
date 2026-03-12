@@ -44,7 +44,7 @@ The training script handles the full pipeline automatically:
 | `--coord_harmonics` | `4` | Harmonics for lat/lon encoding |
 | `--week_harmonics` | `8` | Harmonics for week encoding |
 | `--habitat_head` | off | Enable habitat-species association head (env → species pathway with learned gate) |
-| `--habitat_weight` | `0.5` | Weight for auxiliary habitat-species loss (only used with `--habitat_head`) |
+| `--habitat_weight` | `0.1` | Weight for auxiliary habitat-species loss (only used with `--habitat_head`) |
 
 ### Training
 
@@ -69,14 +69,16 @@ The training script handles the full pipeline automatically:
 | `--min_obs_per_species` | `50` | Exclude species with fewer than N observations (0 = keep all) |
 | `--ocean_sample_rate` | `1.0` | Fraction of ocean cells (water > 90%) to keep (1.0 = keep all) |
 | `--no_yearly` | off | Exclude week-0 (yearly) samples from training |
+| `--no_cache` | off | Disable data preprocessing cache (force reprocessing) |
 | `--jitter` | off | Jitter training coordinates within H3 cells each epoch |
 | `--label_freq_weight` | off | Weight positive labels by region-normalized species frequency |
 | `--label_freq_weight_min` | `0.01` | Minimum label weight for rare species |
-| `--label_freq_weight_pct_lo` | `1` | Lower percentile threshold (species at or below get min weight) |
-| `--label_freq_weight_pct_hi` | `99` | Upper percentile threshold (species at or above get weight 1.0) |
+| `--label_freq_weight_pct_lo` | `10` | Lower percentile threshold (species at or below get min weight) |
+| `--label_freq_weight_pct_hi` | `95` | Upper percentile threshold (species at or above get weight 1.0) |
 | `--propagate_labels` | off | Propagate species labels from observed to sparse cells via env similarity |
 | `--propagate_k` | `5` | Number of nearest env-space neighbors for propagation |
 | `--propagate_max_radius` | `2000` | Geographic radius cap in km for propagation |
+| `--propagate_max_spread` | `2.0` | Species range expansion multiplier (0 = disable range check) |
 | `--propagate_min_obs` | `3` | Samples with fewer species than this receive propagated labels |
 
 ### Learning Rate Schedule
@@ -165,6 +167,23 @@ When `--jitter` is passed, Gaussian noise is added to training coordinates every
 - **Each draw is independent** — the same sample receives different noise every epoch.
 - Latitude is clamped to $[-90, 90]$; longitude wraps at $\pm 180°$.
 
+### Data Preprocessing Cache
+
+Training caches the fully preprocessed train/val split to disk so that
+subsequent runs with the same data and preprocessing settings skip the
+expensive loading, normalization, and splitting steps.
+
+Cache files are stored in `<checkpoint_dir>/.data_cache/` and keyed by a
+SHA-256 hash of the input file identity (path, mtime, size) plus all
+CLI flags that affect data preprocessing (loss type, species thresholds,
+propagation settings, etc.).
+
+- **Automatic invalidation** — changing the data file or any preprocessing
+  flag produces a new hash, so a fresh cache is built.
+- **`--no_cache`** — disables caching entirely (always reprocesses).
+- **Safe writes** — cache files are written atomically via a temporary
+  file and rename.
+
 ### Region Hold-Out (Observation Bias Evaluation)
 
 | Flag | Default | Description |
@@ -251,8 +270,8 @@ where $p_i = \sigma(z_i)$ and $p_m = \max(p_i - m,\, 0)$ is the probability afte
     severe, and aggressive negative suppression with γ-=4 can cause the model
     to under-predict rare species.  **γ-=2 is a conservative default** that
     still down-weights easy negatives while preserving enough gradient signal
-    from moderately-confident negatives.  The ablation study (A10) tests
-    γ-∈{2, 4, 6} to find the best trade-off.
+    from moderately-confident negatives.  Experimenting with
+    γ-∈{2, 4, 6} can help find the best trade-off for your dataset.
 
 ### BCE
 
@@ -337,7 +356,7 @@ assumed-negative species, and $\lambda$ controls positive up-weighting.
     checklists (eBird) with higher detection reliability, so strong positive
     up-weighting can amplify false positives.  **λ=4 is a conservative
     default** that balances positive/negative gradients without over-correcting.
-    Increase if recall is too low; the ablation autotune searches 1–64.
+    Increase if recall is too low; try values in the range 1–64.
 
 Enable with `--species_loss an`:
 
@@ -454,8 +473,8 @@ percentile positions (with default `pct_lo=1`, `pct_hi=99`,
 |---|---|---|
 | `--label_freq_weight` | off | Enable region-normalized label weighting |
 | `--label_freq_weight_min` | `0.01` | Minimum weight assigned to rare species |
-| `--label_freq_weight_pct_lo` | `1` | Regional percentile at or below which species get min weight |
-| `--label_freq_weight_pct_hi` | `99` | Regional percentile at or above which species get weight 1.0 |
+| `--label_freq_weight_pct_lo` | `10` | Regional percentile at or below which species get min weight |
+| `--label_freq_weight_pct_hi` | `95` | Regional percentile at or above which species get weight 1.0 |
 
 ```bash
 python train.py --label_freq_weight --label_freq_weight_min 0.01
@@ -557,7 +576,7 @@ The trainer saves:
 
 - `checkpoint_latest.pt` — after every save interval and on early stopping
 - `checkpoint_best.pt` — whenever validation GeoScore improves
-- `labels.txt` — species vocabulary (taxonKey → scientific name → common name)
+- `labels.txt` — species vocabulary (species code → scientific name → common name)
 - `training_history.json` — per-epoch losses, learning rate, and evaluation metrics
 
 Each checkpoint contains the full model state, optimizer state, scheduler state, AMP scaler, and species vocabulary — everything needed to resume training or run inference.
