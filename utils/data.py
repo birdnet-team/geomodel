@@ -502,6 +502,9 @@ class H3DataPreprocessor:
         seasonal species from leaking across weeks (e.g. summer migrants
         appearing in winter).
 
+        Uses sparse matrix operations to vectorize the species merge and
+        range check, avoiding per-species Python loops.
+
         Args:
             lats: Per-sample latitudes.
             lons: Per-sample longitudes.
@@ -525,6 +528,7 @@ class H3DataPreprocessor:
         """
         from sklearn.preprocessing import StandardScaler
         from scipy.spatial import cKDTree
+        import scipy.sparse as sps
 
         n = len(species_lists)
 
@@ -540,41 +544,94 @@ class H3DataPreprocessor:
                   f"({n_observed:,} observed, {n_sparse:,} sparse)")
             return species_lists
 
-        # --- Species Range Computation ---
-        # For range-aware propagation, we need the centroid and approximate
-        # "radius" of each species' observed distribution.
-        species_info = {}
-        if max_spread_factor > 0:
-            from collections import defaultdict
-            sp_coords = defaultdict(list)
-            for i in np.where(observed_mask)[0]:
-                for tk in species_lists[i]:
-                    sp_coords[tk].append((lats[i], lons[i]))
-            
-            for tk, coords in sp_coords.items():
-                c_arr = np.array(coords)
-                lat_c, lon_c = np.mean(c_arr, axis=0)
-                # Compute diameter (max distance between any two points in the range)
-                # For efficiency, use a bounding box diagonal as proxy if range is small, 
-                # or just use the max distance from centroid.
-                dlat = np.max(c_arr[:, 0]) - np.min(c_arr[:, 0])
-                dlon = np.max(c_arr[:, 1]) - np.min(c_arr[:, 1])
-                # Haversine proxy for range radius in km
-                R_earth = 6371.0
-                phi1, phi2 = np.radians(np.min(c_arr[:, 0])), np.radians(np.max(c_arr[:, 0]))
-                dist_lat = R_earth * np.radians(dlat)
-                dist_lon = R_earth * np.radians(dlon) * np.cos(np.radians(lat_c))
-                # Species "radius": distance from centroid to edge of observed range
-                radius = 0.5 * np.sqrt(dist_lat**2 + dist_lon**2)
-                # Floor radius at 50km to avoid zero-range issues for single-cell endemics
-                radius = max(radius, 50.0)
-                species_info[tk] = (lat_c, lon_c, radius)
+        # --- Build species vocabulary and sparse membership matrix ---
+        # This replaces the per-species Python loops with sparse matrix ops.
+        all_sp: set = set()
+        for sl in species_lists:
+            all_sp.update(sl)
+        sp_list = sorted(all_sp)
+        sp_to_idx = {s: i for i, s in enumerate(sp_list)}
+        n_sp = len(sp_list)
 
-        # Normalize environmental features (vectorized NaN fill)
+        # Flatten (sample_index, species_index) pairs for CSR construction
+        total_entries = int(obs_counts.sum())
+        mem_r = np.empty(total_entries, dtype=np.int32)
+        mem_c = np.empty(total_entries, dtype=np.int32)
+        pos = 0
+        for i, sl in enumerate(species_lists):
+            n_sl = len(sl)
+            if n_sl > 0:
+                mem_r[pos:pos + n_sl] = i
+                mem_c[pos:pos + n_sl] = [sp_to_idx[s] for s in sl]
+                pos += n_sl
+        membership = sps.csr_matrix(
+            (np.ones(pos, dtype=np.float32), (mem_r[:pos], mem_c[:pos])),
+            shape=(n, n_sp),
+        )
+        del mem_r, mem_c
+
+        # --- Species Range Computation (vectorized with reduceat) ---
+        R = 6371.0
+        centroids_lat = np.zeros(n_sp, dtype=np.float64)
+        centroids_lon = np.zeros(n_sp, dtype=np.float64)
+        # Default max propagation distance = floor radius × spread factor
+        sp_max_dist = np.full(
+            n_sp,
+            50.0 * max_spread_factor if max_spread_factor > 0 else np.inf,
+            dtype=np.float64,
+        )
+
+        if max_spread_factor > 0:
+            obs_idx = np.where(observed_mask)[0]
+            obs_lats = lats[obs_idx].astype(np.float64)
+            obs_lons = lons[obs_idx].astype(np.float64)
+
+            # Extract (obs_local_row, species_col) pairs from sparse matrix
+            obs_mem = membership[obs_idx]
+            obs_rows_sp, obs_cols_sp = obs_mem.nonzero()
+
+            if len(obs_rows_sp) > 0:
+                flat_lats = obs_lats[obs_rows_sp]
+                flat_lons = obs_lons[obs_rows_sp]
+                flat_sp = obs_cols_sp
+
+                # Sort by species index for grouped numpy operations
+                order = np.argsort(flat_sp)
+                sorted_sp = flat_sp[order]
+                sorted_lats = flat_lats[order]
+                sorted_lons = flat_lons[order]
+
+                uniq_sp, starts, counts = np.unique(
+                    sorted_sp, return_index=True, return_counts=True)
+
+                # Centroids via reduceat (sum / count)
+                lat_sums = np.add.reduceat(sorted_lats, starts)
+                lon_sums = np.add.reduceat(sorted_lons, starts)
+                centroids_lat[uniq_sp] = lat_sums / counts
+                centroids_lon[uniq_sp] = lon_sums / counts
+
+                # Range radius from bounding box diagonal
+                lat_mins = np.minimum.reduceat(sorted_lats, starts)
+                lat_maxs = np.maximum.reduceat(sorted_lats, starts)
+                lon_mins = np.minimum.reduceat(sorted_lons, starts)
+                lon_maxs = np.maximum.reduceat(sorted_lons, starts)
+
+                dlat = lat_maxs - lat_mins
+                dlon = lon_maxs - lon_mins
+                d_lat_km = R * np.radians(dlat)
+                d_lon_km = (R * np.radians(dlon)
+                            * np.cos(np.radians(centroids_lat[uniq_sp])))
+                radii = np.maximum(
+                    0.5 * np.sqrt(d_lat_km**2 + d_lon_km**2), 50.0)
+                sp_max_dist[uniq_sp] = max_spread_factor * radii
+
+            del obs_idx, obs_lats, obs_lons, obs_mem
+
+        # --- Normalize environmental features ---
         env_arr = env_features.values.astype(np.float64)
         col_means = np.nanmean(env_arr, axis=0)
-        inds = np.where(np.isnan(env_arr))
-        env_arr[inds] = np.take(col_means, inds[1])
+        nans = np.where(np.isnan(env_arr))
+        env_arr[nans] = np.take(col_means, nans[1])
 
         scaler = StandardScaler()
         env_scaled = scaler.fit_transform(env_arr).astype(np.float32)
@@ -583,7 +640,6 @@ class H3DataPreprocessor:
         lats_rad = np.radians(lats.astype(np.float64))
         lons_rad = np.radians(lons.astype(np.float64))
         cos_lats = np.cos(lats_rad)
-        R = 6371.0  # Earth radius in km
 
         # Propagate within the same week — each week gets its own
         # KD-tree so summer species don't leak into winter, etc.
@@ -612,52 +668,87 @@ class H3DataPreprocessor:
                 dists = dists[:, None]
                 nb_local = nb_local[:, None]
 
-            # Map local neighbor indices back to global indices
-            nb_global = obs_in[nb_local]  # shape (n_sparse_bucket, k_use)
+            nb_global_arr = obs_in[nb_local]
 
             # Vectorized haversine for ALL (sparse, neighbor) pairs at once
-            sp_idx = np.repeat(sparse_in, k_use)        # each sparse repeated k times
-            nb_idx = nb_global.ravel()                    # all neighbors flat
+            n_sp_bucket = len(sparse_in)
+            sp_flat = np.repeat(sparse_in, k_use)
+            nb_flat = nb_global_arr.ravel()
 
-            dlat = lats_rad[nb_idx] - lats_rad[sp_idx]
-            dlon = lons_rad[nb_idx] - lons_rad[sp_idx]
-            a = (np.sin(dlat * 0.5) ** 2 +
-                 cos_lats[sp_idx] * cos_lats[nb_idx] *
-                 np.sin(dlon * 0.5) ** 2)
+            d_lat = lats_rad[nb_flat] - lats_rad[sp_flat]
+            d_lon = lons_rad[nb_flat] - lons_rad[sp_flat]
+            a = (np.sin(d_lat * 0.5) ** 2 +
+                 cos_lats[sp_flat] * cos_lats[nb_flat] *
+                 np.sin(d_lon * 0.5) ** 2)
             geo_km = R * 2.0 * np.arcsin(np.sqrt(np.clip(a, 0.0, 1.0)))
-
-            # Reshape back to (n_sparse_bucket, k_use)
-            geo_km = geo_km.reshape(len(sparse_in), k_use)
+            geo_km = geo_km.reshape(n_sp_bucket, k_use)
 
             # Mask: valid neighbors (finite dist AND within radius)
             valid = (dists < np.inf) & (geo_km <= max_radius_km)
 
-            # Merge species from valid neighbors
-            for row_i in range(len(sparse_in)):
-                si = sparse_in[row_i]
-                cols = np.where(valid[row_i])[0]
-                if len(cols) == 0:
-                    continue
+            # --- Vectorized species propagation via sparse matmul ---
+            # Instead of a triple-nested Python loop over
+            # (sparse_cells × neighbors × species), use a sparse matrix
+            # multiply to collect all candidate species at once.
 
+            valid_rows, valid_cols = np.where(valid)
+            if len(valid_rows) == 0:
+                continue
+
+            # Picking matrix: maps each sparse cell to its valid neighbors
+            # Shape: (n_sparse_bucket, n_obs_bucket)
+            pick_local = nb_local[valid_rows, valid_cols]
+            picking = sps.csr_matrix(
+                (np.ones(len(valid_rows), dtype=np.float32),
+                 (valid_rows, pick_local)),
+                shape=(n_sp_bucket, len(obs_in)),
+            )
+
+            # Candidate matrix = picking @ membership[obs_in]
+            # Shape: (n_sparse_bucket, n_species)
+            # Non-zero entries mark species reachable from each sparse cell.
+            candidate = (picking @ membership[obs_in]).tocsr()
+            cand_rows, cand_cols = candidate.nonzero()
+
+            if len(cand_rows) == 0:
+                continue
+
+            # Vectorized range filter (haversine to species centroids)
+            if max_spread_factor > 0:
+                t_lats = lats[sparse_in[cand_rows]]
+                t_lons = lons[sparse_in[cand_rows]]
+                c_lats = centroids_lat[cand_cols]
+                c_lons = centroids_lon[cand_cols]
+
+                d_lat = np.radians(t_lats - c_lats)
+                d_lon = np.radians(t_lons - c_lons)
+                a = (np.sin(d_lat * 0.5) ** 2 +
+                     np.cos(np.radians(c_lats)) *
+                     np.cos(np.radians(t_lats)) *
+                     np.sin(d_lon * 0.5) ** 2)
+                dist_cent = R * 2.0 * np.arcsin(
+                    np.sqrt(np.clip(a, 0.0, 1.0)))
+
+                keep = dist_cent <= sp_max_dist[cand_cols]
+                cand_rows = cand_rows[keep]
+                cand_cols = cand_cols[keep]
+
+            if len(cand_rows) == 0:
+                continue
+
+            # Update species_lists — iterate only over modified cells
+            order = np.argsort(cand_rows)
+            s_rows = cand_rows[order]
+            s_cols = cand_cols[order]
+            uniq, u_starts, u_counts = np.unique(
+                s_rows, return_index=True, return_counts=True)
+
+            for i, row_i in enumerate(uniq):
+                si = sparse_in[row_i]
+                sp_indices = s_cols[u_starts[i]:u_starts[i] + u_counts[i]]
                 new_species = set(species_lists[si])
                 before = len(new_species)
-                for c in cols:
-                    neighbor_idx = nb_global[row_i, c]
-                    for tk in species_lists[neighbor_idx]:
-                        # Optional species range diameter constraint
-                        if max_spread_factor > 0 and tk in species_info:
-                            lat_c, lon_c, r = species_info[tk]
-                            # Distance from centroid to target cell (haversine)
-                            dlat = np.radians(lats[si] - lat_c)
-                            dlon = np.radians(lons[si] - lon_c)
-                            a = (np.sin(dlat * 0.5) ** 2 +
-                                 np.cos(np.radians(lat_c)) * np.cos(np.radians(lats[si])) *
-                                 np.sin(dlon * 0.5) ** 2)
-                            dist_to_centroid = R * 2.0 * np.arcsin(np.sqrt(np.clip(a, 0.0, 1.0)))
-                            if dist_to_centroid > (r * max_spread_factor):
-                                continue
-                        new_species.add(tk)
-
+                new_species.update(sp_list[j] for j in sp_indices)
                 added = len(new_species) - before
                 if added > 0:
                     species_lists[si] = list(new_species)
