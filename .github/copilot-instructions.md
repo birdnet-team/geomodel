@@ -224,6 +224,7 @@ GBIF integer taxonKeys used in earlier versions of the pipeline.
       1 − pred-density corr (0.05)
     - Missing components excluded, weights renormalised
     - Used for early stopping, best-checkpoint selection, and Optuna autotune
+    - Implemented in `model/metrics.py` (`compute_geoscore`) and imported by `train.py`
   - Mean Average Precision (mAP)
   - Top-k recall at k=10 and k=30
   - F1, precision, recall at probability thresholds 5%, 10%, 25%
@@ -241,6 +242,7 @@ GBIF integer taxonKeys used in earlier versions of the pipeline.
   - Bayesian optimization with TPE sampler and MedianPruner
   - `--autotune_trials` (default 30), `--autotune_epochs` (default 15)
   - Results saved to `checkpoints/autotune/autotune_results.json`
+  - Autotune runner/search space live in `model/autotune.py` and are invoked from top-level `train.py`
 - **Data preprocessing cache**: Preprocessed data is cached to
   `checkpoints/.data_cache/` keyed by a SHA-256 hash of the data file
   metadata and all relevant CLI arguments.  Subsequent runs with the same
@@ -308,7 +310,9 @@ geomodel/
 ├── model/
 │   ├── __init__.py
 │   ├── model.py                # Neural network architecture
-│   └── loss.py                 # Multi-task loss functions
+│   ├── loss.py                 # Multi-task loss functions
+│   ├── metrics.py              # GeoScore and validation metric helpers
+│   └── autotune.py             # Optuna hyperparameter autotune runner
 ├── utils/
 │   ├── data.py                 # Data loading, preprocessing, PyTorch Dataset
 │   ├── geoutils.py             # Google Earth Engine feature extraction
