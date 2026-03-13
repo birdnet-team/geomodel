@@ -106,5 +106,105 @@ exports/
 ├── geomodel_fp16.tflite     # TFLite FP16
 ├── geomodel_int8.tflite     # TFLite INT8
 ├── saved_model/             # TF SavedModel
-└── labels.txt               # Species vocabulary (copied from checkpoint dir)
+├── labels.txt               # Species vocabulary (copied from checkpoint dir)
+└── MODEL_LICENSE.txt        # Model weights license (CC BY-SA 4.0)
 ```
+
+## Running Exported Models
+
+All exported formats share the same interface:
+
+- **Input**: `(batch, 3)` float32 tensor — columns are `[latitude, longitude, week]`
+- **Output**: `(batch, n_species)` float32 tensor — sigmoid probabilities
+
+### Loading labels
+
+```python
+def load_labels(path="exports/labels.txt"):
+    """Load species labels from labels.txt."""
+    labels = []
+    with open(path) as f:
+        for line in f:
+            parts = line.strip().split("\t")
+            labels.append({"code": parts[0], "sci": parts[1], "common": parts[2]})
+    return labels
+```
+
+### PyTorch (.pt)
+
+```python
+import torch
+import numpy as np
+from model.model import BirdNETGeoModel
+
+checkpoint = torch.load("checkpoints/checkpoint_best.pt", map_location="cpu",
+                        weights_only=False)
+cfg = checkpoint["model_config"]
+model = BirdNETGeoModel(
+    n_species=cfg["n_species"],
+    n_env_features=cfg["n_env_features"],
+    model_scale=cfg["model_scale"],
+    coord_harmonics=cfg.get("coord_harmonics", 4),
+    week_harmonics=cfg.get("week_harmonics", 8),
+)
+model.load_state_dict(checkpoint["model_state_dict"])
+model.eval()
+
+lat = torch.tensor([52.5])
+lon = torch.tensor([13.4])
+week = torch.tensor([22.0])
+
+with torch.no_grad():
+    logits = model(lat, lon, week, return_env=False)["species_logits"]
+    probs = torch.sigmoid(logits)          # (1, n_species)
+
+labels = load_labels("checkpoints/labels.txt")
+top = probs[0].topk(10)
+for i, idx in enumerate(top.indices):
+    print(f"{i+1}. {labels[idx]['common']}: {top.values[i]:.3f}")
+```
+
+### ONNX
+
+```python
+import numpy as np
+import onnxruntime as ort
+
+session = ort.InferenceSession("exports/geomodel_fp16.onnx")
+
+inputs = np.array([[52.5, 13.4, 22.0]], dtype=np.float32)  # (batch, 3)
+probs = session.run(None, {"input": inputs})[0]             # (batch, n_species)
+
+labels = load_labels()
+top_k = 10
+top_indices = np.argsort(probs[0])[::-1][:top_k]
+for i, idx in enumerate(top_indices):
+    print(f"{i+1}. {labels[idx]['common']}: {probs[0][idx]:.3f}")
+```
+
+### TFLite
+
+```python
+import numpy as np
+import tensorflow as tf
+
+interpreter = tf.lite.Interpreter(model_path="exports/geomodel_fp16.tflite")
+interpreter.allocate_tensors()
+
+input_detail = interpreter.get_input_details()[0]
+output_detail = interpreter.get_output_details()[0]
+
+inputs = np.array([[52.5, 13.4, 22.0]], dtype=np.float32)
+interpreter.set_tensor(input_detail["index"], inputs)
+interpreter.invoke()
+probs = interpreter.get_tensor(output_detail["index"])       # (1, n_species)
+
+labels = load_labels()
+top_k = 10
+top_indices = np.argsort(probs[0])[::-1][:top_k]
+for i, idx in enumerate(top_indices):
+    print(f"{i+1}. {labels[idx]['common']}: {probs[0][idx]:.3f}")
+```
+
+!!! tip "Batch inference"
+    All formats support batched inputs. Stack multiple `[lat, lon, week]` rows into a single `(N, 3)` array to predict many locations at once.
