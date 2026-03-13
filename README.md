@@ -121,10 +121,13 @@ geomodel/
 │   ├── geoutils.py          # H3 grid + Earth Engine (Stage 1)
 │   ├── gbifutils.py         # GBIF processing (Stage 2)
 │   ├── combine.py           # Join geodata + GBIF (Stage 3)
-│   └── data.py              # Dataset / DataLoader / preprocessing
+│   ├── data.py              # Dataset / DataLoader / preprocessing
+│   ├── regions.py           # Holdout region definitions
+│   └── taxonomy.py          # Taxonomy utilities
 ├── scripts/                 # Plotting & diagnostic scripts
 ├── docs/                    # MkDocs documentation source
 │   └── demo/                # Interactive web demo (ONNX Runtime Web)
+├── exports/                 # Exported model files + labels + license
 └── checkpoints/             # Model checkpoints + labels.txt
 ```
 
