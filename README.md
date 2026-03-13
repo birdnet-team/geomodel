@@ -81,7 +81,7 @@ A multi-task neural network that learns spatial-temporal patterns from coordinat
 - **Auxiliary task:** Environmental feature regression (training only, acts as regularizer)
 - **Habitat head** (optional, `--habitat_head`)**:** predicted env features → species logits, combined with direct head via learned gate — makes environment→species relationships explicit
 - **Scalable:** ~1.8M (scale=0.5) to ~36M (scale=2.0) parameters with ~12K species (default scale=1.0 ≈ 7M)
-- **Tiny footprint:** Under 10 MB (≈ 3 MB at FP16) — replaces hundreds of MB of raw eBird/iNat observation data while interpolating into survey gaps and smoothing geographic biases
+- **Tiny footprint:** Under 10 MB (≈ 7 MB at FP16) — replaces hundreds of MB of raw eBird/iNat observation data while interpolating into survey gaps and smoothing geographic biases
 
 ## Visualization
 
@@ -125,7 +125,6 @@ geomodel/
 ├── scripts/                 # Plotting & diagnostic scripts
 ├── docs/                    # MkDocs documentation source
 │   └── demo/                # Interactive web demo (ONNX Runtime Web)
-├── demo/                    # Demo assets (ONNX model + labels)
 └── checkpoints/             # Model checkpoints + labels.txt
 ```
 
@@ -137,6 +136,8 @@ Features:
 - **Range Map** — select a species to see its predicted occurrence probability on a Leaflet map. Resolution adapts to the zoom level (coarser when zoomed out, finer when zoomed in).
 - **Richness Map** — predicted species count per grid cell, color-coded from low to high.
 - **Species List** — click any location to see all predicted species for that point.
+- **Bar Charts** — click any location to see 48-week phenology bar charts for all species above a probability threshold, normalized globally.
+- **CSV export** — download data for any mode (species list, phenology, range map, richness).
 - **Week selector** — choose any of the 48 weeks of the year.
 
 ### Running the docs locally
@@ -157,10 +158,11 @@ Then open <http://localhost:8000/demo/> in your browser.
 ## Citation
 
 ```bibtex
-@article{birdnet-geomodel,
-  title={Using Spatiotemporal Occurrence Models to Post-Filter BirdNET Acoustic Detections},
+@misc{birdnet-geomodel,
+  title={Spatiotemporal species occurrence prediction for post-filtering BirdNET acoustic detections},
   author={Kahl, Stefan and Mauermann, Max and Lasseck, Mario and Wood, Connor and Klinck, Holger},
-  year={2025},
+  year={2026},
+  url={https://github.com/birdnet-team/geomodel}
 }
 ```
 

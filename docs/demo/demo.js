@@ -2,10 +2,11 @@
  * BirdNET Geomodel – Interactive Web Demo
  *
  * Runs the ONNX FP16 model entirely client-side via ONNX Runtime Web.
- * Three modes:
+ * Four modes:
  *   1. Range Map    – species probability heatmap on a Leaflet map
  *   2. Richness Map – predicted species count per cell
  *   3. Species List – click a location to see predicted species
+ *   4. Bar Charts   – click a location to see 48-week phenology bars
  *
  * The model input is (batch, 3) = [lat, lon, week] and output is
  * (batch, n_species) sigmoid probabilities.
@@ -138,6 +139,7 @@
   var rendering = false;
   var renderGeneration = 0;
   var moveEndTimer = null;
+  var lastCsvData = null;   // { filename, content } for current data product
 
   // Capture script location at parse time (before DOMContentLoaded fires)
   var SCRIPT_BASE = (document.currentScript && document.currentScript.src)
@@ -160,6 +162,7 @@
               '<option value="range">Species Range</option>' +
               '<option value="richness">Species Richness</option>' +
               '<option value="list">Species List (click map)</option>' +
+              '<option value="barchart">Bar Charts (click map)</option>' +
             '</select>' +
           '</div>' +
           '<div class="ctrl-group" id="species-search-wrap">' +
@@ -184,6 +187,19 @@
               '<option value="50">50%</option>' +
             '</select>' +
           '</div>' +
+          '<div class="ctrl-group" id="barchart-threshold-wrap" style="display:none">' +
+            '<label for="barchart-threshold">Min avg probability</label>' +
+            '<select id="barchart-threshold">' +
+              '<option value="1">1%</option>' +
+              '<option value="5" selected>5%</option>' +
+              '<option value="10">10%</option>' +
+              '<option value="25">25%</option>' +
+              '<option value="50">50%</option>' +
+            '</select>' +
+          '</div>' +
+          '<div class="ctrl-group ctrl-group-btn" id="csv-btn-wrap" style="display:none">' +
+            '<button id="csv-download-btn" class="demo-btn" title="Download CSV">\u2b07 CSV</button>' +
+          '</div>' +
         '</div>' +
         '<div id="demo-status">&nbsp;</div>' +
         '<div id="demo-map-wrap">' +
@@ -202,6 +218,11 @@
             '<thead><tr><th>#</th><th>Species</th><th>Scientific name</th><th>Probability</th><th></th></tr></thead>' +
             '<tbody id="sp-tbody"></tbody>' +
           '</table>' +
+        '</div>' +
+        '<div id="barchart-panel">' +
+          '<h3 id="bc-title">Species phenology</h3>' +
+          '<div class="sp-coords" id="bc-coords"></div>' +
+          '<div id="bc-container"></div>' +
         '</div>' +
       '</div>';
 
@@ -287,7 +308,11 @@
       currentMode = modeEl.value;
       document.getElementById("species-search-wrap").style.display = currentMode === "range" ? "" : "none";
       document.getElementById("threshold-wrap").style.display = currentMode === "list" ? "" : "none";
+      document.getElementById("barchart-threshold-wrap").style.display = currentMode === "barchart" ? "" : "none";
+      document.getElementById("week-select-wrap").style.display = currentMode === "barchart" ? "none" : "";
       document.getElementById("species-panel").style.display = "none";
+      document.getElementById("barchart-panel").style.display = "none";
+      hideCsvBtn();
       if (cachedRender) clearOverlay();
       if (marker) { map.removeLayer(marker); marker = null; }
       updateLegend();
@@ -296,12 +321,20 @@
 
     document.getElementById("week-select").addEventListener("change", function () {
       if (currentMode === "range" || currentMode === "richness") showCachedWeek();
-      else if (marker) { var ll = marker.getLatLng(); renderSpeciesList(ll.lat, ll.lng); }
+      else if (currentMode === "list" && marker) { var ll = marker.getLatLng(); renderSpeciesList(ll.lat, ll.lng); }
       updateLegend();
     });
 
     document.getElementById("threshold-select").addEventListener("change", function () {
       if (currentMode === "list" && marker) { var ll = marker.getLatLng(); renderSpeciesList(ll.lat, ll.lng); }
+    });
+
+    document.getElementById("barchart-threshold").addEventListener("change", function () {
+      if (currentMode === "barchart" && marker) { var ll = marker.getLatLng(); renderBarCharts(ll.lat, ll.lng); }
+    });
+
+    document.getElementById("csv-download-btn").addEventListener("click", function () {
+      if (lastCsvData) downloadCsv(lastCsvData.filename, lastCsvData.content);
     });
 
     var searchEl = document.getElementById("species-search");
@@ -472,7 +505,7 @@
     return arr;
   }
 
-  function normaliseProbs(raw) {
+  function normalizeProbs(raw) {
     var maxProb = 0;
     for (var i = 0; i < raw.length; i++) if (raw[i] > maxProb) maxProb = raw[i];
     return { probs: perceptualNorm(raw, maxProb), maxProb: maxProb };
@@ -503,11 +536,12 @@
 
     // Fast path: all cached
     if (weekMissing.length === 0) {
-      var nr = normaliseProbs(buildViewportArray(getCellMap(cacheKey(key, selectedWeek), g.step), g));
+      var nr = normalizeProbs(buildViewportArray(getCellMap(cacheKey(key, selectedWeek), g.step), g));
       cachedRender = { grid: g, probs: nr.probs, maxProb: nr.maxProb };
       paintOverlay();
       setStatus(lbl.common + " \u2013 " + weekText(selectedWeek) + " \u00b7 " + totalPoints.toLocaleString() + " cells (" + g.step + "\u00b0) [cached]");
       updateLegend();
+      updateMapCsv();
       return;
     }
 
@@ -533,16 +567,17 @@
         if (gen !== renderGeneration) return;
         for (var k = 0; k < wm.missing.length; k++) wm.cellMap.set(cellId(wm.missing[k].lat, wm.missing[k].lon), rawProbs[k]);
         if (wm.week === selectedWeek) {
-          var nr2 = normaliseProbs(buildViewportArray(wm.cellMap, g));
+          var nr2 = normalizeProbs(buildViewportArray(wm.cellMap, g));
           cachedRender = { grid: g, probs: nr2.probs, maxProb: nr2.maxProb };
           paintOverlay();
         }
       }
-      var nrF = normaliseProbs(buildViewportArray(getCellMap(cacheKey(key, selectedWeek), g.step), g));
+      var nrF = normalizeProbs(buildViewportArray(getCellMap(cacheKey(key, selectedWeek), g.step), g));
       cachedRender = { grid: g, probs: nrF.probs, maxProb: nrF.maxProb };
       paintOverlay();
       setStatus(lbl.common + " \u2013 " + weekText(selectedWeek) + " \u00b7 " + totalPoints.toLocaleString() + " cells (" + g.step + "\u00b0)");
       updateLegend();
+      updateMapCsv();
     } catch (e) { setStatus("Error: " + e.message); console.error(e); }
     finally { rendering = false; showComputingOverlay(false); if (gen !== renderGeneration) triggerRender(); }
   }
@@ -562,6 +597,7 @@
         paintOverlay();
         setStatus("Species richness \u2013 " + weekText(week) + " \u00b7 " + (g.nLat * g.nLon) + " cells (" + g.step + "\u00b0) [cached]");
         updateLegend();
+        updateMapCsv();
       } else { renderRichness(); }
       return;
     }
@@ -570,11 +606,12 @@
     if (!key || !labelsByKey[key]) return;
     var cm2 = getCellMap(cacheKey(key, week), g.step);
     if (viewportMissing(cm2, g).length === 0) {
-      var nr = normaliseProbs(buildViewportArray(cm2, g));
+      var nr = normalizeProbs(buildViewportArray(cm2, g));
       cachedRender = { grid: g, probs: nr.probs, maxProb: nr.maxProb };
       paintOverlay();
       setStatus(labelsByKey[key].common + " \u2013 " + weekText(week) + " \u00b7 " + (g.nLat * g.nLon) + " cells (" + g.step + "\u00b0) [cached]");
       updateLegend();
+      updateMapCsv();
     } else { renderRangeMap(); }
   }
 
@@ -603,6 +640,7 @@
       paintOverlay();
       setStatus("Species richness \u2013 " + weekText(selectedWeek) + " \u00b7 " + totalPoints.toLocaleString() + " cells (" + g.step + "\u00b0) [cached]");
       updateLegend();
+      updateMapCsv();
       return;
     }
 
@@ -646,16 +684,18 @@
       paintOverlay();
       setStatus("Species richness \u2013 " + weekText(selectedWeek) + " \u00b7 " + totalPoints.toLocaleString() + " cells (" + g.step + "\u00b0)");
       updateLegend();
+      updateMapCsv();
     } catch (e) { setStatus("Error: " + e.message); console.error(e); }
     finally { rendering = false; showComputingOverlay(false); if (gen !== renderGeneration) triggerRender(); }
   }
 
   // ---- Species list --------------------------------------------------------
   function onMapClick(e) {
-    if (currentMode !== "list") return;
+    if (currentMode !== "list" && currentMode !== "barchart") return;
     if (marker) map.removeLayer(marker);
     marker = L.marker([e.latlng.lat, e.latlng.lng]).addTo(map);
-    renderSpeciesList(e.latlng.lat, e.latlng.lng);
+    if (currentMode === "list") renderSpeciesList(e.latlng.lat, e.latlng.lng);
+    else renderBarCharts(e.latlng.lat, e.latlng.lng);
   }
 
   async function renderSpeciesList(lat, lon) {
@@ -677,7 +717,19 @@
                Math.round(r.prob * 100) + '%"></div></td></tr>';
       }).join("");
       document.getElementById("species-panel").style.display = "block";
+      document.getElementById("barchart-panel").style.display = "none";
       setStatus(results.length + " species above " + (threshold * 100).toFixed(0) + "% at (" + lat.toFixed(2) + ", " + lon.toFixed(2) + ")");
+
+      // Build CSV for species list
+      var csvLines = ["rank,species_code,common_name,scientific_name,probability"];
+      results.forEach(function (r, idx) {
+        csvLines.push((idx + 1) + ',"' + r.label.key + '","' + r.label.common.replace(/"/g, '""') + '","' + r.label.sci.replace(/"/g, '""') + '",' + r.prob.toFixed(6));
+      });
+      lastCsvData = {
+        filename: "BirdNET_Geomodel_species_list_" + lat.toFixed(2) + "_" + lon.toFixed(2) + "_week" + week + ".csv",
+        content: csvLines.join("\n")
+      };
+      showCsvBtn();
     } catch (e) { setStatus("Error: " + e.message); console.error(e); }
   }
 
@@ -717,6 +769,195 @@
     html += "</div></div>";
     el.innerHTML = html;
     el.style.display = "block";
+  }
+
+  // ---- CSV helpers ---------------------------------------------------------
+  function downloadCsv(filename, content) {
+    var blob = new Blob([content], { type: "text/csv;charset=utf-8;" });
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }
+
+  function showCsvBtn() {
+    document.getElementById("csv-btn-wrap").style.display = "";
+  }
+
+  function hideCsvBtn() {
+    document.getElementById("csv-btn-wrap").style.display = "none";
+    lastCsvData = null;
+  }
+
+  function buildRangeMapCsv() {
+    var key = document.getElementById("species-search").dataset.selectedKey;
+    if (!key || !labelsByKey[key]) return null;
+    var week = +document.getElementById("week-select").value;
+    var g = viewportGrid();
+    var cm = getCellMap(cacheKey(key, week), g.step);
+    var lines = ["latitude,longitude,probability"];
+    for (var iLat = 0; iLat < g.nLat; iLat++) {
+      var lat = g.north - (iLat + 0.5) * g.step;
+      for (var iLon = 0; iLon < g.nLon; iLon++) {
+        var lon = wrapLon(g.west + (iLon + 0.5) * g.step);
+        var val = cm.get(cellId(lat, lon)) || 0;
+        if (val > 0.001) lines.push(lat.toFixed(4) + "," + lon.toFixed(4) + "," + val.toFixed(6));
+      }
+    }
+    var lbl = labelsByKey[key];
+    return {
+      filename: "BirdNET_Geomodel_range_" + lbl.common.replace(/\s+/g, "_") + "_week" + week + ".csv",
+      content: lines.join("\n")
+    };
+  }
+
+  function buildRichnessCsv() {
+    var week = +document.getElementById("week-select").value;
+    var g = viewportGrid();
+    var cm = getCellMap(cacheKey("__richness__", week), g.step);
+    var lines = ["latitude,longitude,species_count"];
+    for (var iLat = 0; iLat < g.nLat; iLat++) {
+      var lat = g.north - (iLat + 0.5) * g.step;
+      for (var iLon = 0; iLon < g.nLon; iLon++) {
+        var lon = wrapLon(g.west + (iLon + 0.5) * g.step);
+        var val = cm.get(cellId(lat, lon)) || 0;
+        lines.push(lat.toFixed(4) + "," + lon.toFixed(4) + "," + Math.round(val));
+      }
+    }
+    return {
+      filename: "BirdNET_Geomodel_richness_week" + week + ".csv",
+      content: lines.join("\n")
+    };
+  }
+
+  // ---- Bar Charts mode -----------------------------------------------------
+  var MONTH_LABELS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+
+  async function renderBarCharts(lat, lon) {
+    var threshold = +document.getElementById("barchart-threshold").value / 100;
+    var nSpecies = labels.length;
+    var CHUNK = 4096;
+
+    document.getElementById("species-panel").style.display = "none";
+    document.getElementById("barchart-panel").style.display = "none";
+    showComputingOverlay(true, "phenology");
+    setStatus("Predicting 48 weeks at (" + lat.toFixed(2) + ", " + lon.toFixed(2) + ")\u2026");
+
+    try {
+      // Predict all 48 weeks in a single batch
+      var inputs = new Float32Array(48 * 3);
+      for (var w = 0; w < 48; w++) {
+        inputs[w * 3] = lat;
+        inputs[w * 3 + 1] = lon;
+        inputs[w * 3 + 2] = w + 1;
+      }
+
+      // Run inference (may need to chunk if model is large)
+      var allProbs = await runInference(inputs, 48);
+      // allProbs: Float32Array of 48 * nSpecies
+      // Shape: [week0_sp0, week0_sp1, ..., week1_sp0, ...]
+
+      // Compute average probability across 48 weeks per species
+      var avgProbs = new Float32Array(nSpecies);
+      for (var s = 0; s < nSpecies; s++) {
+        var sum = 0;
+        for (var wk = 0; wk < 48; wk++) sum += allProbs[wk * nSpecies + s];
+        avgProbs[s] = sum / 48;
+      }
+
+      // Filter species by average probability threshold, sorted descending
+      var indices = [];
+      for (var si = 0; si < nSpecies; si++) {
+        if (avgProbs[si] >= threshold) indices.push(si);
+      }
+      indices.sort(function (a, b) { return avgProbs[b] - avgProbs[a]; });
+      var topIndices = indices;
+
+      // Find global max across all selected species for normalization
+      var globalMax = 0;
+      for (var ti = 0; ti < topIndices.length; ti++) {
+        for (var wk2 = 0; wk2 < 48; wk2++) {
+          var v = allProbs[wk2 * nSpecies + topIndices[ti]];
+          if (v > globalMax) globalMax = v;
+        }
+      }
+      if (globalMax < 0.01) globalMax = 0.01;
+
+      // Build bar chart HTML
+      var html = '';
+      for (var ti2 = 0; ti2 < topIndices.length; ti2++) {
+        var spIdx = topIndices[ti2];
+        var lbl = labels[spIdx];
+        var avg = avgProbs[spIdx];
+
+        html += '<div class="bc-species">' +
+          '<div class="bc-header">' +
+            '<span class="bc-rank">' + (ti2 + 1) + '</span>' +
+            '<span class="bc-name">' + lbl.common + '</span>' +
+            '<span class="bc-sci">' + lbl.sci + '</span>' +
+            '<span class="bc-avg">' + (avg * 100).toFixed(1) + '% avg</span>' +
+          '</div>' +
+          '<div class="bc-bars">';
+
+        for (var wk3 = 0; wk3 < 48; wk3++) {
+          var prob = allProbs[wk3 * nSpecies + spIdx];
+          var pct = (prob / globalMax) * 100;
+          var opacity = Math.max(0.15, prob / globalMax);
+          // Month boundary markers
+          var monthClass = (wk3 % 4 === 0) ? " bc-month-start" : "";
+          html += '<div class="bc-bar' + monthClass + '" style="height:' + pct.toFixed(1) + '%;opacity:' + opacity.toFixed(2) + '" data-tip="Week ' + (wk3 + 1) + ': ' + (prob * 100).toFixed(1) + '%"></div>';
+        }
+
+        html += '</div>' +
+          '<div class="bc-months">';
+        for (var m = 0; m < 12; m++) {
+          html += '<span>' + MONTH_LABELS[m] + '</span>';
+        }
+        html += '</div></div>';
+      }
+
+      document.getElementById("bc-coords").textContent =
+        lat.toFixed(4) + "\u00b0, " + lon.toFixed(4) + "\u00b0 \u00b7 " + topIndices.length + " species above " + (threshold * 100).toFixed(0) + "% avg \u00b7 normalized to " + (globalMax * 100).toFixed(1) + "%";
+      document.getElementById("bc-container").innerHTML = html;
+      document.getElementById("barchart-panel").style.display = "block";
+      setStatus(topIndices.length + " species above " + (threshold * 100).toFixed(0) + "% avg at (" + lat.toFixed(2) + ", " + lon.toFixed(2) + ")");
+
+      // Build CSV for bar charts
+      var csvLines = ["species_code,common_name,scientific_name"];
+      for (var wk4 = 1; wk4 <= 48; wk4++) csvLines[0] += ",week_" + wk4;
+      csvLines[0] += ",average";
+      for (var ti3 = 0; ti3 < topIndices.length; ti3++) {
+        var si = topIndices[ti3];
+        var lb = labels[si];
+        var line = '"' + lb.key + '","' + lb.common.replace(/"/g, '""') + '","' + lb.sci.replace(/"/g, '""') + '"';
+        for (var wk5 = 0; wk5 < 48; wk5++) {
+          line += "," + allProbs[wk5 * nSpecies + si].toFixed(6);
+        }
+        line += "," + avgProbs[si].toFixed(6);
+        csvLines.push(line);
+      }
+      lastCsvData = {
+        filename: "BirdNET_Geomodel_phenology_" + lat.toFixed(2) + "_" + lon.toFixed(2) + ".csv",
+        content: csvLines.join("\n")
+      };
+      showCsvBtn();
+    } catch (e) { setStatus("Error: " + e.message); console.error(e); }
+    finally { showComputingOverlay(false); }
+  }
+
+  // ---- Update CSV for range/richness after render --------------------------
+  function updateMapCsv() {
+    if (currentMode === "range") {
+      lastCsvData = buildRangeMapCsv();
+      if (lastCsvData) showCsvBtn(); else hideCsvBtn();
+    } else if (currentMode === "richness") {
+      lastCsvData = buildRichnessCsv();
+      if (lastCsvData) showCsvBtn(); else hideCsvBtn();
+    }
   }
 
 })();
