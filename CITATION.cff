@@ -1,0 +1,25 @@
+cff-version: 1.2.0
+title: BirdNET Geomodel
+message: >-
+  If you use this software, please cite it using the
+  metadata from this file.
+type: software
+authors:
+  - family-names: Kahl
+    given-names: Stefan
+  - family-names: Mauermann
+    given-names: Max
+  - family-names: Lasseck
+    given-names: Mario
+  - family-names: Wood
+    given-names: Connor
+  - family-names: Klinck
+    given-names: Holger
+abstract: >-
+  Spatiotemporal species occurrence prediction for
+  post-filtering BirdNET acoustic detections. Predicts
+  which species are likely to occur at a given location
+  and week of the year.
+license: MIT
+url: https://github.com/birdnet-team/geomodel
+year: 2026
