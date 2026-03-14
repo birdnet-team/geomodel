@@ -247,7 +247,10 @@ def masked_mse(pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
 
     Returns zero if there are no valid elements in the batch.
     """
-    valid = ~torch.isnan(target)
+    # Compute in float32 and ignore any non-finite target/prediction values.
+    pred = pred.float()
+    target = target.float()
+    valid = torch.isfinite(target) & torch.isfinite(pred)
     if valid.all():
         return F.mse_loss(pred, target)
     n_valid = valid.sum()

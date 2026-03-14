@@ -84,7 +84,9 @@ def _data_cache_key(args) -> str:
 def _data_cache_path(args) -> Path:
     """Return the cache file path for the current data settings."""
     digest = _data_cache_key(args)
-    cache_dir = Path(args.checkpoint_dir) / '.data_cache'
+    # Use a shared cache directory so multi-run experiments (ablation/autotune)
+    # can reuse preprocessing across different checkpoint dirs.
+    cache_dir = Path(args.data_cache_dir)
     return cache_dir / f'preprocessed_{digest}.pkl'
 
 
@@ -243,8 +245,8 @@ class Trainer:
         self.patience = patience
         self.log_interval = log_interval
 
-        # AMP scaler — only active on CUDA
-        self.use_amp = device.type == 'cuda'
+        # AMP scaler — AN loss is numerically sensitive, so keep it in FP32.
+        self.use_amp = device.type == 'cuda' and getattr(self.criterion, 'species_loss_type', '') != 'an'
         self.scaler = torch.amp.GradScaler('cuda', enabled=self.use_amp)
 
         self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
@@ -305,6 +307,7 @@ class Trainer:
         self.model.train()
         total_loss = total_species = total_env = total_habitat = 0.0
         n_batches = 0
+        n_skipped_nonfinite = 0
         n_total = len(train_loader)
 
         # When tqdm is disabled (e.g. TQDM_DISABLE=1), print phase markers
@@ -325,6 +328,19 @@ class Trainer:
             with torch.amp.autocast('cuda', enabled=self.use_amp):
                 outputs = self.model(lat, lon, week, return_env=True)
                 losses = self.criterion(outputs, {'species': species_t, 'env_features': env_t})
+
+            # Skip non-finite batches to avoid corrupting optimizer/model state.
+            _loss_vals = [losses['total'], losses['species']]
+            if 'env' in losses:
+                _loss_vals.append(losses['env'])
+            if 'habitat' in losses:
+                _loss_vals.append(losses['habitat'])
+            if not all(torch.isfinite(v).item() for v in _loss_vals):
+                n_skipped_nonfinite += 1
+                if n_skipped_nonfinite <= 3:
+                    print(f"  Warning: skipping non-finite batch at idx={batch_idx} "
+                          f"(epoch {self.current_epoch + 1})", flush=True)
+                continue
 
             self.scaler.scale(losses['total']).backward()
             self.scaler.unscale_(self.optimizer)
@@ -349,11 +365,16 @@ class Trainer:
                     postfix['habitat'] = f"{losses['habitat'].item():.4f}"
                 pbar.set_postfix(**postfix)
 
-        result = {'loss': total_loss / n_batches,
-                  'species_loss': total_species / n_batches,
-                  'env_loss': total_env / n_batches}
+        if n_batches == 0:
+            result = {'loss': float('nan'), 'species_loss': float('nan'), 'env_loss': float('nan')}
+        else:
+            result = {'loss': total_loss / n_batches,
+                      'species_loss': total_species / n_batches,
+                      'env_loss': total_env / n_batches}
         if total_habitat > 0:
             result['habitat_loss'] = total_habitat / n_batches
+        if n_skipped_nonfinite > 0:
+            print(f"  Skipped non-finite train batches: {n_skipped_nonfinite}/{n_total}", flush=True)
         return result
 
     @torch.no_grad()
@@ -675,6 +696,8 @@ class Trainer:
         print(f"\nTraining for {num_epochs} epochs on {self.device}")
         if self.use_amp:
             print("  Mixed precision (AMP): enabled")
+        elif self.device.type == 'cuda':
+            print("  Mixed precision (AMP): disabled for numerical stability")
         if self.patience:
             print(f"  Early stopping patience: {self.patience}")
         print(f"  Train: {len(train_loader.dataset):,} samples  |  Val: {len(val_loader.dataset):,} samples")
@@ -922,6 +945,9 @@ def main():
     parser.add_argument('--save_every', type=int, default=5)
     parser.add_argument('--no_cache', action='store_true',
                         help='Force reprocessing of data even if a valid cache exists')
+    parser.add_argument('--data_cache_dir', type=str, default='checkpoints/.data_cache',
+                        help='Directory for shared preprocessed-data cache files '
+                             '(default: checkpoints/.data_cache)')
 
     # Device
     parser.add_argument('--device', type=str, default='auto', choices=['auto', 'cuda', 'cpu'])
