@@ -245,8 +245,9 @@ class Trainer:
         self.patience = patience
         self.log_interval = log_interval
 
-        # AMP scaler — AN loss is numerically sensitive, so keep it in FP32.
-        self.use_amp = device.type == 'cuda' and getattr(self.criterion, 'species_loss_type', '') != 'an'
+        # AMP scaler — AN loss guards (logit clamp + nan_to_num in
+        # AssumeNegativeLoss.forward) handle FP16 overflow safely.
+        self.use_amp = device.type == 'cuda'
         self.scaler = torch.amp.GradScaler('cuda', enabled=self.use_amp)
 
         self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
