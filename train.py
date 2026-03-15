@@ -68,6 +68,9 @@ def _data_cache_key(args) -> str:
     """Build a deterministic hash from all args that affect preprocessing."""
     h = hashlib.sha256()
 
+    # Cache format version — bump when internal encoding changes
+    h.update(b"cache_version:2")
+
     # File identity: use mtime + size as a cheap fingerprint
     p = Path(args.data_path)
     stat = p.stat()
@@ -84,7 +87,7 @@ def _data_cache_key(args) -> str:
 def _data_cache_path(args) -> Path:
     """Return the cache file path for the current data settings."""
     digest = _data_cache_key(args)
-    cache_dir = Path(args.checkpoint_dir) / '.data_cache'
+    cache_dir = Path(args.data_path).parent / '.data_cache'
     return cache_dir / f'preprocessed_{digest}.pkl'
 
 
@@ -162,14 +165,8 @@ def _check_watchlist_coverage(
         sp = tgt['species']
         if isinstance(sp, np.ndarray) and sp.ndim == 2:
             return set(np.where(sp.any(axis=0))[0].tolist())
-        elif isinstance(sp, list):
-            present: set = set()
-            for row in sp:
-                if hasattr(row, 'tolist'):
-                    present.update(row.tolist())
-                else:
-                    present.update(row)
-            return present
+        elif isinstance(sp, dict) and 'values' in sp:
+            return set(sp['values'].tolist())
         return set()
 
     train_present = _present_indices(train_tgt)
@@ -326,13 +323,22 @@ class Trainer:
                 outputs = self.model(lat, lon, week, return_env=True)
                 losses = self.criterion(outputs, {'species': species_t, 'env_features': env_t})
 
-            self.scaler.scale(losses['total']).backward()
+            # Skip batch if loss is NaN/inf (e.g. FP16 overflow under AMP).
+            # No backward pass means model weights stay clean; GradScaler's
+            # internal scale is halved so subsequent batches use lower scale.
+            _total = losses['total']
+            if not torch.isfinite(_total):
+                self.optimizer.zero_grad(set_to_none=True)
+                self.scaler.update(self.scaler.get_scale() * 0.5)
+                continue
+
+            self.scaler.scale(_total).backward()
             self.scaler.unscale_(self.optimizer)
             torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
             self.scaler.step(self.optimizer)
             self.scaler.update()
 
-            total_loss += losses['total'].item()
+            total_loss += _total.item()
             total_species += losses['species'].item()
             total_env += losses['env'].item()
             if 'habitat' in losses:
@@ -349,9 +355,9 @@ class Trainer:
                     postfix['habitat'] = f"{losses['habitat'].item():.4f}"
                 pbar.set_postfix(**postfix)
 
-        result = {'loss': total_loss / n_batches,
-                  'species_loss': total_species / n_batches,
-                  'env_loss': total_env / n_batches}
+        result = {'loss': total_loss / max(n_batches, 1),
+                  'species_loss': total_species / max(n_batches, 1),
+                  'env_loss': total_env / max(n_batches, 1)}
         if total_habitat > 0:
             result['habitat_loss'] = total_habitat / n_batches
         return result
@@ -430,15 +436,18 @@ class Trainer:
                 outputs = self.model(lat, lon, week, return_env=True)
                 losses = self.criterion(outputs, {'species': species_t, 'env_features': env_t})
 
-            total_loss += losses['total'].item()
-            total_species += losses['species'].item()
-            total_env += losses['env'].item()
-            if 'habitat' in losses:
-                total_habitat += losses['habitat'].item()
-            n_batches += 1
+            # Accumulate loss only for finite batches (FP16 overflow → skip)
+            if torch.isfinite(losses['total']):
+                total_loss += losses['total'].item()
+                total_species += losses['species'].item()
+                total_env += losses['env'].item()
+                if 'habitat' in losses:
+                    total_habitat += losses['habitat'].item()
+                n_batches += 1
 
             # --- Species prediction metrics ---
-            logits = outputs['species_logits'].float()
+            # Clamp logits to prevent inf→NaN in sigmoid for metric computation
+            logits = outputs['species_logits'].float().clamp(-30, 30)
             probs = torch.sigmoid(logits)
             pos_mask = species_t > 0.5
             n_pos = pos_mask.sum(dim=1)  # (B,)
@@ -514,15 +523,15 @@ class Trainer:
             return 2 * prec * rec / max(prec + rec, 1e-8)
 
         metrics = {
-            'loss': total_loss / n_batches,
-            'species_loss': total_species / n_batches,
-            'env_loss': total_env / n_batches,
+            'loss': total_loss / max(n_batches, 1),
+            'species_loss': total_species / max(n_batches, 1),
+            'env_loss': total_env / max(n_batches, 1),
             'map': ap_sum / max(ap_count, 1),
             'top10_recall': total_hits_10 / max(total_positives, 1),
             'top30_recall': total_hits_30 / max(total_positives, 1),
         }
         if total_habitat > 0:
-            metrics['habitat_loss'] = total_habitat / n_batches
+            metrics['habitat_loss'] = total_habitat / max(n_batches, 1)
         for t in THRESHOLDS:
             pct = int(t * 100)
             tp, fp, fn = thresh_tp[t], thresh_fp[t], thresh_fn[t]

@@ -361,22 +361,30 @@ class H3DataPreprocessor:
                     matrix[i, idx] = 1.0
         return matrix
 
-    def encode_species_sparse(self, species_lists: List[List[str]]) -> List[np.ndarray]:
-        """Convert species lists to a list of sparse index arrays.
+    def encode_species_sparse(self, species_lists: List[List[str]]) -> Dict[str, np.ndarray]:
+        """Convert species lists to packed sparse index arrays.
 
-        Each element is an int32 array of active species indices for that
-        sample.  The dense one-hot vector is materialised per-sample inside
-        BirdSpeciesDataset.__getitem__, keeping total memory proportional to
-        the *number of observations* rather than samples × species.
+        Returns a dict with two contiguous arrays instead of a list of
+        millions of small numpy arrays.  This eliminates per-object
+        refcount overhead that causes copy-on-write memory bloat with
+        forked DataLoader workers.
+
+        Returns:
+            ``{'values': int32, 'offsets': int64}`` where ``offsets[i]``
+            to ``offsets[i+1]`` gives the slice of ``values`` for sample i.
         """
         if not self.species_vocab:
             self.build_species_vocabulary(species_lists)
-        sparse: List[np.ndarray] = []
-        for sl in species_lists:
-            indices = [self.species_to_idx[sid] for sid in sl
-                       if sid in self.species_to_idx]
-            sparse.append(np.array(indices, dtype=np.int32))
-        return sparse
+        all_indices: List[int] = []
+        offsets = np.empty(len(species_lists) + 1, dtype=np.int64)
+        offsets[0] = 0
+        for i, sl in enumerate(species_lists):
+            ids = [self.species_to_idx[sid] for sid in sl
+                   if sid in self.species_to_idx]
+            all_indices.extend(ids)
+            offsets[i + 1] = len(all_indices)
+        values = np.array(all_indices, dtype=np.int32)
+        return {'values': values, 'offsets': offsets}
 
     # -- Observation density -----------------------------------------------
 
@@ -463,9 +471,8 @@ class H3DataPreprocessor:
             for k, v in d.items():
                 if isinstance(v, np.ndarray):
                     out[k] = v[mask]
-                elif isinstance(v, list):
-                    idxs = np.where(mask)[0]
-                    out[k] = [v[i] for i in idxs]
+                elif isinstance(v, dict) and 'values' in v and 'offsets' in v:
+                    out[k] = _subset_packed_sparse(v, np.where(mask)[0])
                 else:
                     out[k] = v
             return out
@@ -1036,9 +1043,8 @@ class H3DataPreprocessor:
             for key, v in d.items():
                 if isinstance(v, np.ndarray):
                     out[key] = v[m]
-                elif isinstance(v, list):
-                    idxs = np.where(m)[0]
-                    out[key] = [v[i] for i in idxs]
+                elif isinstance(v, dict) and 'values' in v and 'offsets' in v:
+                    out[key] = _subset_packed_sparse(v, np.where(m)[0])
                 else:
                     out[key] = v
             return out
@@ -1086,8 +1092,8 @@ class H3DataPreprocessor:
             for key, v in d.items():
                 if isinstance(v, np.ndarray):
                     out[key] = v[idx]
-                elif isinstance(v, list):
-                    out[key] = [v[i] for i in idx]
+                elif isinstance(v, dict) and 'values' in v and 'offsets' in v:
+                    out[key] = _subset_packed_sparse(v, idx)
                 else:
                     out[key] = v
             return out
@@ -1141,10 +1147,8 @@ class H3DataPreprocessor:
             for k, v in d.items():
                 if isinstance(v, np.ndarray):
                     out[k] = v[mask]
-                elif isinstance(v, list):
-                    # sparse species: list of arrays
-                    idxs = np.where(mask)[0]
-                    out[k] = [v[i] for i in idxs]
+                elif isinstance(v, dict) and 'values' in v and 'offsets' in v:
+                    out[k] = _subset_packed_sparse(v, np.where(mask)[0])
                 else:
                     out[k] = v
             return out
@@ -1165,6 +1169,35 @@ class H3DataPreprocessor:
 
 
 # ---------------------------------------------------------------------------
+# Packed-sparse helpers
+# ---------------------------------------------------------------------------
+
+def _subset_packed_sparse(packed: Dict[str, np.ndarray],
+                          idxs: np.ndarray) -> Dict[str, np.ndarray]:
+    """Subset a packed sparse dict by sample indices.
+
+    ``packed`` has ``values`` (int32) and ``offsets`` (int64).
+    Returns a new packed dict for the selected samples.
+    """
+    offsets = packed['offsets']
+    values = packed['values']
+    starts = offsets[idxs]
+    ends = offsets[idxs + 1]
+    lengths = ends - starts
+    new_offsets = np.empty(len(idxs) + 1, dtype=np.int64)
+    new_offsets[0] = 0
+    np.cumsum(lengths, out=new_offsets[1:])
+    total = int(new_offsets[-1])
+    new_values = np.empty(total, dtype=values.dtype)
+    pos = 0
+    for s, ln in zip(starts, lengths):
+        ln = int(ln)
+        new_values[pos:pos + ln] = values[int(s):int(s) + ln]
+        pos += ln
+    return {'values': new_values, 'offsets': new_offsets}
+
+
+# ---------------------------------------------------------------------------
 # PyTorch Dataset / DataLoader
 # ---------------------------------------------------------------------------
 
@@ -1174,11 +1207,11 @@ class BirdSpeciesDataset(Dataset):
 
     Species targets can be either:
       - Dense: np.ndarray of shape [n_samples, n_species]
-      - Sparse: list of np.ndarray index arrays (one per sample)
+      - Sparse (packed): dict with 'values' (int32) and 'offsets' (int64)
 
     When sparse, the dense one-hot vector is materialised on the fly in
-    __getitem__, keeping resident memory proportional to the number of
-    *observations* rather than samples × species.
+    the collate function, keeping resident memory proportional to the
+    number of *observations* rather than samples × species.
     """
 
     def __init__(self, inputs: Dict[str, np.ndarray], targets: Dict[str, Any],
@@ -1222,11 +1255,14 @@ class BirdSpeciesDataset(Dataset):
             self.species_dense = torch.from_numpy(species).float()
             self.species_sparse = None
             self.n_species = species.shape[1]
-        else:
-            # Sparse path (list of index arrays)
+        elif isinstance(species, dict) and 'values' in species:
+            # Packed sparse path (values + offsets arrays)
             self.species_dense = None
-            self.species_sparse = species
+            self.species_sparse = species  # dict of contiguous np arrays
             self.n_species = n_species
+        else:
+            raise TypeError(
+                f"Unsupported species target type: {type(species)}")
 
         assert len(self.lat) == len(self.lon) == len(self.week) == len(self.env_features)
 
@@ -1258,7 +1294,9 @@ class BirdSpeciesDataset(Dataset):
             )
         else:
             # Return raw sparse indices — dense vector is built in collate_fn
-            indices = self.species_sparse[idx]
+            off = self.species_sparse['offsets']
+            start, end = int(off[idx]), int(off[idx + 1])
+            indices = self.species_sparse['values'][start:end]
             inp = {'lat': lat, 'lon': lon, 'week': self.week[idx]}
             if self.obs_density is not None:
                 inp['obs_density'] = self.obs_density[idx]

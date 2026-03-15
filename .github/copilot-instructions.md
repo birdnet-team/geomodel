@@ -76,7 +76,9 @@ GBIF integer taxonKeys used in earlier versions of the pipeline.
   - Continuous columns → StandardScaler (NaN positions preserved for masked MSE loss)
 - `build_species_vocabulary()`: Creates vocabulary of all unique species codes
 - `encode_species_multilabel()`: Converts species lists to multi-label dense binary matrix
-- `encode_species_sparse()`: Converts species lists to sparse index arrays (used when dense would exceed 8 GiB)
+- `encode_species_sparse()`: Converts species lists to packed sparse index arrays (used when dense would exceed 8 GiB)
+  - Returns `{'values': np.ndarray(int32), 'offsets': np.ndarray(int64)}` where `offsets[i]` to `offsets[i+1]` gives the slice of `values` for sample i
+  - Two contiguous numpy arrays instead of millions of small Python objects — eliminates copy-on-write memory bloat with forked DataLoader workers
 - `prepare_training_data()`: Complete preprocessing pipeline
   - Supports `max_obs_per_species` to cap common species observations
   - Supports `min_obs_per_species` to exclude rare species (default 50)

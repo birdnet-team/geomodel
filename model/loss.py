@@ -140,12 +140,15 @@ class AssumeNegativeLoss(nn.Module):
     subset of M "assumed-negative" species.  This avoids the O(n_species)
     per-sample cost when the vocabulary is large (10K+).
 
-    The loss for each sample is:
+    The loss is normalised per-species (dividing by ``n_species``) so that
+    its gradient magnitude is comparable to standard BCE regardless of how
+    many species are in the vocabulary or how few positives each sample has.
+    λ controls the *relative* importance of positives vs negatives; the
+    *absolute* scale matches BCE.
 
-        L = λ · mean(BCE on positives) + mean(BCE on sampled negatives)
-
-    where "positives" are species with label 1, and "negatives" are a random
-    subset of size M drawn from species with label 0 for that sample.
+    When negative sampling is active (``M > 0``), the sampled negative
+    contribution is scaled up by ``n_neg / n_sampled_neg`` per sample
+    to approximate the full-vocabulary expectation.
 
     Args:
         pos_lambda: Up-weighting factor for positive samples.
@@ -183,6 +186,10 @@ class AssumeNegativeLoss(nn.Module):
         """
         batch_size, n_species = logits.shape
 
+        # Cast to float32 for numerical safety under AMP.
+        logits = logits.float()
+        targets = targets.float()
+
         # Masks are computed from the original binary targets
         pos_mask = targets > 0.5   # (B, S)
         neg_mask = ~pos_mask       # (B, S)
@@ -194,34 +201,36 @@ class AssumeNegativeLoss(nn.Module):
         # Per-element BCE (unreduced)
         bce = F.binary_cross_entropy_with_logits(logits, targets, reduction='none')
 
-        # --- Positive loss (weighted by λ) ---
-        # Mean per-sample positive BCE, then mean across batch
+        # --- Positive term: sum of BCE on positive species per sample ---
         pos_bce = bce * pos_mask.float()
-        pos_count = pos_mask.sum(dim=1).clamp(min=1).float()  # (B,)
-        pos_loss = (pos_bce.sum(dim=1) / pos_count).mean()
+        pos_sum = pos_bce.sum(dim=1)  # (B,)
 
-        # --- Negative loss (sampled) ---
+        # --- Negative term: sum of BCE on (sampled) negative species ---
         M = self.neg_samples
         if M <= 0 or M >= n_species:
-            # Use all negatives
+            # Use all negatives (no sampling)
             neg_bce = bce * neg_mask.float()
-            neg_count = neg_mask.sum(dim=1).clamp(min=1).float()
-            neg_loss = (neg_bce.sum(dim=1) / neg_count).mean()
+            neg_sum = neg_bce.sum(dim=1)  # (B,)
         else:
-            # Sample M negatives per example
-            # For efficiency, sample uniformly from all species and mask out
-            # positives.  This is approximate but fast on GPU.
+            # Sample M species and keep only the negatives among them.
+            # Scale the sampled sum up by (true_neg_count / sampled_neg_count)
+            # to approximate the full-vocabulary negative contribution.
             rand_indices = torch.randint(0, n_species, (batch_size, M),
                                          device=logits.device)  # (B, M)
             sampled_bce = torch.gather(bce, 1, rand_indices)           # (B, M)
             sampled_targets = torch.gather(targets, 1, rand_indices)   # (B, M)
-            # Only count the negatives among the sampled indices
             sampled_neg_mask = sampled_targets < 0.5
             neg_bce = sampled_bce * sampled_neg_mask.float()
-            neg_count = sampled_neg_mask.sum(dim=1).clamp(min=1).float()
-            neg_loss = (neg_bce.sum(dim=1) / neg_count).mean()
+            sampled_neg_sum = neg_bce.sum(dim=1)                       # (B,)
+            # Correction factor: scale sampled negatives to full population
+            sampled_neg_count = sampled_neg_mask.sum(dim=1).clamp(min=1).float()
+            true_neg_count = neg_mask.sum(dim=1).float()               # (B,)
+            neg_sum = sampled_neg_sum * (true_neg_count / sampled_neg_count)
 
-        return self.pos_lambda * pos_loss + neg_loss
+        # Normalise by n_species so gradient magnitude matches BCE.
+        # λ controls the relative weight of positives vs negatives.
+        sample_loss = (self.pos_lambda * pos_sum + neg_sum) / n_species
+        return sample_loss.mean()
 
 
 def masked_mse(pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
@@ -231,8 +240,13 @@ def masked_mse(pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
     This function computes the MSE only over valid (non-NaN) elements so the
     model is not penalised for predicting placeholder values.
 
+    Predictions are clamped to [-1e4, 1e4] to prevent FP16 overflow from
+    turning into inf² → NaN under AMP.
+
     Returns zero if there are no valid elements in the batch.
     """
+    pred = pred.float().clamp(-1e4, 1e4)
+    target = target.float()
     valid = ~torch.isnan(target)
     if valid.all():
         return F.mse_loss(pred, target)
