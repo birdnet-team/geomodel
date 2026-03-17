@@ -174,6 +174,12 @@ class SpatioTemporalEncoder(nn.Module):
                 nn.Linear(embed_dim, 2 * embed_dim),  # (γ, β)
             ) for _ in range(n_blocks)
         ])
+        # Zero-init the FiLM output layers so γ starts at identity (tanh(0)=0
+        # → γ=1) and β starts at zero.  The modulation is gradually learned
+        # from data rather than producing random scale/shift at init.
+        for fg in self.film_generators:
+            nn.init.zeros_(fg[2].weight)
+            nn.init.zeros_(fg[2].bias)
         self.norm = nn.LayerNorm(embed_dim, eps=LAYERNORM_EPS)
         self.output_dim = embed_dim
 
@@ -202,9 +208,18 @@ class SpatioTemporalEncoder(nn.Module):
         # FiLM-conditioned residual blocks
         for block, film_gen in zip(self.blocks, self.film_generators):
             film = film_gen(week_features)        # (batch, 2*embed_dim)
-            gamma, beta = film.chunk(2, dim=1)    # each (batch, embed_dim)
-            gamma = gamma + 1.0                   # center around identity
-            x = block(x) * gamma + beta
+            raw_gamma, beta = film.chunk(2, dim=1) # each (batch, embed_dim)
+            # Bounded modulation: tanh keeps gamma in (0, 2), centered at
+            # 1 (identity).  This prevents compound FP16 overflow through
+            # deep residual stacks — with 8 blocks at model_scale=2.0,
+            # worst-case compound amplification is 2^8 = 256, safely
+            # within FP16 range (max 65504).  Unlike a hard clamp, tanh
+            # is smooth everywhere so gradients flow cleanly.
+            gamma = 1.0 + torch.tanh(raw_gamma)
+            x_out = block(x)
+            # FiLM modulation in float32 for numerical stability under
+            # AMP, then cast back to the autocast dtype.
+            x = (x_out.float() * gamma.float() + beta.float()).to(x_out.dtype)
 
         return self.norm(x)
 
