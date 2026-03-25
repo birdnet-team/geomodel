@@ -509,6 +509,8 @@ class H3DataPreprocessor:
         min_obs_threshold: int = 3,
         soft_weight: float = 0.5,
         max_spread_factor: float = 2.0,
+        env_dist_max: float = 0.0,
+        range_cap_km: float = 0.0,
     ) -> List[List[str]]:
         """Propagate species labels from observed to sparse/unobserved cells.
 
@@ -538,6 +540,16 @@ class H3DataPreprocessor:
                 cell if the cell is within distance D of the nearest original
                 observation, where D = *max_spread_factor* × (observed range
                 diameter / 2). Set to 0 to disable range filtering (default 2.0).
+            env_dist_max: Maximum Euclidean distance in standardized
+                env-feature space between a sparse cell and its KNN neighbor
+                for that neighbor to contribute labels.  Neighbors further
+                away in env space are dropped even if within *max_radius_km*.
+                Set to 0 to disable (default 0.0).
+            range_cap_km: Hard cap in km on the per-species propagation
+                distance computed from *max_spread_factor*.  Even if a species'
+                bounding-box range would allow propagation farther, it is
+                clamped to at most *range_cap_km*.  Set to 0 to disable
+                (default 0.0).
 
         Returns:
             Modified species_lists with propagated labels (also mutated
@@ -642,6 +654,10 @@ class H3DataPreprocessor:
                     0.5 * np.sqrt(d_lat_km**2 + d_lon_km**2), 50.0)
                 sp_max_dist[uniq_sp] = max_spread_factor * radii
 
+                # Hard cap per species: clamp propagation distance
+                if range_cap_km > 0:
+                    np.minimum(sp_max_dist, range_cap_km, out=sp_max_dist)
+
             del obs_idx, obs_lats, obs_lons, obs_mem
 
         # --- Normalize environmental features ---
@@ -702,6 +718,11 @@ class H3DataPreprocessor:
 
             # Mask: valid neighbors (finite dist AND within radius)
             valid = (dists < np.inf) & (geo_km <= max_radius_km)
+
+            # Environmental gating: reject neighbors too dissimilar in
+            # standardized env-feature space
+            if env_dist_max > 0:
+                valid &= (dists <= env_dist_max)
 
             # --- Vectorized species propagation via sparse matmul ---
             # Instead of a triple-nested Python loop over
@@ -772,10 +793,16 @@ class H3DataPreprocessor:
                     total_propagated += added
                     cells_modified += 1
 
+        gates = []
+        if env_dist_max > 0:
+            gates.append(f"env_dist_max={env_dist_max:.1f}")
+        if range_cap_km > 0:
+            gates.append(f"range_cap={range_cap_km:.0f}km")
+        gate_str = (', ' + ', '.join(gates)) if gates else ''
         print(f"   Env label propagation: added {total_propagated:,} pseudo-labels "
               f"to {cells_modified:,}/{n_sparse:,} sparse samples "
               f"(k={k}, max_radius={max_radius_km:.0f}km, "
-              f"min_obs={min_obs_threshold})")
+              f"min_obs={min_obs_threshold}{gate_str})")
 
         return species_lists
 

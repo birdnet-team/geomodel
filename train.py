@@ -915,6 +915,12 @@ def main():
     parser.add_argument('--propagate_max_spread', type=float, default=2.0,
                         help='Restrict propagation distance by observed species range radius '
                              'multiplied by this factor (default: 2.0).  Set to 0 to disable.')
+    parser.add_argument('--propagate_env_dist_max', type=float, default=0.0,
+                        help='Max env-space Euclidean distance (post-StandardScaler) for a '
+                             'neighbor to contribute labels. 0 = disabled (default: 0).')
+    parser.add_argument('--propagate_range_cap', type=float, default=0.0,
+                        help='Hard cap in km on per-species propagation distance regardless '
+                             'of bounding-box range. 0 = disabled (default: 0).')
 
     # LR schedule
     parser.add_argument('--lr_schedule', type=str, default='cosine', choices=['cosine', 'none'],
@@ -1085,6 +1091,8 @@ def main():
                 max_radius_km=args.propagate_max_radius,
                 min_obs_threshold=args.propagate_min_obs,
                 max_spread_factor=args.propagate_max_spread,
+                env_dist_max=args.propagate_env_dist_max,
+                range_cap_km=args.propagate_range_cap,
             )
 
         print("3. Preprocessing...")

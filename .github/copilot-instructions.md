@@ -44,6 +44,27 @@ zero-init output layers. Encoder uses pre-norm residual blocks
 **Inference** (`predict.py`): (lat, lon, week) → species probabilities.
 **Export** (`convert.py`): PyTorch → ONNX/TFLite/SavedModel with FP16/INT8 quantisation.
 
+## Label Propagation
+
+KNN-based label propagation fills sparse H3 cells from environmentally similar
+neighbors (`utils/data.py: H3DataPreprocessor.propagate_env_labels()`).
+
+Key parameters and their ecological constraints:
+- `--propagate_k` [1–20]: number of env-space neighbors
+- `--propagate_max_radius` [100–1500] km: geographic search radius
+- `--propagate_min_obs` [1–20]: minimum observations for a species to be donor-eligible
+- `--propagate_max_spread` [0.5–3.0]: per-species range cap as multiple of bounding-box diagonal
+- `--propagate_env_dist_max` [0.5–5.0]: Euclidean distance threshold in StandardScaler
+  env space — rejects KNN neighbors too dissimilar environmentally
+- `--propagate_range_cap` [200–2000] km: hard km ceiling on per-species propagation
+  distance regardless of species range extent
+
+**Critical lesson (ablation Stage H):** unconstrained propagation tuning pushes
+parameters to search-space bounds (radius ≈ 5000 km, max_spread ≈ 10) because the
+density_ratio component of GeoScore rewards aggressive propagation. This is
+Goodhart's law — the metric is gamed, not the ecology improved. The `env_dist_max`
+and `range_cap` guardrails were added to prevent this.
+
 ## Data
 
 Parquet files with H3 cells × 48 weekly species lists + environmental features.
@@ -66,7 +87,23 @@ utils/combine.py                      — Merge EE + GBIF into parquet
 utils/regions.py                      — Holdout region definitions
 scripts/plot_*.py                     — Visualization scripts
 docs/                                 — MkDocs documentation site
+report/ablation.md                    — Ablation study report (Stages A–I)
+report/run_ablation.sh                — Staged experiment runner
+report/collect_ablation_results.py    — Results aggregation script
 ```
+
+## GeoScore Formula
+
+Weighted composite (defined in `model/metrics.py`):
+- `map` (0.20) — mean average precision
+- `f1_10` (0.20) — F1 at 10% threshold
+- `list_ratio_10` (0.15) — `1 - |log(predicted/true species count)|`
+- `watchlist_mean_ap` (0.10) — mean AP over endemic/watchlist species
+- `holdout_map` (0.10) — mAP on spatially held-out regions
+- `map_density_ratio` (0.20) — sparse-region mAP / dense-region mAP
+- `pred_density_corr` (0.05) — `1 - |Pearson r(predictions, obs density)|`
+
+Components missing from a run are skipped and weights renormalized.
 
 ## Key Design Decisions
 
@@ -75,5 +112,19 @@ docs/                                 — MkDocs documentation site
 - Sparse species encoding (packed index arrays) avoids memory bloat with forked workers
 - FiLM gamma uses `1 + tanh(raw)` (bounded, smooth) — not raw addition — to prevent
   compound FP16 overflow through deep encoder stacks
-- GeoScore (weighted composite of mAP, F1, list-ratio, watchlist AP, holdout mAP,
-  density ratio) is the primary optimisation target
+- GeoScore is the primary optimization target, but watch for Goodhart's law —
+  aggressive propagation can inflate density_ratio without ecological improvement
+- Propagation guardrails (`env_dist_max`, `range_cap`) enforce ecological plausibility
+
+## Ablation Study (report/ablation.md)
+
+Staged ablation with winner carry-forward:
+- **A**: Loss family (BCE, ASL, focal, AN × smoothing) → BCE + smoothing 0.05
+- **B**: Model scale × env/habitat heads → scale 2.0, coord-only
+- **C**: Observation bias (env weight × propagation) → env 0.0, propagation on
+- **D**: Harmonics sweep → coord 8, week 8
+- **E**: Augmentation/temporal → jitter on, no yearly
+- **F**: Observation cap per species (diagnostic)
+- **G**: Species vocabulary size (diagnostic)
+- **H**: Unconstrained propagation Optuna (15 trials) — revealed Goodhart's law
+- **I**: Ecologically constrained propagation Optuna (15 trials, tightened bounds)

@@ -26,6 +26,7 @@ TUNABLE_PARAMS = [
     'label_freq_weight_pct_lo', 'label_freq_weight_pct_hi',
     'propagate_k', 'propagate_max_radius',
     'propagate_min_obs', 'propagate_max_spread',
+    'propagate_env_dist_max', 'propagate_range_cap',
 ]
 
 
@@ -68,11 +69,15 @@ def _suggest_param(trial, name: str, args):
     if name == 'propagate_k':
         return trial.suggest_int('propagate_k', 1, 20)
     if name == 'propagate_max_radius':
-        return trial.suggest_float('propagate_max_radius', 100.0, 5000.0, log=True)
+        return trial.suggest_float('propagate_max_radius', 100.0, 1500.0, log=True)
     if name == 'propagate_min_obs':
         return trial.suggest_int('propagate_min_obs', 1, 20)
     if name == 'propagate_max_spread':
-        return trial.suggest_float('propagate_max_spread', 0.5, 10.0)
+        return trial.suggest_float('propagate_max_spread', 0.5, 3.0)
+    if name == 'propagate_env_dist_max':
+        return trial.suggest_float('propagate_env_dist_max', 0.5, 5.0)
+    if name == 'propagate_range_cap':
+        return trial.suggest_float('propagate_range_cap', 200.0, 2000.0)
     raise ValueError(f"Unknown tunable param: {name}")
 
 
@@ -101,7 +106,7 @@ def run_autotune(
         print(f"Available: {TUNABLE_PARAMS}")
         return
 
-    _PROPAGATION_PARAMS = {'propagate_k', 'propagate_max_radius', 'propagate_min_obs', 'propagate_max_spread'}
+    _PROPAGATION_PARAMS = {'propagate_k', 'propagate_max_radius', 'propagate_min_obs', 'propagate_max_spread', 'propagate_env_dist_max', 'propagate_range_cap'}
     _tune_propagation = bool(_PROPAGATION_PARAMS & set(tune_params))
 
     n_trials = args.autotune_trials
@@ -182,6 +187,8 @@ def run_autotune(
                 max_radius_km=args.propagate_max_radius,
                 min_obs_threshold=args.propagate_min_obs,
                 max_spread_factor=args.propagate_max_spread,
+                env_dist_max=args.propagate_env_dist_max,
+                range_cap_km=args.propagate_range_cap,
             )
 
         print("3. Preprocessing...")
@@ -333,6 +340,8 @@ def run_autotune(
                 max_radius_km=float(p['propagate_max_radius']),
                 min_obs_threshold=int(p['propagate_min_obs']),
                 max_spread_factor=float(p['propagate_max_spread']),
+                env_dist_max=float(p.get('propagate_env_dist_max', args.propagate_env_dist_max)),
+                range_cap_km=float(p.get('propagate_range_cap', args.propagate_range_cap)),
             )
             _trial_pp = H3DataPreprocessor()
             _trial_inputs, _trial_targets = _trial_pp.prepare_training_data(
@@ -457,6 +466,20 @@ def run_autotune(
                     'val_list_ratio_5': val_m['list_ratio_5'],
                     'val_list_ratio_10': val_m['list_ratio_10'],
                     'val_list_ratio_25': val_m['list_ratio_25'],
+                    # GeoScore component metrics
+                    'val_map_sparse': val_m.get('map_sparse', 0.0),
+                    'val_map_dense': val_m.get('map_dense', 0.0),
+                    'val_map_density_ratio': val_m.get('map_density_ratio', 0.0),
+                    'val_pred_density_corr': val_m.get('pred_density_corr', 0.0),
+                    'val_watchlist_mean_ap': val_m.get('watchlist_mean_ap', 0.0),
+                    # Precision / recall detail
+                    'val_precision_5': val_m.get('precision_5', 0.0),
+                    'val_precision_10': val_m.get('precision_10', 0.0),
+                    'val_precision_25': val_m.get('precision_25', 0.0),
+                    'val_recall_5': val_m.get('recall_5', 0.0),
+                    'val_recall_10': val_m.get('recall_10', 0.0),
+                    'val_recall_25': val_m.get('recall_25', 0.0),
+                    'val_mean_list_len_10': val_m.get('mean_list_len_10', 0.0),
                 }
             )
             trial.set_user_attr('epoch_history', epoch_history)
