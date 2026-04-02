@@ -11,7 +11,7 @@ This trains a small model (scale 0.5) with sensible defaults. For a full trainin
 ```bash
 python train.py \
     --data_path outputs/combined.parquet \
-    --model_scale 1.0 \
+    --model_scale 0.75 \
     --num_epochs 100 \
     --batch_size 1024 \
     --lr 0.001
@@ -40,8 +40,8 @@ The training script handles the full pipeline automatically:
 
 | Flag | Default | Description |
 |---|---|---|
-| `--model_scale` | `0.5` | Continuous scaling factor (0.5 ≈ 1.8M, 1.0 ≈ 7M, 2.0 ≈ 36M params) |
-| `--coord_harmonics` | `4` | Harmonics for lat/lon encoding |
+| `--model_scale` | `0.75` | Continuous scaling factor (0.5 ≈ 1.8M, 0.75 ≈ 3.8M, 1.0 ≈ 7M, 2.0 ≈ 36M params) |
+| `--coord_harmonics` | `8` | Harmonics for lat/lon encoding |
 | `--week_harmonics` | `8` | Harmonics for week encoding |
 | `--habitat_head` | off | Enable habitat-species association head (env → species pathway with learned gate) |
 | `--habitat_weight` | `0.1` | Weight for auxiliary habitat-species loss (only used with `--habitat_head`) |
@@ -55,7 +55,7 @@ The training script handles the full pipeline automatically:
 | `--lr` | `0.001` | Initial learning rate |
 | `--weight_decay` | `0.001` | AdamW (Loshchilov & Hutter, 2019) weight decay |
 | `--species_weight` | `1.0` | Species loss multiplier |
-| `--env_weight` | `0.5` | Environmental loss multiplier |
+| `--env_weight` | `0.1` | Environmental loss multiplier |
 | `--species_loss` | `bce` | Loss function: `bce` (default), `asl` (asymmetric), `focal`, or `an` |
 | `--asl_gamma_pos` | `0.0` | ASL positive focusing parameter (0 = no down-weighting) |
 | `--asl_gamma_neg` | `2.0` | ASL negative focusing parameter (higher = more aggressive) |
@@ -64,7 +64,7 @@ The training script handles the full pipeline automatically:
 | `--focal_gamma` | `2.0` | Focal loss gamma |
 | `--pos_lambda` | `4.0` | Positive up-weighting λ for AN loss |
 | `--neg_samples` | `1024` | Negative species to sample per example for AN loss (0 = all) |
-| `--label_smoothing` | `0.0` | Smooth binary targets to prevent overconfidence (0 = off) |
+| `--label_smoothing` | `0.05` | Smooth binary targets to prevent overconfidence (0 = off) |
 | `--max_obs_per_species` | `0` | Cap observations per species (0 = no cap) |
 | `--min_obs_per_species` | `50` | Exclude species with fewer than N observations (0 = keep all) |
 | `--ocean_sample_rate` | `1.0` | Fraction of ocean cells (water > 90%) to keep (1.0 = keep all) |
@@ -377,7 +377,7 @@ python train.py \
 |---|---|---|
 | `--pos_lambda` | `4` | Balances positive/negative gradient; increase if recall too low |
 | `--neg_samples` | `1024` | 0 = use all negatives (exact but slow) |
-| `--label_smoothing` | `0.0` | Prevents overconfident predictions; set >0 to enable |
+| `--label_smoothing` | `0.05` | Prevents overconfident predictions; set 0 to disable |
 
 ### Observation Cap
 

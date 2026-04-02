@@ -9,9 +9,9 @@
 BirdNET Geomodel predicts which species are likely to occur at a given location and time of year. It uses a multi-task neural network trained on [GBIF](https://www.gbif.org/) occurrence data and environmental features from [Google Earth Engine](https://earthengine.google.com/), producing species occurrence probabilities that serve as a prior for filtering acoustic detection results from [BirdNET](https://birdnet.cornell.edu/).
 
 <p align="center">
-  <img src="demo_migrants.gif" alt="Animated range maps of 12 migratory species across 48 weeks" width="100%">
+  <img src="demo_migrants.gif" alt="Animated range maps of 9 migratory species across 48 weeks" width="100%">
 </p>
-Figure 1: Animated range maps of 12 migratory species across 48 weeks of the year. Each frame shows predicted occurrence probabilities for a single week, with darker colors indicating higher probabilities.
+Figure 1: Animated range maps of 9 migratory species across 48 weeks of the year. Each frame shows predicted occurrence probabilities for a single week, with darker colors indicating higher probabilities.
 
 ## What It Is — and What It Isn't
 
@@ -23,7 +23,7 @@ In short: the geomodel exists so that beginners don't have to guess which specie
 
 ### Why a model instead of a lookup table?
 
-An alternative approach would be to query eBird or iNaturalist observation databases directly, but that requires shipping hundreds of megabytes of occurrence data and building spatial indices on the client. The trained geomodel achieves comparable results in under 10 MB (≈ 3 MB at FP16) — small enough to bundle with any mobile or embedded application.
+An alternative approach would be to query eBird or iNaturalist observation databases directly, but that requires shipping hundreds of megabytes of occurrence data and building spatial indices on the client. The trained geomodel achieves comparable results in under 10 MB (≈ 7 MB at FP16) — small enough to bundle with any mobile or embedded application.
 
 Because the model learns continuous spatial and temporal patterns rather than memorizing discrete observations, it also **interpolates** into areas with sparse or no survey coverage and **smooths out geographic biases** in the observation record (e.g. heavily surveyed regions like the US vs. under-surveyed tropical forests). A raw lookup table can only tell you what has been reported; the model can make reasonable predictions where nobody has looked yet.
 

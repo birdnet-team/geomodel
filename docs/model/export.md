@@ -12,14 +12,14 @@ python convert.py --formats all                      # everything
 
 ## Supported Formats
 
-| Format | Flag | Size (medium) | Description |
+| Format | Flag | Size (scale 0.75, 12K species) | Description |
 |---|---|---|---|
-| ONNX FP32 | `onnx` | ~19 MB | Full-precision ONNX model |
-| ONNX FP16 | `onnx_fp16` | ~9 MB | Half-precision ONNX (default) |
-| TFLite FP32 | `tflite` | ~19 MB | TensorFlow Lite, full precision |
-| TFLite FP16 | `tflite_fp16` | ~10 MB | TensorFlow Lite, half precision |
-| TFLite INT8 | `tflite_int8` | ~5 MB | TensorFlow Lite, dynamic-range quantization |
-| TF SavedModel | `tf` | ~19 MB | TensorFlow SavedModel directory |
+| ONNX FP32 | `onnx` | ~15 MB | Full-precision ONNX model |
+| ONNX FP16 | `onnx_fp16` | ~7 MB | Half-precision ONNX (default) |
+| TFLite FP32 | `tflite` | ~14 MB | TensorFlow Lite, full precision |
+| TFLite FP16 | `tflite_fp16` | ~7 MB | TensorFlow Lite, half precision |
+| TFLite INT8 | `tflite_int8` | ~4 MB | TensorFlow Lite, dynamic-range quantization |
+| TF SavedModel | `tf` | ~14 MB | TensorFlow SavedModel directory |
 
 Use `--formats all` to export everything at once.
 
@@ -150,7 +150,7 @@ model = BirdNETGeoModel(
     n_species=cfg["n_species"],
     n_env_features=cfg["n_env_features"],
     model_scale=cfg["model_scale"],
-    coord_harmonics=cfg.get("coord_harmonics", 4),
+    coord_harmonics=cfg.get("coord_harmonics", 8),
     week_harmonics=cfg.get("week_harmonics", 8),
 )
 model.load_state_dict(checkpoint["model_state_dict"])

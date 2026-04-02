@@ -65,7 +65,7 @@ python utils/combine.py --geodata data/global_350km_ee.parquet \
     --gbif ./outputs/gbif_processed.csv.gz --output ./outputs/combined.parquet
 
 # 4. Train
-python train.py --data_path ./outputs/combined.parquet --model_scale 1.0 --num_epochs 100
+python train.py --data_path ./outputs/combined.parquet --model_scale 0.75 --num_epochs 100
 
 # 5. Predict
 python predict.py --lat 50.83 --lon 12.92 --week 22
@@ -81,7 +81,7 @@ A multi-task neural network that learns spatial-temporal patterns from coordinat
 - **Primary task:** Multi-label species classification (BCE default; ASL, focal, AN also available)
 - **Auxiliary task:** Environmental feature regression (training only, acts as regularizer)
 - **Habitat head** (optional, `--habitat_head`): predicted env features → species logits, combined with direct head via learned gate — makes environment→species relationships explicit
-- **Scalable:** ~1.8M (scale=0.5) to ~36M (scale=2.0) parameters with ~12K species (default scale=1.0 ≈ 7M)
+- **Scalable:** ~1.8M (scale=0.5) to ~36M (scale=2.0) parameters with ~12K species (default scale=0.75 ≈ 3.8M)
 - **Tiny footprint:** Under 10 MB (≈ 7 MB at FP16) — replaces hundreds of MB of raw eBird/iNat observation data while interpolating into survey gaps and smoothing geographic biases
 
 ## Visualization
