@@ -35,10 +35,10 @@ Usage:
 """
 
 import argparse
+import math
 import sys
 import warnings
 from pathlib import Path
-from typing import Dict, List, Tuple
 
 import numpy as np
 import torch
@@ -50,6 +50,7 @@ from model.model import create_model
 # ---------------------------------------------------------------------------
 # Export wrapper — flattens (lat, lon, week) interface into a single tensor
 # ---------------------------------------------------------------------------
+
 
 class ExportWrapper(nn.Module):
     """Thin wrapper that takes ``(batch, 3)`` and returns sigmoid probabilities.
@@ -65,13 +66,14 @@ class ExportWrapper(nn.Module):
         lat = x[:, 0]
         lon = x[:, 1]
         week = x[:, 2]
-        logits = self.model(lat, lon, week, return_env=False)['species_logits']
+        logits = self.model(lat, lon, week, return_env=False)["species_logits"]
         return torch.sigmoid(logits)
 
 
 # ---------------------------------------------------------------------------
 # Reference data for validation
 # ---------------------------------------------------------------------------
+
 
 def _make_reference_inputs(n: int = 200) -> np.ndarray:
     """Create a fixed set of reference inputs covering diverse locations/weeks.
@@ -86,8 +88,9 @@ def _make_reference_inputs(n: int = 200) -> np.ndarray:
     return np.stack([lats, lons, weeks], axis=1)
 
 
-def _pytorch_reference(wrapper: ExportWrapper, inputs: np.ndarray,
-                       device: torch.device) -> np.ndarray:
+def _pytorch_reference(
+    wrapper: ExportWrapper, inputs: np.ndarray, device: torch.device
+) -> np.ndarray:
     """Run the PyTorch wrapper and return probabilities as numpy."""
     wrapper.eval()
     with torch.no_grad():
@@ -99,30 +102,30 @@ def _pytorch_reference(wrapper: ExportWrapper, inputs: np.ndarray,
 # Validation helper
 # ---------------------------------------------------------------------------
 
-def _validate(reference: np.ndarray, exported: np.ndarray,
-              fmt: str, tol: float) -> bool:
+
+def _validate(
+    reference: np.ndarray, exported: np.ndarray, tol: float
+) -> tuple[bool, float]:
     """Compare exported output to PyTorch reference.
 
-    Returns True if max absolute diff is within tolerance.
+    Returns a ``(passed, max_diff)`` tuple where *passed* is ``True`` if the
+    max absolute difference is within *tol*.
     """
     diff = np.abs(reference - exported)
     max_diff = float(diff.max())
     mean_diff = float(diff.mean())
-    print(f"  Validation — max diff: {max_diff:.6f}  mean diff: {mean_diff:.6f}  ", end="")
-    if max_diff <= tol:
-        print(f"OK (tol={tol})")
-        return True
-    else:
-        print(f"FAIL (tol={tol})")
-        return False
+    print(
+        f"  Validation — max diff: {max_diff:.6f}  mean diff: {mean_diff:.6f}  ", end=""
+    )
+    return tol - max_diff
 
 
 # ---------------------------------------------------------------------------
 # Shared ONNX export helper
 # ---------------------------------------------------------------------------
 
-def _torch_onnx_export(wrapper: nn.Module, dummy: torch.Tensor,
-                       path: Path) -> None:
+
+def _torch_onnx_export(wrapper: nn.Module, dummy: torch.Tensor, path: Path) -> None:
     """Run ``torch.onnx.export`` with suppression of known benign warnings.
 
     Suppressed warnings:
@@ -137,17 +140,18 @@ def _torch_onnx_export(wrapper: nn.Module, dummy: torch.Tensor,
     """
     with warnings.catch_warnings():
         warnings.filterwarnings(
-            "ignore", message=r".*dynamic_axes.*dynamo.*",
-            category=UserWarning)
+            "ignore", message=r".*dynamic_axes.*dynamo.*", category=UserWarning
+        )
         warnings.filterwarnings(
-            "ignore", message=r".*LeafSpec.*",
-            category=FutureWarning)
+            "ignore", message=r".*LeafSpec.*", category=FutureWarning
+        )
         torch.onnx.export(
-            wrapper, dummy, str(path),
+            wrapper,
+            dummy,
+            str(path),
             input_names=["input"],
             output_names=["probabilities"],
-            dynamic_axes={"input": {0: "batch"},
-                          "probabilities": {0: "batch"}},
+            dynamic_axes={"input": {0: "batch"}, "probabilities": {0: "batch"}},
             opset_version=18,
         )
 
@@ -156,10 +160,17 @@ def _torch_onnx_export(wrapper: nn.Module, dummy: torch.Tensor,
 # ONNX export
 # ---------------------------------------------------------------------------
 
-def _export_onnx(wrapper: ExportWrapper, ref_inputs: np.ndarray,
-                 ref_outputs: np.ndarray, outdir: Path,
-                 fp16: bool, tol: float, device: torch.device,
-                 keep_io_fp32: bool = True) -> bool:
+
+def _export_onnx(
+    wrapper: ExportWrapper,
+    ref_inputs: np.ndarray,
+    ref_outputs: np.ndarray,
+    outdir: Path,
+    fp16: bool,
+    tol: float,
+    device: torch.device,
+    keep_io_fp32: bool = True,
+) -> tuple[bool, float]:
     """Export to ONNX format.
 
     Args:
@@ -180,9 +191,9 @@ def _export_onnx(wrapper: ExportWrapper, ref_inputs: np.ndarray,
     try:
         import onnx
         import onnxruntime as ort
-    except ImportError:
-        print("  ERROR: install onnx and onnxruntime — pip install onnx onnxruntime")
-        return False
+    except ImportError as e:
+        print(e)
+        return False, float("nan")
 
     tag = "onnx_fp16" if fp16 else "onnx"
     path = outdir / f"geomodel{'_fp16' if fp16 else ''}.onnx"
@@ -202,15 +213,17 @@ def _export_onnx(wrapper: ExportWrapper, ref_inputs: np.ndarray,
 
     if fp16:
         from onnxconverter_common import float16
+
         model_fp32 = onnx.load(str(path))
         # Suppress benign truncation warnings for very small weight
         # values (e.g. near-zero biases clamped to +/-1e-7 in FP16).
         with warnings.catch_warnings():
             warnings.filterwarnings(
-                "ignore", category=UserWarning,
-                module=r"onnxconverter_common\.float16")
+                "ignore", category=UserWarning, module=r"onnxconverter_common\.float16"
+            )
             model_fp16 = float16.convert_float_to_float16(
-                model_fp32, keep_io_types=keep_io_fp32)
+                model_fp32, keep_io_types=keep_io_fp32
+            )
         onnx.save(model_fp16, str(path))
         io_note = " (I/O kept at FP32)" if keep_io_fp32 else ""
         print(f"  Converted weights to FP16{io_note}")
@@ -231,30 +244,36 @@ def _export_onnx(wrapper: ExportWrapper, ref_inputs: np.ndarray,
         effective_tol = 0.08
     else:
         effective_tol = tol
-    ok = _validate(ref_outputs, exported, tag, effective_tol)
+    max_diff = _validate(ref_outputs, exported, effective_tol)
 
     total_bytes = path.stat().st_size
     size_mb = total_bytes / (1024 * 1024)
     print(f"  File size: {size_mb:.1f} MB")
-    return ok
+    return True, max_diff
 
 
 # ---------------------------------------------------------------------------
 # TensorFlow / TFLite export
 # ---------------------------------------------------------------------------
 
-def _export_tf_saved_model(wrapper: ExportWrapper, ref_inputs: np.ndarray,
-                           ref_outputs: np.ndarray, outdir: Path,
-                           tol: float, device: torch.device) -> bool:
+
+def _export_tf_saved_model(
+    wrapper: ExportWrapper,
+    ref_inputs: np.ndarray,
+    ref_outputs: np.ndarray,
+    outdir: Path,
+    tol: float,
+    device: torch.device,
+) -> tuple[bool, float]:
     """Export to TensorFlow SavedModel via ONNX → tf."""
     try:
         import onnx
         import onnxruntime  # noqa: F401 — needed by onnx2tf sometimes
         import tensorflow as tf
         import onnx2tf
-    except ImportError:
-        print("  ERROR: install onnx, onnx2tf, tensorflow — pip install onnx onnx2tf tensorflow")
-        return False
+    except ImportError as e:
+        print(e)
+        return False, float("nan")
 
     onnx_path = outdir / "geomodel_tmp.onnx"
     sm_path = outdir / "saved_model"
@@ -274,20 +293,26 @@ def _export_tf_saved_model(wrapper: ExportWrapper, ref_inputs: np.ndarray,
     onnx_path.unlink(missing_ok=True)  # clean up intermediate
 
     # Validate on CPU to avoid CUDA handle issues with the TF runtime
-    with tf.device('/CPU:0'):
+    with tf.device("/CPU:0"):
         loaded = tf.saved_model.load(str(sm_path))
         infer = loaded.signatures["serving_default"]
         out = infer(tf.constant(ref_inputs))
         # output key varies — take first tensor
         exported = list(out.values())[0].numpy()
-    ok = _validate(ref_outputs, exported, "tf", tol)
+    max_diff = _validate(ref_outputs, exported, tol)
 
-    return ok
+    return True, max_diff
 
 
-def _export_tflite(wrapper: ExportWrapper, ref_inputs: np.ndarray,
-                   ref_outputs: np.ndarray, outdir: Path,
-                   mode: str, tol: float, device: torch.device) -> bool:
+def _export_tflite(
+    wrapper: ExportWrapper,
+    ref_inputs: np.ndarray,
+    ref_outputs: np.ndarray,
+    outdir: Path,
+    mode: str,
+    tol: float,
+    device: torch.device,
+) -> tuple[bool, float]:
     """Export to TFLite.
 
     Args:
@@ -298,9 +323,9 @@ def _export_tflite(wrapper: ExportWrapper, ref_inputs: np.ndarray,
         import onnxruntime  # noqa: F401
         import tensorflow as tf
         import onnx2tf
-    except ImportError:
-        print(f"  ERROR: install onnx, onnx2tf, tensorflow — pip install onnx onnx2tf tensorflow")
-        return False
+    except ImportError as e:
+        print(e)
+        return False, float("nan")
 
     tag = f"tflite_{mode}" if mode != "fp32" else "tflite"
     suffix = {"fp32": "", "fp16": "_fp16", "int8": "_int8"}[mode]
@@ -346,6 +371,7 @@ def _export_tflite(wrapper: ExportWrapper, ref_inputs: np.ndarray,
 
     # Clean up intermediate SavedModel
     import shutil
+
     shutil.rmtree(sm_path, ignore_errors=True)
 
     # Validate with TFLite interpreter
@@ -359,18 +385,19 @@ def _export_tflite(wrapper: ExportWrapper, ref_inputs: np.ndarray,
     for i in range(len(ref_inputs)):
         interp.resize_tensor_input(input_details[0]["index"], [1, 3])
         interp.allocate_tensors()
-        interp.set_tensor(input_details[0]["index"],
-                          ref_inputs[i:i+1].astype(np.float32))
+        interp.set_tensor(
+            input_details[0]["index"], ref_inputs[i : i + 1].astype(np.float32)
+        )
         interp.invoke()
         exported_list.append(interp.get_tensor(output_details[0]["index"]))
     exported = np.concatenate(exported_list, axis=0)
 
     extra_tol = {"fp32": 1, "fp16": 800, "int8": 2000}[mode]
-    ok = _validate(ref_outputs, exported, tag, tol * extra_tol)
+    max_diff = _validate(ref_outputs, exported, tol * extra_tol)
 
     size_mb = path.stat().st_size / (1024 * 1024)
     print(f"  File size: {size_mb:.1f} MB")
-    return ok
+    return True, max_diff
 
 
 # ---------------------------------------------------------------------------
@@ -383,11 +410,11 @@ ALL_FORMATS = ["onnx", "onnx_fp16", "tflite", "tflite_fp16", "tflite_int8", "tf"
 def convert(
     checkpoint_path: str,
     outdir: str = "exports",
-    formats: List[str] | None = None,
+    formats: list[str] | None = None,
     tol: float = 1e-4,
     device: str = "auto",
     keep_io_fp32: bool = True,
-) -> Dict[str, bool]:
+) -> dict[str, bool]:
     """Convert a checkpoint to the requested formats.
 
     Args:
@@ -408,8 +435,11 @@ def convert(
     if "all" in formats:
         formats = list(ALL_FORMATS)
 
-    dev = (torch.device("cuda" if torch.cuda.is_available() else "cpu")
-           if device == "auto" else torch.device(device))
+    dev = (
+        torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        if device == "auto"
+        else torch.device(device)
+    )
 
     # Load checkpoint
     print(f"Loading checkpoint: {checkpoint_path}")
@@ -429,9 +459,11 @@ def convert(
     model.eval()
 
     n_params = sum(p.numel() for p in model.parameters())
-    print(f"Model: scale={model_config.get('model_scale', 1.0)}  |  "
-          f"{model_config['n_species']:,} species  |  "
-          f"{n_params:,} parameters")
+    print(
+        f"Model: scale={model_config.get('model_scale', 1.0)}  |  "
+        f"{model_config['n_species']:,} species  |  "
+        f"{n_params:,} parameters"
+    )
 
     wrapper = ExportWrapper(model).to(dev)
     wrapper.eval()
@@ -442,8 +474,10 @@ def convert(
     # Generate reference data on CPU for validation
     ref_inputs = _make_reference_inputs()
     ref_outputs = _pytorch_reference(wrapper, ref_inputs, dev)
-    print(f"Reference outputs: shape {ref_outputs.shape}, "
-          f"range [{ref_outputs.min():.4f}, {ref_outputs.max():.4f}]")
+    print(
+        f"Reference outputs: shape {ref_outputs.shape}, "
+        f"range [{ref_outputs.min():.4f}, {ref_outputs.max():.4f}]"
+    )
 
     # Copy labels.txt alongside exports
     ckpt_dir = Path(checkpoint_path).parent
@@ -453,6 +487,7 @@ def convert(
         labels_src = ckpt_dir / "labels.txt"
     if labels_src.exists():
         import shutil
+
         shutil.copy2(labels_src, outpath / "labels.txt")
         print(f"Copied {labels_src.name} → {outpath / 'labels.txt'}")
 
@@ -460,48 +495,67 @@ def convert(
     license_src = Path(__file__).resolve().parent / "MODEL_LICENSE.txt"
     if license_src.exists():
         import shutil
+
         shutil.copy2(license_src, outpath / "MODEL_LICENSE.txt")
         print(f"Copied MODEL_LICENSE.txt → {outpath / 'MODEL_LICENSE.txt'}")
 
     # Run conversions
-    results: Dict[str, bool] = {}
+    results: dict[str, bool] = {}
     dispatch = {
-        "onnx":        lambda: _export_onnx(wrapper, ref_inputs, ref_outputs,
-                                            outpath, fp16=False, tol=tol, device=dev),
-        "onnx_fp16":   lambda: _export_onnx(wrapper, ref_inputs, ref_outputs,
-                                            outpath, fp16=True, tol=tol, device=dev,
-                                            keep_io_fp32=keep_io_fp32),
-        "tflite":      lambda: _export_tflite(wrapper, ref_inputs, ref_outputs,
-                                              outpath, mode="fp32", tol=tol, device=dev),
-        "tflite_fp16": lambda: _export_tflite(wrapper, ref_inputs, ref_outputs,
-                                              outpath, mode="fp16", tol=tol, device=dev),
-        "tflite_int8": lambda: _export_tflite(wrapper, ref_inputs, ref_outputs,
-                                              outpath, mode="int8", tol=tol, device=dev),
-        "tf":          lambda: _export_tf_saved_model(wrapper, ref_inputs, ref_outputs,
-                                                      outpath, tol=tol, device=dev),
+        "onnx": lambda: _export_onnx(
+            wrapper, ref_inputs, ref_outputs, outpath, fp16=False, tol=tol, device=dev
+        ),
+        "onnx_fp16": lambda: _export_onnx(
+            wrapper,
+            ref_inputs,
+            ref_outputs,
+            outpath,
+            fp16=True,
+            tol=tol,
+            device=dev,
+            keep_io_fp32=keep_io_fp32,
+        ),
+        "tflite": lambda: _export_tflite(
+            wrapper, ref_inputs, ref_outputs, outpath, mode="fp32", tol=tol, device=dev
+        ),
+        "tflite_fp16": lambda: _export_tflite(
+            wrapper, ref_inputs, ref_outputs, outpath, mode="fp16", tol=tol, device=dev
+        ),
+        "tflite_int8": lambda: _export_tflite(
+            wrapper, ref_inputs, ref_outputs, outpath, mode="int8", tol=tol, device=dev
+        ),
+        "tf": lambda: _export_tf_saved_model(
+            wrapper, ref_inputs, ref_outputs, outpath, tol=tol, device=dev
+        ),
     }
 
     for fmt in formats:
         if fmt not in dispatch:
             print(f"\nUnknown format: {fmt} — skipping")
-            results[fmt] = False
+            results[fmt] = False, math.nan
             continue
         try:
             results[fmt] = dispatch[fmt]()
         except Exception as e:
             print(f"  ERROR during {fmt} export: {e}")
-            results[fmt] = False
+            results[fmt] = False, math.nan
 
     # Summary
     print("\n" + "=" * 60)
     print("  Conversion Summary")
     print("=" * 60)
-    for fmt, ok in results.items():
-        status = "PASS" if ok else "FAIL"
-        print(f"  {fmt:15s}  {status}")
+    for fmt, (ok, tol_diff) in results.items():
+        status = "CONVERTED" if ok else "FAIL"
+        if ok:
+            diff_str = f"  tol_diff={tol_diff:.6f}" if not math.isnan(tol_diff) else ""
+            tol_str = "PASS" if tol_diff > 0 else "FAIL"
+        else:
+            diff_str = ""
+            tol_str = "FAIL"
+        print(f"  {fmt:15s}  {status:10s}  {tol_str}{diff_str}")
     print("=" * 60)
 
-    n_fail = sum(1 for ok in results.values() if not ok)
+    n_fail = sum(1 for ok, tol_diff in results.values() if not ok or tol_diff < 0)
     if n_fail:
         print(f"\n{n_fail} conversion(s) failed.")
     else:
@@ -517,21 +571,44 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=f"Available formats: {', '.join(ALL_FORMATS)}, all",
     )
-    parser.add_argument("--checkpoint", type=str,
-                        default="checkpoints/checkpoint_best.pt",
-                        help="Path to model checkpoint (default: checkpoints/checkpoint_best.pt)")
-    parser.add_argument("--outdir", type=str, default="exports",
-                        help="Output directory (default: exports)")
-    parser.add_argument("--formats", nargs="+", default=["onnx_fp16"],
-                        help="Formats to export (default: onnx_fp16). Use 'all' for everything.")
-    parser.add_argument("--tol", type=float, default=1e-4,
-                        help="Base tolerance for numerical validation (default: 1e-4)")
-    parser.add_argument("--device", type=str, default="auto",
-                        choices=["auto", "cuda", "cpu"],
-                        help="Device for PyTorch model (default: auto)")
-    parser.add_argument("--fp16_io", action="store_true",
-                        help="Convert model I/O to FP16 as well (default: keep "
-                             "inputs/outputs at FP32 for better precision)")
+    parser.add_argument(
+        "--checkpoint",
+        type=str,
+        default="checkpoints/checkpoint_best.pt",
+        help="Path to model checkpoint (default: checkpoints/checkpoint_best.pt)",
+    )
+    parser.add_argument(
+        "--outdir",
+        type=str,
+        default="exports",
+        help="Output directory (default: exports)",
+    )
+    parser.add_argument(
+        "--formats",
+        nargs="+",
+        choices=ALL_FORMATS + ["all"],
+        default=["onnx_fp16"],
+        help="Formats to export (default: onnx_fp16). Use 'all' for everything.",
+    )
+    parser.add_argument(
+        "--tol",
+        type=float,
+        default=1e-4,
+        help="Base tolerance for numerical validation (default: 1e-4)",
+    )
+    parser.add_argument(
+        "--device",
+        type=str,
+        default="auto",
+        choices=["auto", "cuda", "cpu"],
+        help="Device for PyTorch model (default: auto)",
+    )
+    parser.add_argument(
+        "--fp16_io",
+        action="store_true",
+        help="Convert model I/O to FP16 as well (default: keep "
+        "inputs/outputs at FP32 for better precision)",
+    )
     args = parser.parse_args()
 
     results = convert(
@@ -544,7 +621,7 @@ def main():
     )
 
     # Exit with error code if any conversion failed
-    sys.exit(0 if all(results.values()) else 1)
+    sys.exit(0 if all(ok for ok, _ in results.values()) else 1)
 
 
 if __name__ == "__main__":

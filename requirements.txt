@@ -28,8 +28,13 @@ onnx
 onnxruntime
 onnxconverter-common
 onnxscript
+onnx-graphsurgeon
 onnx2tf
 tensorflow
+tf-keras
+ai-edge-litert
+psutil
+sng4onnx
 
 # Hyperparameter tuning (optional — only for --autotune)
 optuna

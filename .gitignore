@@ -1,3 +1,6 @@
+# Exclude IDE files
+.vscode/
+
 # Exclude species data
 species-data/
 
