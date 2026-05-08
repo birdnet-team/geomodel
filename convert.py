@@ -267,7 +267,7 @@ def _export_tf_saved_model(
 ) -> tuple[bool, float]:
     """Export to TensorFlow SavedModel via ONNX → tf."""
     try:
-        import onnx
+        import onnx  # noqa: F401
         import onnxruntime  # noqa: F401 — needed by onnx2tf sometimes
         import tensorflow as tf
         import onnx2tf
@@ -319,7 +319,7 @@ def _export_tflite(
         mode: ``'fp32'``, ``'fp16'``, or ``'int8'``.
     """
     try:
-        import onnx
+        import onnx  # noqa: F401
         import onnxruntime  # noqa: F401
         import tensorflow as tf
         import onnx2tf
