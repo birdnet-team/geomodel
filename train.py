@@ -1127,6 +1127,21 @@ def main():
         # so pseudo-labels don't skew regional abundance percentiles.
         freq_weights = None
         if args.label_freq_weight:
+            # The "weight" is actually a soft BCE target: a present species
+            # gets target = w[s] instead of 1.0, training the model to rank
+            # by regional observation frequency.  The floor must stay above
+            # the label-smoothing epsilon, otherwise a present-but-rare
+            # species (target = min_weight) becomes indistinguishable from
+            # a smoothed absent species (target = label_smoothing).
+            if args.label_freq_weight_min <= args.label_smoothing:
+                new_min = float(args.label_smoothing) * 2.0
+                print(
+                    f"   WARNING: --label_freq_weight_min "
+                    f"({args.label_freq_weight_min}) ≤ --label_smoothing "
+                    f"({args.label_smoothing}); raising floor to {new_min} "
+                    f"to keep rare positives separable from smoothed negatives."
+                )
+                args.label_freq_weight_min = new_min
             _freq_sl = species_lists_original if species_lists_original is not None else species_lists
             freq_weights = preprocessor.compute_species_freq_weights(
                 _freq_sl, min_weight=args.label_freq_weight_min,

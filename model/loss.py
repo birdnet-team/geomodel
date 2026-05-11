@@ -190,11 +190,19 @@ class AssumeNegativeLoss(nn.Module):
         logits = logits.float()
         targets = targets.float()
 
-        # Masks are computed from the original binary targets
-        pos_mask = targets > 0.5   # (B, S)
+        # Masks identify positives vs assumed negatives.  Targets may be
+        # soft (∈ (0, 1]) when frequency-based label weighting is enabled,
+        # so any strictly positive value counts as a positive.  Negatives
+        # are exactly zero before label smoothing is applied.
+        pos_mask = targets > 0.0   # (B, S)
         neg_mask = ~pos_mask       # (B, S)
 
-        # Apply label smoothing: 1 → 1-ε, 0 → ε
+        # Apply label smoothing: positives → max(t, 1-ε)? No — we want
+        # smoothing to pull confident positives down (1 → 1-ε) and
+        # negatives up (0 → ε) without disturbing soft positive targets
+        # already in the interior of (0, 1).  ``clamp`` achieves exactly
+        # that: values ≤ ε become ε, values ≥ 1-ε become 1-ε, others
+        # are unchanged.
         if self.label_smoothing > 0:
             targets = targets.clamp(self.label_smoothing, 1.0 - self.label_smoothing)
 
@@ -218,8 +226,8 @@ class AssumeNegativeLoss(nn.Module):
             rand_indices = torch.randint(0, n_species, (batch_size, M),
                                          device=logits.device)  # (B, M)
             sampled_bce = torch.gather(bce, 1, rand_indices)           # (B, M)
-            sampled_targets = torch.gather(targets, 1, rand_indices)   # (B, M)
-            sampled_neg_mask = sampled_targets < 0.5
+            sampled_pos_mask = torch.gather(pos_mask, 1, rand_indices)  # (B, M)
+            sampled_neg_mask = ~sampled_pos_mask
             neg_bce = sampled_bce * sampled_neg_mask.float()
             sampled_neg_sum = neg_bce.sum(dim=1)                       # (B,)
             # Correction factor: scale sampled negatives to full population

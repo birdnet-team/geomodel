@@ -921,15 +921,23 @@ class H3DataPreprocessor:
         pct_lo: float = 10.0,
         pct_hi: float = 90.0,
     ) -> np.ndarray:
-        """Compute per-species label weights via region-normalized frequency.
+        """Compute per-species **soft target labels** via region-normalized frequency.
+
+        Despite the legacy name (``freq_weights``), the returned values are
+        **not** loss weights — they are used to *replace* the binary positive
+        target ``1.0`` in `BirdSpeciesDataset` so that BCE trains the model
+        to predict an estimate of *how often / how likely* a species is
+        observed at a location, rather than mere presence vs. absence.  This
+        turns the multi-label classifier into a graded-probability ranker
+        whose output approximates regional detection frequency.
 
         Citizen-science observation density varies enormously across regions.
         The US alone can contribute an order of magnitude more records than
         the Neotropics, so a naive global frequency count would assign high
-        weights to common US species while suppressing species-rich tropical
-        communities.  Region-normalized weighting solves this by computing
+        targets to common US species while suppressing species-rich tropical
+        communities.  Region-normalized soft labels solve this by computing
         frequency **percentile ranks within geographic bins** and using the
-        **maximum regional percentile** as each species' weight basis.
+        **maximum regional percentile** as each species' target basis.
 
         Algorithm:
 
@@ -938,23 +946,27 @@ class H3DataPreprocessor:
         3. Within each bin, compute the percentile rank of every species
            (among species present in that bin).
         4. For each species, take the **max** percentile rank across bins.
-        5. Map that max-regional-percentile to a weight via linear
+        5. Map that max-regional-percentile to a soft target via linear
            interpolation controlled by *pct_lo* / *pct_hi*.
 
-        This makes weights independent of absolute observation density:
-        a species at the 90th percentile in Colombia gets the same weight
+        This makes targets independent of absolute observation density:
+        a species at the 90th percentile in Colombia gets the same target
         as one at the 90th percentile in the US.
 
         Args:
             species_lists: Per-sample species occurrence lists.
             lats: Per-sample latitudes.
             lons: Per-sample longitudes.
-            min_weight: Floor weight for rare species.
+            min_weight: Floor target value for rare species.  Should be
+                strictly greater than the BCE ``label_smoothing`` epsilon
+                so that present-but-rare species remain distinguishable
+                from smoothed assumed-negatives.
             pct_lo: Lower percentile threshold.  Default 10.
             pct_hi: Upper percentile threshold.  Default 90.
 
         Returns:
-            Array of shape ``(n_species,)`` stored as
+            Array of shape ``(n_species,)`` of soft target values in
+            ``[min_weight, 1.0]``, also stored as
             ``self.species_freq_weights``.
         """
         from collections import Counter, defaultdict

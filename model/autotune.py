@@ -323,19 +323,6 @@ def run_autotune(
         jitter_std = _jitter_std if use_jitter else 0.0
 
         use_freq_wt = bool(p.get('label_freq_weight', args.label_freq_weight))
-        if use_freq_wt and _tune_freq_shape and _species_lists_ref is not None:
-            _trial_freq_weights = preprocessor.compute_species_freq_weights(
-                _species_lists_ref,
-                min_weight=float(p.get('label_freq_weight_min', args.label_freq_weight_min)),
-                pct_lo=float(p.get('label_freq_weight_pct_lo', args.label_freq_weight_pct_lo)),
-                pct_hi=float(p.get('label_freq_weight_pct_hi', args.label_freq_weight_pct_hi)),
-                lats=_lats_ref,
-                lons=_lons_ref,
-            )
-        elif use_freq_wt:
-            _trial_freq_weights = _freq_weights
-        else:
-            _trial_freq_weights = None
 
         # -- Per-trial data when tuning propagation params ----------------
         _t_train_in = train_in
@@ -344,6 +331,15 @@ def run_autotune(
         _t_val_tgt = val_tgt
         _t_n_species = n_species
         _t_n_env = n_env
+        # Preprocessor whose vocabulary matches the trial's sparse indices.
+        # When propagation is tuned, the per-trial preprocessor has a different
+        # vocabulary than the outer one, so freq weights must be computed
+        # against it (otherwise the weight tensor is sized for the wrong vocab
+        # and collation indexes out of bounds).
+        _trial_pp_for_weights = preprocessor
+        _trial_sl_for_weights = _species_lists_ref
+        _trial_lats_for_weights = _lats_ref
+        _trial_lons_for_weights = _lons_ref
 
         if _tune_propagation and _raw_species_lists is not None:
             import copy as _copy
@@ -375,7 +371,45 @@ def run_autotune(
                 random_state=42,
                 split_by_location=True,
             )
-            del _trial_sl, _trial_inputs, _trial_targets, _trial_pp
+            # Use the trial preprocessor (and its propagated species lists +
+            # raw coordinates) when computing per-trial frequency weights so
+            # the resulting tensor matches the trial vocabulary size.
+            _trial_pp_for_weights = _trial_pp
+            _trial_sl_for_weights = _trial_sl
+            _trial_lats_for_weights = _raw_lats
+            _trial_lons_for_weights = _raw_lons
+            del _trial_inputs, _trial_targets
+            gc.collect()
+
+        if use_freq_wt and _tune_freq_shape and _trial_sl_for_weights is not None:
+            _trial_freq_weights = _trial_pp_for_weights.compute_species_freq_weights(
+                _trial_sl_for_weights,
+                min_weight=float(p.get('label_freq_weight_min', args.label_freq_weight_min)),
+                pct_lo=float(p.get('label_freq_weight_pct_lo', args.label_freq_weight_pct_lo)),
+                pct_hi=float(p.get('label_freq_weight_pct_hi', args.label_freq_weight_pct_hi)),
+                lats=_trial_lats_for_weights,
+                lons=_trial_lons_for_weights,
+            )
+        elif use_freq_wt and _tune_propagation and _trial_sl_for_weights is not None:
+            # Propagation changed vocab — recompute weights with default shape
+            # against the trial preprocessor.
+            _trial_freq_weights = _trial_pp_for_weights.compute_species_freq_weights(
+                _trial_sl_for_weights,
+                min_weight=args.label_freq_weight_min,
+                pct_lo=args.label_freq_weight_pct_lo,
+                pct_hi=args.label_freq_weight_pct_hi,
+                lats=_trial_lats_for_weights,
+                lons=_trial_lons_for_weights,
+            )
+        elif use_freq_wt:
+            _trial_freq_weights = _freq_weights
+        else:
+            _trial_freq_weights = None
+
+        if _tune_propagation and _raw_species_lists is not None:
+            del _trial_sl, _trial_pp
+            _trial_pp_for_weights = None
+            _trial_sl_for_weights = None
             gc.collect()
 
         t_loader, v_loader = create_dataloaders(
