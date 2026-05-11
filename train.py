@@ -894,15 +894,22 @@ def main():
                         help='Jitter training coordinates within H3 cells each epoch '
                              '(Gaussian noise scaled to cell size, augments spatial inputs)')
     parser.add_argument('--label_freq_weight', action='store_true',
-                        help='Weight positive labels by species frequency '
-                             '(common=1.0, rare=min_weight, linear '
-                             'interpolation between lo/hi percentile)')
-    parser.add_argument('--label_freq_weight_min', type=float, default=0.01,
-                        help='Minimum label weight for rare species (default: 0.01)')
-    parser.add_argument('--label_freq_weight_pct_lo', type=float, default=10.0,
-                        help='Lower percentile: species at or below get min_weight (default: 10)')
-    parser.add_argument('--label_freq_weight_pct_hi', type=float, default=95.0,
-                        help='Upper percentile: species at or above get weight 1.0 (default: 95)')
+                        help='Replace positive labels with per-region '
+                             'soft target frequencies (turns BCE into a '
+                             'graded-probability ranker; common species in '
+                             "the sample's region get target 1.0, rare "
+                             'ones get min_weight, linear interpolation '
+                             'between lo/hi percentile)')
+    parser.add_argument('--label_freq_weight_min', type=float, default=0.1,
+                        help='Floor soft target for rare species '
+                             '(default: 0.1; auto-raised above '
+                             '--label_smoothing if set lower)')
+    parser.add_argument('--label_freq_weight_pct_lo', type=float, default=20.0,
+                        help='Lower percentile within a region: species at '
+                             'or below get min_weight (default: 20)')
+    parser.add_argument('--label_freq_weight_pct_hi', type=float, default=85.0,
+                        help='Upper percentile within a region: species at '
+                             'or above get target 1.0 (default: 85)')
 
     # Label propagation (env neighbor)
     parser.add_argument('--propagate_labels', action='store_true',
@@ -1213,6 +1220,8 @@ def main():
         n_species=n_species,
         jitter_std=jitter_std,
         species_freq_weights=freq_weights,
+        species_region_weights=getattr(
+            preprocessor, 'species_region_weights', None),
     )
 
     # Create holdout DataLoader if regions were masked

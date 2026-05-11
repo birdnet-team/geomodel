@@ -70,11 +70,11 @@ def _suggest_param(trial, name: str, args):
     if name == 'label_freq_weight':
         return trial.suggest_categorical('label_freq_weight', [True, False])
     if name == 'label_freq_weight_min':
-        return trial.suggest_float('label_freq_weight_min', 0.01, 0.5, log=True)
+        return trial.suggest_float('label_freq_weight_min', 0.05, 0.3, log=True)
     if name == 'label_freq_weight_pct_lo':
-        return trial.suggest_float('label_freq_weight_pct_lo', 1.0, 25.0)
+        return trial.suggest_float('label_freq_weight_pct_lo', 5.0, 35.0)
     if name == 'label_freq_weight_pct_hi':
-        return trial.suggest_float('label_freq_weight_pct_hi', 75.0, 99.0)
+        return trial.suggest_float('label_freq_weight_pct_hi', 70.0, 95.0)
     if name == 'propagate_k':
         lo, hi = (ov[0], ov[1]) if ov else (1, 20)
         return trial.suggest_int('propagate_k', lo, hi)
@@ -151,6 +151,7 @@ def run_autotune(
         val_tgt = cached['val_tgt']
         preprocessor = cached['preprocessor']
         _freq_weights = cached['freq_weights']
+        _region_weights = cached.get('region_weights')
         _jitter_std = cached['jitter_std']
         n_species = cached['n_species']
         n_env = cached['n_env']
@@ -242,6 +243,7 @@ def run_autotune(
             lats=inputs['lat'],
             lons=inputs['lon'],
         )
+        _region_weights = getattr(preprocessor, 'species_region_weights', None)
         _species_lists_ref = _freq_sl if _tune_freq_shape else None
         _lats_ref = inputs['lat'] if _tune_freq_shape else None
         _lons_ref = inputs['lon'] if _tune_freq_shape else None
@@ -279,6 +281,7 @@ def run_autotune(
                 'val_tgt': val_tgt,
                 'preprocessor': preprocessor,
                 'freq_weights': _freq_weights,
+                'region_weights': _region_weights,
                 'jitter_std': _jitter_std,
                 'n_species': n_species,
                 'n_env': n_env,
@@ -390,6 +393,8 @@ def run_autotune(
                 lats=_trial_lats_for_weights,
                 lons=_trial_lons_for_weights,
             )
+            _trial_region_weights = getattr(
+                _trial_pp_for_weights, 'species_region_weights', None)
         elif use_freq_wt and _tune_propagation and _trial_sl_for_weights is not None:
             # Propagation changed vocab — recompute weights with default shape
             # against the trial preprocessor.
@@ -401,10 +406,14 @@ def run_autotune(
                 lats=_trial_lats_for_weights,
                 lons=_trial_lons_for_weights,
             )
+            _trial_region_weights = getattr(
+                _trial_pp_for_weights, 'species_region_weights', None)
         elif use_freq_wt:
             _trial_freq_weights = _freq_weights
+            _trial_region_weights = _region_weights
         else:
             _trial_freq_weights = None
+            _trial_region_weights = None
 
         if _tune_propagation and _raw_species_lists is not None:
             del _trial_sl, _trial_pp
@@ -423,6 +432,7 @@ def run_autotune(
             n_species=_t_n_species,
             jitter_std=jitter_std,
             species_freq_weights=_trial_freq_weights,
+            species_region_weights=_trial_region_weights,
         )
 
         model = create_model(

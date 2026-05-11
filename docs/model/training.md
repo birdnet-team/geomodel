@@ -71,10 +71,10 @@ The training script handles the full pipeline automatically:
 | `--no_yearly` | off | Exclude week-0 (yearly) samples from training |
 | `--no_cache` | off | Disable data preprocessing cache (force reprocessing) |
 | `--jitter` | off | Jitter training coordinates within H3 cells each epoch |
-| `--label_freq_weight` | off | Weight positive labels by region-normalized species frequency |
-| `--label_freq_weight_min` | `0.01` | Minimum label weight for rare species |
-| `--label_freq_weight_pct_lo` | `10` | Lower percentile threshold (species at or below get min weight) |
-| `--label_freq_weight_pct_hi` | `95` | Upper percentile threshold (species at or above get weight 1.0) |
+| `--label_freq_weight` | off | Replace positive labels with per-region soft target frequencies (graded-probability ranking) |
+| `--label_freq_weight_min` | `0.1` | Floor soft target for rare species (auto-raised above `--label_smoothing`) |
+| `--label_freq_weight_pct_lo` | `20` | Lower percentile within a region: species at or below get min target |
+| `--label_freq_weight_pct_hi` | `85` | Upper percentile within a region: species at or above get target 1.0 |
 | `--propagate_labels` | off | Propagate species labels from observed to sparse cells via env similarity |
 | `--propagate_k` | `10` | Number of nearest env-space neighbors for propagation |
 | `--propagate_max_radius` | `1000` | Geographic radius cap in km for propagation |
@@ -395,56 +395,66 @@ entirely.  This removes extremely rare species that the model cannot
 meaningfully learn from small sample counts and reduces the output dimension.
 Set to 0 to keep all species regardless of observation count.
 
-### Label Frequency Weighting
+### Label Frequency Weighting (Soft Target Frequencies)
 
 Our training data contains only hard presence/absence labels (1s and 0s) — a
 species was either observed at a location/week or it was not.  However, for
 producing useful ranked species lists the model should ideally score common
-species higher than rare ones.  Label frequency weighting addresses this by
-treating **geographic range as a proxy for local abundance**: a species observed
-across many cells is likely more common at any given location than one recorded
-in only a handful of cells.
+species higher than rare ones.  `--label_freq_weight` addresses this by
+**replacing the positive label `1.0` with a soft target in `(0, 1]`** that
+approximates *how often the species is observed at locations like this one*.
 
-This is not ecologically exact — range and local abundance are different
-quantities — but it provides a practical approximation that yields
+Despite the legacy CLI name, this is **not** a per-species loss weight — it
+is a **soft BCE target**.  BCE with a soft target $t$ minimizes at
+$\sigma(\text{logit}) = t$, so the model learns to predict regional
+observation frequency rather than just presence/absence.  Validation always
+uses binary labels for unbiased evaluation.
+
+The approximation "observation frequency $\approx$ local abundance" is not
+ecologically exact — detection probability and population density are
+distinct quantities — but it provides a practical proxy that yields
 well-ordered predictions without requiring actual abundance counts.
 
 #### The observation bias problem
 
 Citizen-science observation density varies enormously across regions.  The
 US alone can contribute 10× more records than the Neotropics, so a naive
-**global** frequency count would assign high weights to common North American
+**global** frequency count would assign high targets to common North American
 species while suppressing species-rich tropical communities.  The result is
 inflated prediction lists in heavily surveyed areas (e.g. 100 species at
-\>70% probability for a location in New York) and deflated lists in
+>70% probability for a location in New York) and deflated lists in
 under-surveyed but species-rich areas (e.g. only 18 species above 40% for
 a location in Colombia).
 
-#### Region-normalized weighting
+#### Per-region, per-species soft targets
 
-To eliminate this bias, we compute frequency weights via **regional percentile
-normalization**.  The algorithm:
+To eliminate this bias — *and* to ensure a clear common-vs-rare fall-off at
+every location — we compute soft targets **per (region, species) pair** via
+regional percentile normalization.  The algorithm:
 
-1. **Partition** the globe into geographic bins (30° latitude × 60° longitude,
-   yielding up to 36 bins covering all land masses).
+1. **Partition** the globe into geographic bins (30° latitude × 60°
+   longitude).
 2. **Count** per-species occurrences within each bin independently.
-3. **Rank** each species within its bin by percentile (fraction of species in
-   that bin with fewer observations).
-4. **Aggregate** across bins: each species keeps its **maximum** regional
-   percentile rank.  Using the max ensures that a species common in *any*
-   region gets an appropriately high weight — even if it is absent or rare
-   in most other regions.
-5. **Map** the max-regional-percentile to a label weight via linear
+3. **Rank** each species within its bin by percentile (fraction of species
+   in that bin with fewer observations).
+4. **Map** each (region, species) percentile to a soft target via linear
    interpolation controlled by `--label_freq_weight_pct_lo` and
    `--label_freq_weight_pct_hi`.
+5. **Fall back** to the species' global-max-percentile target for (region,
+   species) cells where the species was not directly observed in that
+   region (e.g. when label propagation introduced pseudo-labels).  This
+   preserves the propagation signal without polluting unrelated regions.
 
-This makes weights independent of absolute observation density: a species at
-the 90th percentile in Colombia gets the same weight as one at the 90th
-percentile in the US — regardless of raw count differences.
+At sample time, each present species' label is set to
+`region_target[sample_region, species]`.  This means the same species can
+have different soft targets at different locations: a Common Loon labeled
+present in northern Minnesota gets a high target there, while the same
+species labeled present at a sparse southern location gets a much lower
+target — producing a clean ranked list at every location.
 
 #### Linear mapping
 
-The position between `pct_lo` (default 1) and `pct_hi` (default 99) is
+The position between `pct_lo` (default 20) and `pct_hi` (default 85) is
 linearly interpolated:
 
 $$
@@ -452,42 +462,54 @@ t = \frac{p - p_{\text{lo}}}{p_{\text{hi}} - p_{\text{lo}}}, \qquad
 w = w_{\text{min}} + t \cdot (1 - w_{\text{min}})
 $$
 
-Species at or below `pct_lo` get `min_weight`; species at or above `pct_hi`
-get weight 1.0.  Only positive labels (1s) are affected — zeros stay at 0,
-so this does **not** act as label smoothing.
+Species at or below `pct_lo` get `min_weight`; species at or above
+`pct_hi` get target 1.0.  Only positive labels are affected — zeros stay
+at 0 (or `label_smoothing` if smoothing is on).
 
-#### Weight curve
+#### Soft target curve (defaults)
 
-The table below shows the resulting label weight at various regional
-percentile positions (with default `pct_lo=1`, `pct_hi=99`,
-`min_weight=0.01`):
+With `pct_lo=20`, `pct_hi=85`, `min_weight=0.1`:
 
-| Regional percentile | Label weight | Category |
+| Regional percentile | Soft target | Category |
 |---|---|---|
-| ≤ 1 (pct_lo) | **0.01** | Rare — minimal gradient contribution |
-| 10 | 0.10 | Uncommon |
-| 25 | 0.25 | Below average |
-| 50 | 0.50 | Average |
-| 75 | 0.76 | Common |
-| 90 | 0.91 | Very common |
-| ≥ 99 (pct_hi) | **1.00** | Abundant — full gradient contribution |
+| ≤ 20 (`pct_lo`) | **0.10** | Rare in region — minimal positive signal |
+| 30 | 0.24 | Uncommon |
+| 50 | 0.51 | Average for the region |
+| 70 | 0.79 | Common |
+| ≥ 85 (`pct_hi`) | **1.00** | Top species in the region — full positive signal |
+
+#### Interaction with label smoothing and AN loss
+
+- `--label_freq_weight_min` is automatically raised to `2 ×
+  --label_smoothing` (with a printed warning) if set lower, so that
+  present-but-rare species (target = `min_weight`) remain distinguishable
+  from smoothed assumed-negatives (target = `label_smoothing`).
+- The Assume-Negative loss (`--species_loss an`) treats any
+  strictly-positive target as a positive (not just `> 0.5`), so soft
+  targets do not silently flip rare positives into assumed-negatives.
 
 #### Parameters
 
 | Parameter | Default | Description |
 |---|---|---|
-| `--label_freq_weight` | off | Enable region-normalized label weighting |
-| `--label_freq_weight_min` | `0.01` | Minimum weight assigned to rare species |
-| `--label_freq_weight_pct_lo` | `10` | Regional percentile at or below which species get min weight |
-| `--label_freq_weight_pct_hi` | `95` | Regional percentile at or above which species get weight 1.0 |
+| `--label_freq_weight` | off | Enable per-region soft target frequencies |
+| `--label_freq_weight_min` | `0.1` | Floor soft target for rare species (auto-raised above `--label_smoothing`) |
+| `--label_freq_weight_pct_lo` | `20` | Within-region percentile at or below which species get `min_weight` |
+| `--label_freq_weight_pct_hi` | `85` | Within-region percentile at or above which species get target 1.0 |
 
 ```bash
-python train.py --label_freq_weight --label_freq_weight_min 0.01
+python train.py --label_freq_weight
 ```
 
 !!! note
-    Label frequency weighting applies to the **training set only** — validation
+    Soft target frequencies apply to the **training set only** — validation
     uses standard binary labels for unbiased evaluation.
+
+!!! tip
+    Tighten the percentile band (e.g. `--label_freq_weight_pct_lo 30
+    --label_freq_weight_pct_hi 80`) to increase the contrast between
+    common and rare species at species-rich locations.  Widen it (e.g.
+    `5` / `95`) for a softer ramp.
 
 ### Environmental Neighbor Label Propagation
 
@@ -672,9 +694,9 @@ python train.py --data_path data.parquet --autotune lr pos_lambda    # tune spec
 | `coord_harmonics` | 2 → 8 (integer) |
 | `week_harmonics` | 2 → 8 (integer) |
 | `label_freq_weight` | {true, false} |
-| `label_freq_weight_min` | 0.01 → 0.5 (log scale) |
-| `label_freq_weight_pct_lo` | 1.0 → 25.0 |
-| `label_freq_weight_pct_hi` | 75.0 → 99.0 |
+| `label_freq_weight_min` | 0.05 → 0.3 (log scale) |
+| `label_freq_weight_pct_lo` | 5.0 → 35.0 |
+| `label_freq_weight_pct_hi` | 70.0 → 95.0 |
 
 The dataset is built once before tuning starts.  Data-affecting parameters
 (`--max_obs_per_species`, `--min_obs_per_species`, `--no_yearly`) are set via

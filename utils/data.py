@@ -906,11 +906,32 @@ class H3DataPreprocessor:
 
         # Frequency-based label weights (computed here, applied in Dataset)
         self.species_freq_weights = None
+        self.species_region_weights = None
 
         return inputs, targets
 
     _REGION_LAT_BIN = 30.0   # degrees per latitude bin
     _REGION_LON_BIN = 60.0   # degrees per longitude bin
+    _N_REGIONS = 60          # 6 lat bins × 10 (lat*10 + lon encoding)
+
+    @staticmethod
+    def compute_region_ids(lats: np.ndarray, lons: np.ndarray) -> np.ndarray:
+        """Map (lat, lon) arrays to integer region ids in ``[0, _N_REGIONS)``.
+
+        Used both during freq-weight computation and at sample time to look
+        up per-region soft target labels.  The encoding ``lat_bin * 10 +
+        lon_bin`` leaves gaps in the integer space (max id is 55) but keeps
+        the lookup arrays sized at ``_N_REGIONS = 60``.
+        """
+        lat_bins = np.clip(
+            ((lats + 90.0) / H3DataPreprocessor._REGION_LAT_BIN).astype(int),
+            0, 5,
+        )
+        lon_bins = np.clip(
+            ((lons + 180.0) / H3DataPreprocessor._REGION_LON_BIN).astype(int),
+            0, 5,
+        )
+        return (lat_bins * 10 + lon_bins).astype(np.int64)
 
     def compute_species_freq_weights(
         self,
@@ -921,7 +942,7 @@ class H3DataPreprocessor:
         pct_lo: float = 10.0,
         pct_hi: float = 90.0,
     ) -> np.ndarray:
-        """Compute per-species **soft target labels** via region-normalized frequency.
+        """Compute per-(region, species) **soft target labels** via region-normalized frequency.
 
         Despite the legacy name (``freq_weights``), the returned values are
         **not** loss weights — they are used to *replace* the binary positive
@@ -931,13 +952,21 @@ class H3DataPreprocessor:
         turns the multi-label classifier into a graded-probability ranker
         whose output approximates regional detection frequency.
 
+        **Per-location targets.**  Soft targets are computed *per geographic
+        bin*: a species' target value at a sample equals its percentile rank
+        within that sample's region, mapped through the lo/hi ramp.  This
+        produces a sharp common-vs-rare fall-off at every location — a
+        species that is common somewhere but rare in this region gets a low
+        target here, instead of a globally inflated one.
+
         Citizen-science observation density varies enormously across regions.
         The US alone can contribute an order of magnitude more records than
         the Neotropics, so a naive global frequency count would assign high
         targets to common US species while suppressing species-rich tropical
         communities.  Region-normalized soft labels solve this by computing
-        frequency **percentile ranks within geographic bins** and using the
-        **maximum regional percentile** as each species' target basis.
+        frequency **percentile ranks within geographic bins**.  A species at
+        the 90th percentile in Colombia gets the same target as one at the
+        90th percentile in the US.
 
         Algorithm:
 
@@ -945,13 +974,12 @@ class H3DataPreprocessor:
         2. Within each bin, count per-species occurrences.
         3. Within each bin, compute the percentile rank of every species
            (among species present in that bin).
-        4. For each species, take the **max** percentile rank across bins.
-        5. Map that max-regional-percentile to a soft target via linear
-           interpolation controlled by *pct_lo* / *pct_hi*.
-
-        This makes targets independent of absolute observation density:
-        a species at the 90th percentile in Colombia gets the same target
-        as one at the 90th percentile in the US.
+        4. Map each (region, species) percentile to a soft target via
+           linear interpolation controlled by *pct_lo* / *pct_hi*.
+        5. For (region, species) pairs where the species was never observed
+           in that region (e.g. propagated pseudo-labels), fall back to the
+           species' **global-max-percentile** target so the propagation
+           signal is preserved.
 
         Args:
             species_lists: Per-sample species occurrence lists.
@@ -965,20 +993,18 @@ class H3DataPreprocessor:
             pct_hi: Upper percentile threshold.  Default 90.
 
         Returns:
-            Array of shape ``(n_species,)`` of soft target values in
-            ``[min_weight, 1.0]``, also stored as
-            ``self.species_freq_weights``.
+            Array of shape ``(n_species,)`` of **fallback** soft target
+            values (the global-max-percentile mapping), stored as
+            ``self.species_freq_weights``.  The full per-region matrix
+            of shape ``(_N_REGIONS, n_species)`` is stored as
+            ``self.species_region_weights``.
         """
         from collections import Counter, defaultdict
 
         n_species = len(self.species_vocab)
+        N_REGIONS = self._N_REGIONS
 
-        # Assign samples to geographic bins
-        lat_bins = np.clip(
-            ((lats + 90.0) / self._REGION_LAT_BIN).astype(int), 0, 5)
-        lon_bins = np.clip(
-            ((lons + 180.0) / self._REGION_LON_BIN).astype(int), 0, 5)
-        region_ids = lat_bins * 10 + lon_bins
+        region_ids = self.compute_region_ids(lats, lons)
 
         # Count per-species occurrences within each region
         region_counts: Dict[int, Counter] = defaultdict(Counter)
@@ -989,7 +1015,9 @@ class H3DataPreprocessor:
                 if idx is not None:
                     region_counts[rid][idx] += 1
 
-        # For each region compute percentile ranks; track max across regions
+        # Build per-(region, species) percentile matrix and presence mask.
+        region_pctile = np.zeros((N_REGIONS, n_species), dtype=np.float32)
+        present = np.zeros((N_REGIONS, n_species), dtype=bool)
         max_pctile = np.zeros(n_species, dtype=np.float64)
 
         for rid, sp_counter in region_counts.items():
@@ -999,42 +1027,63 @@ class H3DataPreprocessor:
             n = len(counts)
             if n < 2:
                 # Singleton region — give 50th percentile by default
-                max_pctile[indices] = np.maximum(
-                    max_pctile[indices], 50.0)
-                continue
+                pctiles = np.full(n, 50.0, dtype=np.float64)
+            else:
+                # Percentile rank = fraction of species with strictly lower
+                # count in this region, scaled to [0, 100).
+                sorted_counts = np.sort(counts)
+                pctiles = (np.searchsorted(sorted_counts, counts,
+                                           side='left') / n * 100.0)
 
-            # Percentile rank = fraction of species with strictly lower
-            # count in this region, scaled to [0, 100).
-            sorted_counts = np.sort(counts)
-            pctiles = (np.searchsorted(sorted_counts, counts, side='left')
-                       / n * 100.0)
-
-            # Update per-species max percentile
+            region_pctile[rid, indices] = pctiles.astype(np.float32)
+            present[rid, indices] = True
             np.maximum.at(max_pctile, indices, pctiles)
 
-        # Map max-regional-percentile → weight via linear interpolation
-        weights = np.full(n_species, min_weight, dtype=np.float32)
-        span = pct_hi - pct_lo
-        if span > 0:
-            for i in range(n_species):
-                p = max_pctile[i]
-                if p >= pct_hi:
-                    weights[i] = 1.0
-                elif p > pct_lo:
-                    t = (p - pct_lo) / span
-                    weights[i] = min_weight + t * (1.0 - min_weight)
-                # else: stays at min_weight (species absent or very rare
-                #        in every region they appear)
+        # Vectorized percentile → soft-target mapping (piecewise linear).
+        def _pct_to_weight(p: np.ndarray) -> np.ndarray:
+            w = np.full(p.shape, min_weight, dtype=np.float32)
+            span = pct_hi - pct_lo
+            if span > 0:
+                ramp_t = np.clip((p - pct_lo) / span, 0.0, 1.0)
+                w_ramp = (min_weight
+                          + ramp_t * (1.0 - min_weight)).astype(np.float32)
+                # Above threshold → 1.0; in ramp → interpolated; else floor.
+                w = np.where(p >= pct_hi, np.float32(1.0), w_ramp)
+                w = np.where(p > pct_lo, w, np.float32(min_weight))
+            return w.astype(np.float32)
+
+        # Per-species fallback (global-max-percentile mapping) — used both
+        # to fill (region, species) cells where the species was never
+        # observed and as the validation/legacy 1-D weight vector.
+        weights = _pct_to_weight(max_pctile)  # (n_species,)
+        region_weights = _pct_to_weight(region_pctile)  # (N_REGIONS, n_species)
+        # Where a species was absent in a region, use the species fallback.
+        region_weights = np.where(
+            present, region_weights,
+            np.broadcast_to(weights, region_weights.shape),
+        ).astype(np.float32)
 
         self.species_freq_weights = weights
+        self.species_region_weights = region_weights
 
         n_regions = len(region_counts)
         n_max_w = (weights >= 0.99).sum()
         n_min_w = (weights <= min_weight + 0.001).sum()
+        # Diagnostics on per-region target spread (over observed cells only).
+        observed_w = region_weights[present]
+        if observed_w.size:
+            rw_med = float(np.median(observed_w))
+            rw_p90 = float(np.percentile(observed_w, 90))
+            rw_p10 = float(np.percentile(observed_w, 10))
+        else:
+            rw_med = rw_p90 = rw_p10 = 0.0
         print(f"   Freq label weights ({n_regions} regional bins): "
-              f"min={weights.min():.3f}, median={np.median(weights):.3f}, "
+              f"global min={weights.min():.3f}, median={np.median(weights):.3f}, "
               f"max={weights.max():.3f}  "
               f"({n_max_w:,} species at 1.0, {n_min_w:,} at floor)")
+        print(f"   Per-region soft targets: "
+              f"p10={rw_p10:.3f}, median={rw_med:.3f}, p90={rw_p90:.3f} "
+              f"(over observed (region, species) cells)")
         return weights
 
     def _cap_observations(
@@ -1298,7 +1347,8 @@ class BirdSpeciesDataset(Dataset):
 
     def __init__(self, inputs: Dict[str, np.ndarray], targets: Dict[str, Any],
                  n_species: int = 0, jitter_std: float = 0.0,
-                 species_freq_weights: Optional[np.ndarray] = None):
+                 species_freq_weights: Optional[np.ndarray] = None,
+                 species_region_weights: Optional[np.ndarray] = None):
         """Wrap preprocessed arrays as a PyTorch Dataset.
 
         Args:
@@ -1309,9 +1359,19 @@ class BirdSpeciesDataset(Dataset):
                 to lat/lon coordinates each time a sample is drawn.  Set to
                 0.0 to disable (default).  Typically derived from H3 cell
                 resolution via ``H3DataLoader.compute_jitter_std``.
-            species_freq_weights: Optional 1-D array of per-species label
-                weights.  When provided, positive labels use the weight
-                instead of 1.0.
+            species_freq_weights: Optional 1-D array of per-species **soft
+                target labels** (fallback / global-max-percentile mapping).
+                When provided, positive labels use the weight instead of
+                1.0.  Used directly when ``species_region_weights`` is
+                ``None``; otherwise serves as the fallback for (region,
+                species) cells where the species was unobserved in that
+                region (e.g. propagated pseudo-labels).
+            species_region_weights: Optional 2-D array of shape
+                ``(n_regions, n_species)`` of **per-region soft target
+                labels**.  When provided, positive labels at a sample use
+                the row corresponding to the sample's geographic region,
+                producing a sharp common-vs-rare fall-off at every
+                location.
         """
         self.lat = torch.from_numpy(inputs['lat']).float()
         self.lon = torch.from_numpy(inputs['lon']).float()
@@ -1325,11 +1385,22 @@ class BirdSpeciesDataset(Dataset):
         else:
             self.obs_density = None
 
-        # Per-species label weights (frequency-based)
+        # Per-species label weights (frequency-based, fallback / 1-D)
         if species_freq_weights is not None:
             self.species_freq_weights = torch.from_numpy(species_freq_weights).float()
         else:
             self.species_freq_weights = None
+
+        # Per-(region, species) label weights and per-sample region ids.
+        if species_region_weights is not None:
+            self.species_region_weights = torch.from_numpy(
+                species_region_weights).float()
+            region_ids = H3DataPreprocessor.compute_region_ids(
+                inputs['lat'], inputs['lon'])
+            self.region_ids = torch.from_numpy(region_ids).long()
+        else:
+            self.species_region_weights = None
+            self.region_ids = None
 
         species = targets['species']
         if isinstance(species, np.ndarray):
@@ -1363,7 +1434,12 @@ class BirdSpeciesDataset(Dataset):
 
         if self.species_dense is not None:
             sp = self.species_dense[idx]
-            if self.species_freq_weights is not None:
+            if self.species_region_weights is not None:
+                mask = sp > 0
+                sp = sp.clone()
+                rid = int(self.region_ids[idx])
+                sp[mask] = self.species_region_weights[rid][mask]
+            elif self.species_freq_weights is not None:
                 mask = sp > 0
                 sp = sp.clone()
                 sp[mask] = self.species_freq_weights[mask]
@@ -1382,6 +1458,8 @@ class BirdSpeciesDataset(Dataset):
             inp = {'lat': lat, 'lon': lon, 'week': self.week[idx]}
             if self.obs_density is not None:
                 inp['obs_density'] = self.obs_density[idx]
+            if self.region_ids is not None:
+                inp['region_id'] = self.region_ids[idx]
             return (
                 inp,
                 {'species_indices': indices, 'env_features': self.env_features[idx]},
@@ -1391,6 +1469,7 @@ class BirdSpeciesDataset(Dataset):
 def _make_sparse_collate_fn(
     n_species: int,
     species_freq_weights: Optional[torch.Tensor] = None,
+    species_region_weights: Optional[torch.Tensor] = None,
 ):
     """Return a collate function that builds dense species tensors from sparse indices.
 
@@ -1398,7 +1477,8 @@ def _make_sparse_collate_fn(
     the collate function builds one ``(batch, n_species)`` tensor per batch.
     This cuts per-epoch allocation by ~1000×.
     """
-    _weights = species_freq_weights  # captured once
+    _weights = species_freq_weights              # (n_species,) fallback / global
+    _region_weights = species_region_weights      # (n_regions, n_species) per-region
 
     def collate_fn(batch):
         inputs_list, targets_list = zip(*batch)
@@ -1420,7 +1500,10 @@ def _make_sparse_collate_fn(
             indices = tgt['species_indices']
             if len(indices) > 0:
                 idx_t = torch.from_numpy(indices).long() if not isinstance(indices, torch.Tensor) else indices.long()
-                if _weights is not None:
+                if _region_weights is not None:
+                    rid = int(inputs_list[i]['region_id'])
+                    species[i, idx_t] = _region_weights[rid][idx_t]
+                elif _weights is not None:
                     species[i, idx_t] = _weights[idx_t]
                 else:
                     species[i, idx_t] = 1.0
@@ -1444,6 +1527,7 @@ def create_dataloaders(
     n_species: int = 0,
     jitter_std: float = 0.0,
     species_freq_weights: Optional[np.ndarray] = None,
+    species_region_weights: Optional[np.ndarray] = None,
 ) -> Tuple[DataLoader, DataLoader]:
     """Create training and validation DataLoaders.
 
@@ -1459,18 +1543,28 @@ def create_dataloaders(
         jitter_std: Gaussian noise std (degrees) added to training
             coordinates each time a sample is drawn.  Validation
             coordinates are never jittered.
-        species_freq_weights: Optional per-species label weights.
-            Applied to training set only; validation uses binary labels.
+        species_freq_weights: Optional per-species soft target labels
+            (1-D fallback / global-max-percentile mapping).  Applied to
+            training set only; validation uses binary labels.
+        species_region_weights: Optional per-(region, species) soft target
+            labels of shape ``(n_regions, n_species)``.  When provided,
+            takes precedence over ``species_freq_weights`` at sample time.
     """
-    train_ds = BirdSpeciesDataset(train_inputs, train_targets,
-                                  n_species=n_species, jitter_std=jitter_std,
-                                  species_freq_weights=species_freq_weights)
+    train_ds = BirdSpeciesDataset(
+        train_inputs, train_targets,
+        n_species=n_species, jitter_std=jitter_std,
+        species_freq_weights=species_freq_weights,
+        species_region_weights=species_region_weights,
+    )
     val_ds = BirdSpeciesDataset(val_inputs, val_targets, n_species=n_species)
 
     # Use custom collation when species targets are sparse
     _is_sparse = train_ds.species_sparse is not None
     train_collate = _make_sparse_collate_fn(
-        n_species, train_ds.species_freq_weights) if _is_sparse else None
+        n_species,
+        species_freq_weights=train_ds.species_freq_weights,
+        species_region_weights=train_ds.species_region_weights,
+    ) if _is_sparse else None
     val_collate = _make_sparse_collate_fn(n_species) if _is_sparse else None
 
     _persistent = num_workers > 0
