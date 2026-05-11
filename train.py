@@ -904,12 +904,13 @@ def main():
                         help='Floor soft target for rare species '
                              '(default: 0.1; auto-raised above '
                              '--label_smoothing if set lower)')
-    parser.add_argument('--label_freq_weight_pct_lo', type=float, default=20.0,
+    parser.add_argument('--label_freq_weight_pct_lo', type=float, default=15.0,
                         help='Lower percentile within a region: species at '
-                             'or below get min_weight (default: 20)')
-    parser.add_argument('--label_freq_weight_pct_hi', type=float, default=85.0,
+                             'or below get min_weight (default: 15)')
+    parser.add_argument('--label_freq_weight_pct_hi', type=float, default=95.0,
                         help='Upper percentile within a region: species at '
-                             'or above get target 1.0 (default: 85)')
+                             'or above get target 1.0 (default: 95; only the '
+                             'top 5%% saturate, keeping a sharp common-vs-rare ramp)')
 
     # Label propagation (env neighbor)
     parser.add_argument('--propagate_labels', action='store_true',

@@ -73,8 +73,8 @@ The training script handles the full pipeline automatically:
 | `--jitter` | off | Jitter training coordinates within H3 cells each epoch |
 | `--label_freq_weight` | off | Replace positive labels with per-region soft target frequencies (graded-probability ranking) |
 | `--label_freq_weight_min` | `0.1` | Floor soft target for rare species (auto-raised above `--label_smoothing`) |
-| `--label_freq_weight_pct_lo` | `20` | Lower percentile within a region: species at or below get min target |
-| `--label_freq_weight_pct_hi` | `85` | Upper percentile within a region: species at or above get target 1.0 |
+| `--label_freq_weight_pct_lo` | `15` | Lower percentile within a region: species at or below get min target |
+| `--label_freq_weight_pct_hi` | `95` | Upper percentile within a region: species at or above get target 1.0 |
 | `--propagate_labels` | off | Propagate species labels from observed to sparse cells via env similarity |
 | `--propagate_k` | `10` | Number of nearest env-space neighbors for propagation |
 | `--propagate_max_radius` | `1000` | Geographic radius cap in km for propagation |
@@ -454,7 +454,7 @@ target — producing a clean ranked list at every location.
 
 #### Linear mapping
 
-The position between `pct_lo` (default 20) and `pct_hi` (default 85) is
+The position between `pct_lo` (default 15) and `pct_hi` (default 95) is
 linearly interpolated:
 
 $$
@@ -468,15 +468,20 @@ at 0 (or `label_smoothing` if smoothing is on).
 
 #### Soft target curve (defaults)
 
-With `pct_lo=20`, `pct_hi=85`, `min_weight=0.1`:
+With `pct_lo=15`, `pct_hi=95`, `min_weight=0.1`:
 
 | Regional percentile | Soft target | Category |
 |---|---|---|
-| ≤ 20 (`pct_lo`) | **0.10** | Rare in region — minimal positive signal |
-| 30 | 0.24 | Uncommon |
-| 50 | 0.51 | Average for the region |
-| 70 | 0.79 | Common |
-| ≥ 85 (`pct_hi`) | **1.00** | Top species in the region — full positive signal |
+| ≤ 15 (`pct_lo`) | **0.10** | Rare in region — minimal positive signal |
+| 30 | 0.27 | Uncommon |
+| 50 | 0.49 | Average for the region |
+| 70 | 0.72 | Common |
+| 85 | 0.88 | Very common |
+| ≥ 95 (`pct_hi`) | **1.00** | Top species in the region — full positive signal |
+
+With only the top 5% saturating at 1.0, the model retains incentive to
+rank species *within* the common group — producing a clear fall-off even
+at species-rich locations like Ithaca, NY.
 
 #### Interaction with label smoothing and AN loss
 
@@ -494,8 +499,8 @@ With `pct_lo=20`, `pct_hi=85`, `min_weight=0.1`:
 |---|---|---|
 | `--label_freq_weight` | off | Enable per-region soft target frequencies |
 | `--label_freq_weight_min` | `0.1` | Floor soft target for rare species (auto-raised above `--label_smoothing`) |
-| `--label_freq_weight_pct_lo` | `20` | Within-region percentile at or below which species get `min_weight` |
-| `--label_freq_weight_pct_hi` | `85` | Within-region percentile at or above which species get target 1.0 |
+| `--label_freq_weight_pct_lo` | `15` | Within-region percentile at or below which species get `min_weight` |
+| `--label_freq_weight_pct_hi` | `95` | Within-region percentile at or above which species get target 1.0 |
 
 ```bash
 python train.py --label_freq_weight
@@ -506,10 +511,11 @@ python train.py --label_freq_weight
     uses standard binary labels for unbiased evaluation.
 
 !!! tip
-    Tighten the percentile band (e.g. `--label_freq_weight_pct_lo 30
-    --label_freq_weight_pct_hi 80`) to increase the contrast between
-    common and rare species at species-rich locations.  Widen it (e.g.
-    `5` / `95`) for a softer ramp.
+    To make the fall-off even sharper at very rich locations, push
+    `--label_freq_weight_pct_hi` higher still (e.g. `99` — only the top
+    1% saturate).  Conversely, lower it (e.g. `90`) for a softer top end.
+    Raising `--label_freq_weight_pct_lo` (e.g. `25`) collapses more rare
+    species into the floor; lowering it (e.g. `5`) keeps them on the ramp.
 
 ### Environmental Neighbor Label Propagation
 
