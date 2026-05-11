@@ -75,6 +75,8 @@ The training script handles the full pipeline automatically:
 | `--label_freq_weight_min` | `0.1` | Floor soft target for rare species (auto-raised above `--label_smoothing`) |
 | `--label_freq_weight_pct_lo` | `15` | Lower percentile within a region: species at or below get min target |
 | `--label_freq_weight_pct_hi` | `95` | Upper percentile within a region: species at or above get target 1.0 |
+| `--ubiquitous_species` | `species-data/ubiquitous_species.txt` | Path to a 2-column whitelist (`<code> <prob>`) of synanthropic species randomly injected as soft positives during training (empty string disables) |
+| `--ubiquitous_target` | `0.5` | Soft target value written for fired ubiquitous injections |
 | `--propagate_labels` | off | Propagate species labels from observed to sparse cells via env similarity |
 | `--propagate_k` | `10` | Number of nearest env-space neighbors for propagation |
 | `--propagate_max_radius` | `1000` | Geographic radius cap in km for propagation |
@@ -516,6 +518,76 @@ python train.py --label_freq_weight
     1% saturate).  Conversely, lower it (e.g. `90`) for a softer top end.
     Raising `--label_freq_weight_pct_lo` (e.g. `25`) collapses more rare
     species into the floor; lowering it (e.g. `5`) keeps them on the ramp.
+
+### Ubiquitous-Species Soft Injection
+
+Synanthropic taxa — humans, livestock, dogs, cats, commensal rats,
+honey bees, the chicken proxy *Gallus gallus* — are present essentially
+anywhere humans are, but they are massively under-recorded in
+citizen-science data because observers focus on wild species.  Without a
+prior, the model learns sharply confident absences for these species
+across most of its training cells.
+
+The training loop addresses this by reading a small whitelist file and
+randomly injecting whitelisted species as **soft positives** during
+training.  At every batch, for each whitelisted species that is *not*
+already a positive in a given sample, a Bernoulli draw at the per-species
+probability decides whether the target is set to `--ubiquitous_target`
+(default `0.5`).  Existing positives are never overwritten — observed
+data always wins.
+
+#### Whitelist file format
+
+`species-data/ubiquitous_species.txt` ships with the repository.  Two
+whitespace-separated columns per line, plus an optional `#` comment:
+
+```
+<species_code>   <injection_probability>    # comment
+```
+
+- `species_code` matches the labels used in training (eBird 6-letter
+  codes for birds; numeric iNaturalist IDs for non-birds).  Codes that
+  are not in the trained vocabulary are silently dropped at load time.
+- `injection_probability` ∈ `[0, 1]` is applied independently per
+  `(sample, species)` draw.
+
+Probability tiers used in the default file:
+
+| Tier | Probability | Examples |
+|---|---|---|
+| Cosmopolitan | `0.50` | Human, dog, cat, honey bee, chicken |
+| Globally widespread | `0.30` | Cattle, sheep, goat, horse, brown rat, black rat |
+| Strongly regional | `0.15` | *Bombus terrestris*, *B. impatiens* |
+
+#### Curation rules of the default list
+
+- **No wild birds.**  The only bird is `redjun` (*Gallus gallus*), which
+  serves as the chicken proxy because GBIF/iNaturalist records of
+  domestic chickens fall under the species-level taxon.
+- **No small mammals an audio model cannot detect** (mice, rabbits
+  removed; rats kept because they are commensal and heavily recorded
+  near settlements).
+- **No regional umbrella taxa** (Gray Wolf and European Wildcat were
+  removed — these are wild species, not synanthropes).
+
+#### Disabling
+
+Pass `--ubiquitous_species ''` to disable the feature entirely.  The
+ubiquitous injection is **applied to the training set only** —
+validation always uses observed binary labels.
+
+!!! note
+    The injection is a noisy soft prior, not a constant one.  Different
+    samples in the same epoch see different injection patterns, and the
+    same sample sees different patterns in different epochs.  This
+    discourages the model from memorising the prior and lets the
+    observed signal still dominate at well-surveyed cells.
+
+!!! tip
+    Combine with `--max_obs_per_species` if you want to additionally
+    flatten the dominance of the most-recorded synanthropes (humans
+    have orders of magnitude more iNaturalist records than any other
+    taxon).
 
 ### Environmental Neighbor Label Propagation
 

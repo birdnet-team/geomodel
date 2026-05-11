@@ -12,7 +12,7 @@ import torch
 
 from model.model import create_model
 from model.loss import MultiTaskLoss
-from utils.data import H3DataLoader, H3DataPreprocessor, create_dataloaders
+from utils.data import H3DataLoader, H3DataPreprocessor, create_dataloaders, load_ubiquitous_species
 
 
 TUNABLE_PARAMS = [
@@ -305,6 +305,21 @@ def run_autotune(
     )
     print(f"   Train: {len(train_in['lat']):,}  |  Val: {len(val_in['lat']):,}")
 
+    # Load ubiquitous-species whitelist entries once.  Indices are resolved
+    # per-trial against the active preprocessor (trial-specific when
+    # propagation is being tuned, since vocabulary may change).
+    _ubi_entries = None
+    _ubi_path = getattr(args, 'ubiquitous_species', '') or ''
+    if _ubi_path and Path(_ubi_path).is_file():
+        try:
+            _ubi_entries = load_ubiquitous_species(_ubi_path)
+            print(f"   Ubiquitous whitelist: {len(_ubi_entries)} entries from {_ubi_path}")
+        except (FileNotFoundError, ValueError) as exc:
+            print(f"   WARNING: failed to load ubiquitous whitelist: {exc}")
+            _ubi_entries = None
+    elif _ubi_path:
+        print(f"   WARNING: --ubiquitous_species path not found ({_ubi_path}); injection disabled.")
+
     def objective(trial: 'optuna.Trial') -> float:
         p = {}
         for name in TUNABLE_PARAMS:
@@ -416,10 +431,27 @@ def run_autotune(
             _trial_region_weights = None
 
         if _tune_propagation and _raw_species_lists is not None:
+            # Resolve ubiquitous whitelist against the trial preprocessor
+            # *before* freeing it (its vocabulary differs from the outer
+            # one when propagation changes the surviving species set).
+            _trial_ubi_idx = _trial_ubi_prob = None
+            if _ubi_entries is not None:
+                _trial_ubi_idx, _trial_ubi_prob = _trial_pp_for_weights.resolve_ubiquitous_species(
+                    _ubi_entries, verbose=False)
+                if len(_trial_ubi_idx) == 0:
+                    _trial_ubi_idx = _trial_ubi_prob = None
             del _trial_sl, _trial_pp
             _trial_pp_for_weights = None
             _trial_sl_for_weights = None
             gc.collect()
+        else:
+            # Outer preprocessor vocabulary matches the trial DataLoader.
+            _trial_ubi_idx = _trial_ubi_prob = None
+            if _ubi_entries is not None:
+                _trial_ubi_idx, _trial_ubi_prob = preprocessor.resolve_ubiquitous_species(
+                    _ubi_entries, verbose=False)
+                if len(_trial_ubi_idx) == 0:
+                    _trial_ubi_idx = _trial_ubi_prob = None
 
         t_loader, v_loader = create_dataloaders(
             _t_train_in,
@@ -433,6 +465,9 @@ def run_autotune(
             jitter_std=jitter_std,
             species_freq_weights=_trial_freq_weights,
             species_region_weights=_trial_region_weights,
+            ubiquitous_indices=_trial_ubi_idx,
+            ubiquitous_probs=_trial_ubi_prob,
+            ubiquitous_target=getattr(args, 'ubiquitous_target', 0.5),
         )
 
         model = create_model(

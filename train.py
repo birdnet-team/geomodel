@@ -40,7 +40,7 @@ from model.model import create_model
 from model.loss import MultiTaskLoss
 from model.metrics import compute_geoscore
 from model.autotune import TUNABLE_PARAMS, run_autotune
-from utils.data import H3DataLoader, H3DataPreprocessor, create_dataloaders
+from utils.data import H3DataLoader, H3DataPreprocessor, create_dataloaders, load_ubiquitous_species
 from utils.regions import HOLDOUT_REGIONS, resolve_holdout_regions, REGION_BOUNDS
 
 
@@ -912,6 +912,23 @@ def main():
                              'or above get target 1.0 (default: 95; only the '
                              'top 5%% saturate, keeping a sharp common-vs-rare ramp)')
 
+    # Ubiquitous species injection (humans, livestock, commensals, pollinators).
+    # Counters under-recording of synanthropic taxa: at each training sample
+    # every whitelisted species that is not already a positive is set to a
+    # soft target with a per-species probability defined in the file.
+    parser.add_argument('--ubiquitous_species', type=str,
+                        default='species-data/ubiquitous_species.txt',
+                        help='Path to a two-column whitelist file '
+                             '(<code> <prob> per line) of species randomly '
+                             'injected as soft positives during training. '
+                             'Pass an empty string to disable. '
+                             'Default: species-data/ubiquitous_species.txt')
+    parser.add_argument('--ubiquitous_target', type=float, default=0.5,
+                        help='Soft target value written for fired ubiquitous '
+                             'injections (default: 0.5; lower than 1.0 '
+                             'because the model should not be confidently '
+                             'certain absent species are present)')
+
     # Label propagation (env neighbor)
     parser.add_argument('--propagate_labels', action='store_true',
                         help='Propagate species labels from observed to sparse/unobserved '
@@ -1045,6 +1062,9 @@ def main():
         print(f"  Jitter:     enabled (Gaussian noise within H3 cells)")
     if args.label_freq_weight:
         print(f"  Freq weight: enabled (min={args.label_freq_weight_min})")
+    if args.ubiquitous_species:
+        print(f"  Ubiquitous: {args.ubiquitous_species} "
+              f"(target={args.ubiquitous_target})")
     if args.propagate_labels:
         print(f"  Propagate:  k={args.propagate_k}, radius={args.propagate_max_radius}km, min_obs={args.propagate_min_obs}")
     if args.sample_fraction < 1.0:
@@ -1213,6 +1233,24 @@ def main():
         train_tgt, val_tgt, n_species,
     )
 
+    # Resolve ubiquitous-species whitelist against the current vocabulary.
+    # Empty string disables the feature; missing files print a warning but
+    # do not abort (training without injection is still valid).
+    ubi_idx = ubi_prob = None
+    if args.ubiquitous_species:
+        ubi_path = Path(args.ubiquitous_species)
+        if ubi_path.is_file():
+            print(f"\n   Loading ubiquitous-species whitelist: {ubi_path}")
+            entries = load_ubiquitous_species(str(ubi_path))
+            ubi_idx, ubi_prob = preprocessor.resolve_ubiquitous_species(entries)
+            if len(ubi_idx) == 0:
+                print("   No ubiquitous species matched the vocabulary; "
+                      "injection disabled.")
+                ubi_idx = ubi_prob = None
+        else:
+            print(f"\n   WARNING: --ubiquitous_species path not found "
+                  f"({args.ubiquitous_species}); injection disabled.")
+
     print("5. Creating DataLoaders...")
     train_loader, val_loader = create_dataloaders(
         train_in, train_tgt, val_in, val_tgt,
@@ -1223,6 +1261,9 @@ def main():
         species_freq_weights=freq_weights,
         species_region_weights=getattr(
             preprocessor, 'species_region_weights', None),
+        ubiquitous_indices=ubi_idx,
+        ubiquitous_probs=ubi_prob,
+        ubiquitous_target=args.ubiquitous_target,
     )
 
     # Create holdout DataLoader if regions were masked

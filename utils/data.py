@@ -6,6 +6,7 @@ Handles the full pipeline from parquet files to training-ready DataLoaders:
 - H3DataPreprocessor: Sinusoidal encoding, normalization, species vocab, splitting
 - BirdSpeciesDataset: PyTorch Dataset wrapper
 - create_dataloaders / get_class_weights: DataLoader and class weight utilities
+- load_ubiquitous_species: parse a per-species probability whitelist file
 """
 
 import geopandas as gpd
@@ -933,6 +934,51 @@ class H3DataPreprocessor:
         )
         return (lat_bins * 10 + lon_bins).astype(np.int64)
 
+    def resolve_ubiquitous_species(
+        self,
+        entries: List[Tuple[str, float]],
+        verbose: bool = True,
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        """Map a ubiquitous-species whitelist to vocabulary indices.
+
+        Filters out codes that are not in the trained species vocabulary
+        (``self.species_to_idx``) and returns aligned arrays of indices
+        and per-species injection probabilities.
+
+        Args:
+            entries: List of ``(species_code, probability)`` tuples as
+                returned by :func:`load_ubiquitous_species`.
+            verbose: If True, print a one-line summary of how many
+                entries were matched and which codes were dropped.
+
+        Returns:
+            ``(indices, probs)`` where ``indices`` is an ``int64`` array
+            of vocabulary indices and ``probs`` is a ``float32`` array
+            of the same length.  Both are empty arrays when no entries
+            match the current vocabulary.
+        """
+        idxs: List[int] = []
+        probs: List[float] = []
+        dropped: List[str] = []
+        for code, prob in entries:
+            i = self.species_to_idx.get(code)
+            if i is None:
+                dropped.append(code)
+                continue
+            idxs.append(i)
+            probs.append(prob)
+        if verbose:
+            print(f"Ubiquitous species: matched {len(idxs)} / {len(entries)} "
+                  f"to current vocabulary")
+            if dropped:
+                preview = ', '.join(dropped[:8])
+                more = '' if len(dropped) <= 8 else f' (+{len(dropped) - 8} more)'
+                print(f"  dropped (not in vocab): {preview}{more}")
+        return (
+            np.asarray(idxs, dtype=np.int64),
+            np.asarray(probs, dtype=np.float32),
+        )
+
     def compute_species_freq_weights(
         self,
         species_lists: List[List[str]],
@@ -1348,7 +1394,10 @@ class BirdSpeciesDataset(Dataset):
     def __init__(self, inputs: Dict[str, np.ndarray], targets: Dict[str, Any],
                  n_species: int = 0, jitter_std: float = 0.0,
                  species_freq_weights: Optional[np.ndarray] = None,
-                 species_region_weights: Optional[np.ndarray] = None):
+                 species_region_weights: Optional[np.ndarray] = None,
+                 ubiquitous_indices: Optional[np.ndarray] = None,
+                 ubiquitous_probs: Optional[np.ndarray] = None,
+                 ubiquitous_target: float = 0.5):
         """Wrap preprocessed arrays as a PyTorch Dataset.
 
         Args:
@@ -1372,6 +1421,24 @@ class BirdSpeciesDataset(Dataset):
                 the row corresponding to the sample's geographic region,
                 producing a sharp common-vs-rare fall-off at every
                 location.
+            ubiquitous_indices: Optional ``int64`` array of vocabulary
+                indices for the ubiquitous-species whitelist (humans,
+                livestock, commensals, cosmopolitan pollinators).  At each
+                training sample, every listed species that is *not*
+                already a positive is set to ``ubiquitous_target`` with
+                its per-species probability from ``ubiquitous_probs``.
+                Pass ``None`` to disable injection (validation should
+                always disable).
+            ubiquitous_probs: Per-species injection probabilities aligned
+                with ``ubiquitous_indices`` (same length, dtype float32,
+                values in ``[0, 1]``).  Required iff ``ubiquitous_indices``
+                is not ``None``.
+            ubiquitous_target: Soft-target value written into the species
+                vector when an injection fires (default ``0.5``).  Lower
+                than 1.0 because the model should not be confidently
+                certain a species is present without an observation —
+                only that it is likely present given human-dominated
+                landscapes.
         """
         self.lat = torch.from_numpy(inputs['lat']).float()
         self.lon = torch.from_numpy(inputs['lon']).float()
@@ -1401,6 +1468,25 @@ class BirdSpeciesDataset(Dataset):
         else:
             self.species_region_weights = None
             self.region_ids = None
+
+        # Ubiquitous-species whitelist (random soft-positive injection).
+        # Stored as torch tensors so __getitem__ can do the Bernoulli draw
+        # without per-sample numpy conversion.
+        if ubiquitous_indices is not None and len(ubiquitous_indices) > 0:
+            if ubiquitous_probs is None or len(ubiquitous_probs) != len(ubiquitous_indices):
+                raise ValueError(
+                    "ubiquitous_probs must align with ubiquitous_indices "
+                    f"(got {None if ubiquitous_probs is None else len(ubiquitous_probs)} "
+                    f"vs {len(ubiquitous_indices)})")
+            self.ubiquitous_indices = torch.from_numpy(
+                np.asarray(ubiquitous_indices, dtype=np.int64))
+            self.ubiquitous_probs = torch.from_numpy(
+                np.asarray(ubiquitous_probs, dtype=np.float32))
+            self.ubiquitous_target = float(ubiquitous_target)
+        else:
+            self.ubiquitous_indices = None
+            self.ubiquitous_probs = None
+            self.ubiquitous_target = float(ubiquitous_target)
 
         species = targets['species']
         if isinstance(species, np.ndarray):
@@ -1443,6 +1529,26 @@ class BirdSpeciesDataset(Dataset):
                 mask = sp > 0
                 sp = sp.clone()
                 sp[mask] = self.species_freq_weights[mask]
+            else:
+                # Avoid mutating the cached dense tensor when injecting
+                # ubiquitous targets below.
+                if self.ubiquitous_indices is not None:
+                    sp = sp.clone()
+
+            # Ubiquitous-species injection (training only).  For each
+            # whitelisted species that is *not* already a positive at this
+            # sample, set the target to ``ubiquitous_target`` with the
+            # per-species probability.  Uses an independent Bernoulli draw
+            # per (sample, species) so the injection pattern varies across
+            # epochs and within an epoch — the model sees these labels as
+            # noisy soft positives, not constants.
+            if self.ubiquitous_indices is not None:
+                ui = self.ubiquitous_indices
+                draws = torch.rand(ui.numel())
+                fire = (draws < self.ubiquitous_probs) & (sp[ui] == 0)
+                if fire.any():
+                    sp[ui[fire]] = self.ubiquitous_target
+
             inp = {'lat': lat, 'lon': lon, 'week': self.week[idx]}
             if self.obs_density is not None:
                 inp['obs_density'] = self.obs_density[idx]
@@ -1470,15 +1576,29 @@ def _make_sparse_collate_fn(
     n_species: int,
     species_freq_weights: Optional[torch.Tensor] = None,
     species_region_weights: Optional[torch.Tensor] = None,
+    ubiquitous_indices: Optional[torch.Tensor] = None,
+    ubiquitous_probs: Optional[torch.Tensor] = None,
+    ubiquitous_target: float = 0.5,
 ):
     """Return a collate function that builds dense species tensors from sparse indices.
 
     Instead of each ``__getitem__`` call allocating a 40 KB dense vector,
     the collate function builds one ``(batch, n_species)`` tensor per batch.
     This cuts per-epoch allocation by ~1000×.
+
+    The optional ``ubiquitous_*`` arguments perform random soft-positive
+    injection of the ubiquitous-species whitelist (humans, livestock,
+    commensals, cosmopolitan pollinators).  For each batch, every listed
+    species that is not already a positive in a given sample is set to
+    ``ubiquitous_target`` with its per-species probability.  Pass
+    ``ubiquitous_indices=None`` to disable (validation should always
+    disable).
     """
     _weights = species_freq_weights              # (n_species,) fallback / global
     _region_weights = species_region_weights      # (n_regions, n_species) per-region
+    _ubi_idx = ubiquitous_indices                 # (K,) long
+    _ubi_prob = ubiquitous_probs                  # (K,) float
+    _ubi_target = float(ubiquitous_target)
 
     def collate_fn(batch):
         inputs_list, targets_list = zip(*batch)
@@ -1508,6 +1628,20 @@ def _make_sparse_collate_fn(
                 else:
                     species[i, idx_t] = 1.0
 
+        # Ubiquitous-species injection (vectorized over the batch).  Draw
+        # an independent Bernoulli per (sample, species) and only write
+        # where the species was not already a positive.
+        if _ubi_idx is not None and _ubi_idx.numel() > 0:
+            K = _ubi_idx.numel()
+            draws = torch.rand(B, K)
+            fire = draws < _ubi_prob.unsqueeze(0)              # (B, K)
+            current = species[:, _ubi_idx]                     # (B, K)
+            write = fire & (current == 0)
+            if write.any():
+                # Build a (B, n_species) sparse-style update via index_put.
+                row, col = write.nonzero(as_tuple=True)
+                species[row, _ubi_idx[col]] = _ubi_target
+
         return (
             inp,
             {'species': species, 'env_features': env},
@@ -1528,6 +1662,9 @@ def create_dataloaders(
     jitter_std: float = 0.0,
     species_freq_weights: Optional[np.ndarray] = None,
     species_region_weights: Optional[np.ndarray] = None,
+    ubiquitous_indices: Optional[np.ndarray] = None,
+    ubiquitous_probs: Optional[np.ndarray] = None,
+    ubiquitous_target: float = 0.5,
 ) -> Tuple[DataLoader, DataLoader]:
     """Create training and validation DataLoaders.
 
@@ -1549,12 +1686,23 @@ def create_dataloaders(
         species_region_weights: Optional per-(region, species) soft target
             labels of shape ``(n_regions, n_species)``.  When provided,
             takes precedence over ``species_freq_weights`` at sample time.
+        ubiquitous_indices: Optional vocabulary indices for the
+            ubiquitous-species whitelist (training-only soft-positive
+            injection).  See :class:`BirdSpeciesDataset` and
+            :func:`load_ubiquitous_species`.
+        ubiquitous_probs: Per-species injection probabilities aligned
+            with ``ubiquitous_indices``.
+        ubiquitous_target: Soft target value for fired injections
+            (default ``0.5``).
     """
     train_ds = BirdSpeciesDataset(
         train_inputs, train_targets,
         n_species=n_species, jitter_std=jitter_std,
         species_freq_weights=species_freq_weights,
         species_region_weights=species_region_weights,
+        ubiquitous_indices=ubiquitous_indices,
+        ubiquitous_probs=ubiquitous_probs,
+        ubiquitous_target=ubiquitous_target,
     )
     val_ds = BirdSpeciesDataset(val_inputs, val_targets, n_species=n_species)
 
@@ -1564,6 +1712,9 @@ def create_dataloaders(
         n_species,
         species_freq_weights=train_ds.species_freq_weights,
         species_region_weights=train_ds.species_region_weights,
+        ubiquitous_indices=train_ds.ubiquitous_indices,
+        ubiquitous_probs=train_ds.ubiquitous_probs,
+        ubiquitous_target=train_ds.ubiquitous_target,
     ) if _is_sparse else None
     val_collate = _make_sparse_collate_fn(n_species) if _is_sparse else None
 
@@ -1594,3 +1745,64 @@ def get_class_weights(
     neg = (1 - t).sum(dim=0)
     weights = (neg + smoothing) / (pos + smoothing)
     return torch.clamp(weights, max=max_weight)
+
+
+# ---------------------------------------------------------------------------
+# Ubiquitous species whitelist
+# ---------------------------------------------------------------------------
+
+def load_ubiquitous_species(path: str) -> List[Tuple[str, float]]:
+    """Parse a ubiquitous-species whitelist file.
+
+    The file format is one species per line with two whitespace-separated
+    columns and an optional ``#`` comment::
+
+        <species_code>   <injection_probability>    # optional comment
+
+    Codes can be eBird 6-letter codes (birds) or numeric iNaturalist IDs
+    (non-birds), matching the labels used in training.  Probabilities
+    must be in ``[0, 1]``.  Blank lines and lines beginning with ``#``
+    are ignored.
+
+    See ``species-data/ubiquitous_species.txt`` for the curated default
+    list shipped with the repository (humans, livestock, commensals,
+    cosmopolitan pollinators).  Used by training to randomly inject these
+    species as soft positives in cells where they were not observed,
+    counteracting under-recording of synanthropic taxa.
+
+    Args:
+        path: Path to the whitelist file.
+
+    Returns:
+        List of ``(code, probability)`` tuples in file order.
+
+    Raises:
+        FileNotFoundError: If ``path`` does not exist.
+        ValueError: If a non-comment line cannot be parsed or a
+            probability is outside ``[0, 1]``.
+    """
+    p = Path(path)
+    if not p.is_file():
+        raise FileNotFoundError(f"Ubiquitous species file not found: {path}")
+    out: List[Tuple[str, float]] = []
+    for lineno, raw in enumerate(p.read_text(encoding='utf-8').splitlines(), 1):
+        # Strip inline comments and surrounding whitespace
+        line = raw.split('#', 1)[0].strip()
+        if not line:
+            continue
+        parts = line.split()
+        if len(parts) != 2:
+            raise ValueError(
+                f"{path}:{lineno}: expected '<code> <prob>', got: {raw!r}")
+        code, prob_str = parts[0], parts[1]
+        try:
+            prob = float(prob_str)
+        except ValueError as exc:
+            raise ValueError(
+                f"{path}:{lineno}: invalid probability {prob_str!r}") from exc
+        if not (0.0 <= prob <= 1.0):
+            raise ValueError(
+                f"{path}:{lineno}: probability {prob} outside [0, 1]")
+        out.append((code, prob))
+    return out
+
