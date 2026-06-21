@@ -220,6 +220,14 @@ def combine_data(
     
     logging.info(f"Loading H3 environmental data from {h3_path}")
     h3_df = gpd.read_parquet(h3_path)
+    # Normalise h3_index to hex strings so it matches the string cell ids
+    # produced by h3.latlng_to_cell during GBIF processing. A parquet that
+    # stored h3_index as int64 would otherwise match nothing, silently
+    # producing an empty result. Mirrors the same guard in utils/data.py.
+    if 'h3_index' in h3_df.columns:
+        h3_df['h3_index'] = h3_df['h3_index'].apply(
+            lambda x: x if isinstance(x, str) else h3.int_to_str(x)
+        )
     valid_h3_cells = set(h3_df['h3_index'].values)
     logging.info(f"Loaded {len(valid_h3_cells)} valid H3 cells")
 
