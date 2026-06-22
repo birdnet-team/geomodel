@@ -15,9 +15,9 @@ python convert.py --formats all                      # everything
 | Format | Flag | Size (scale 0.75, 12K species) | Description |
 |---|---|---|---|
 | ONNX FP32 | `onnx` | ~15 MB | Full-precision ONNX model |
-| ONNX FP16 | `onnx_fp16` | ~7 MB | Half-precision ONNX (default) |
+| ONNX FP16 | `onnx_fp16` | ~13 MB | Half-precision ONNX (default) |
 | TFLite FP32 | `tflite` | ~14 MB | TensorFlow Lite, full precision |
-| TFLite FP16 | `tflite_fp16` | ~7 MB | TensorFlow Lite, half precision |
+| TFLite FP16 | `tflite_fp16` | ~13 MB | TensorFlow Lite, half precision |
 | TFLite INT8 | `tflite_int8` | ~4 MB | TensorFlow Lite, dynamic-range quantization |
 | TF SavedModel | `tf` | ~14 MB | TensorFlow SavedModel directory |
 

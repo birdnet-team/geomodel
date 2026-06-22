@@ -73,6 +73,23 @@ Species identified by eBird codes (birds) or iNaturalist IDs (non-birds).
 Key pipeline classes in `utils/data.py`: `H3DataLoader`, `H3DataPreprocessor`,
 `BirdSpeciesDataset`.
 
+## Ubiquitous-Species Soft Injection
+
+Synanthropic taxa (humans, livestock, dogs, cats, commensal rats, honey bees,
+chicken proxy *Gallus gallus*) are under-recorded in citizen-science data.
+A whitelist file (`species-data/ubiquitous_species.txt`, 2 columns:
+`<code> <prob>`) is loaded by `utils/data.py: load_ubiquitous_species()` and
+randomly injected as soft positives during training only.
+
+Mechanism: at every batch, for each whitelisted species not already a positive,
+a Bernoulli draw at the per-species probability decides whether the target is
+set to `--ubiquitous_target` (default `0.5`).  Existing positives are never
+overwritten (observed data wins).  Indices are resolved per-vocab via
+`H3DataPreprocessor.resolve_ubiquitous_species()`; unknown codes are dropped.
+
+CLI: `--ubiquitous_species PATH` (default `species-data/ubiquitous_species.txt`,
+empty string disables), `--ubiquitous_target` (default `0.5`).
+
 ## Project Structure
 
 ```

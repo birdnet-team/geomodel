@@ -71,10 +71,13 @@ The training script handles the full pipeline automatically:
 | `--no_yearly` | off | Exclude week-0 (yearly) samples from training |
 | `--no_cache` | off | Disable data preprocessing cache (force reprocessing) |
 | `--jitter` | off | Jitter training coordinates within H3 cells each epoch |
-| `--label_freq_weight` | off | Weight positive labels by region-normalized species frequency |
-| `--label_freq_weight_min` | `0.01` | Minimum label weight for rare species |
-| `--label_freq_weight_pct_lo` | `10` | Lower percentile threshold (species at or below get min weight) |
-| `--label_freq_weight_pct_hi` | `95` | Upper percentile threshold (species at or above get weight 1.0) |
+| `--label_freq_weight` | off | Replace positive labels with per-region soft target frequencies (graded-probability ranking) |
+| `--label_freq_weight_min` | `0.1` | Floor soft target for rare species (auto-raised above `--label_smoothing`) |
+| `--label_freq_weight_pct_lo` | `15` | Lower percentile within a region: species at or below get min target |
+| `--label_freq_weight_pct_hi` | `95` | Upper percentile within a region: species at or above get target 1.0 |
+| `--label_freq_weight_curve` | `1.0` | Exponent on the percentile ramp; values >1 give a sharper power-law cliff |
+| `--ubiquitous_species` | `species-data/ubiquitous_species.txt` | Path to a 2-column whitelist (`<code> <prob>`) of synanthropic species randomly injected as soft positives during training (empty string disables) |
+| `--ubiquitous_target` | `0.5` | Soft target value written for fired ubiquitous injections |
 | `--propagate_labels` | off | Propagate species labels from observed to sparse cells via env similarity |
 | `--propagate_k` | `10` | Number of nearest env-space neighbors for propagation |
 | `--propagate_max_radius` | `1000` | Geographic radius cap in km for propagation |
@@ -82,6 +85,7 @@ The training script handles the full pipeline automatically:
 | `--propagate_min_obs` | `10` | Samples with fewer species than this receive propagated labels |
 | `--propagate_env_dist_max` | `2.0` | Max env-space Euclidean distance (post-StandardScaler) for a neighbor to contribute labels (0 = disabled) |
 | `--propagate_range_cap` | `500` | Hard cap in km on per-species propagation distance from nearest observation (0 = disabled) |
+| `--smooth_gaps` | `0` | Fill bounded temporal gaps up to N missing weeks after propagation (0..48; 0 = disabled; try 2) |
 
 ### Learning Rate Schedule
 
@@ -395,56 +399,66 @@ entirely.  This removes extremely rare species that the model cannot
 meaningfully learn from small sample counts and reduces the output dimension.
 Set to 0 to keep all species regardless of observation count.
 
-### Label Frequency Weighting
+### Label Frequency Weighting (Soft Target Frequencies)
 
 Our training data contains only hard presence/absence labels (1s and 0s) — a
 species was either observed at a location/week or it was not.  However, for
 producing useful ranked species lists the model should ideally score common
-species higher than rare ones.  Label frequency weighting addresses this by
-treating **geographic range as a proxy for local abundance**: a species observed
-across many cells is likely more common at any given location than one recorded
-in only a handful of cells.
+species higher than rare ones.  `--label_freq_weight` addresses this by
+**replacing the positive label `1.0` with a soft target in `(0, 1]`** that
+approximates *how often the species is observed at locations like this one*.
 
-This is not ecologically exact — range and local abundance are different
-quantities — but it provides a practical approximation that yields
+Despite the legacy CLI name, this is **not** a per-species loss weight — it
+is a **soft BCE target**.  BCE with a soft target $t$ minimizes at
+$\sigma(\text{logit}) = t$, so the model learns to predict regional
+observation frequency rather than just presence/absence.  Validation always
+uses binary labels for unbiased evaluation.
+
+The approximation "observation frequency $\approx$ local abundance" is not
+ecologically exact — detection probability and population density are
+distinct quantities — but it provides a practical proxy that yields
 well-ordered predictions without requiring actual abundance counts.
 
 #### The observation bias problem
 
 Citizen-science observation density varies enormously across regions.  The
 US alone can contribute 10× more records than the Neotropics, so a naive
-**global** frequency count would assign high weights to common North American
+**global** frequency count would assign high targets to common North American
 species while suppressing species-rich tropical communities.  The result is
 inflated prediction lists in heavily surveyed areas (e.g. 100 species at
-\>70% probability for a location in New York) and deflated lists in
+>70% probability for a location in New York) and deflated lists in
 under-surveyed but species-rich areas (e.g. only 18 species above 40% for
 a location in Colombia).
 
-#### Region-normalized weighting
+#### Per-region, per-species soft targets
 
-To eliminate this bias, we compute frequency weights via **regional percentile
-normalization**.  The algorithm:
+To eliminate this bias — *and* to ensure a clear common-vs-rare fall-off at
+every location — we compute soft targets **per (region, species) pair** via
+regional percentile normalization.  The algorithm:
 
-1. **Partition** the globe into geographic bins (30° latitude × 60° longitude,
-   yielding up to 36 bins covering all land masses).
+1. **Partition** the globe into geographic bins (30° latitude × 60°
+   longitude).
 2. **Count** per-species occurrences within each bin independently.
-3. **Rank** each species within its bin by percentile (fraction of species in
-   that bin with fewer observations).
-4. **Aggregate** across bins: each species keeps its **maximum** regional
-   percentile rank.  Using the max ensures that a species common in *any*
-   region gets an appropriately high weight — even if it is absent or rare
-   in most other regions.
-5. **Map** the max-regional-percentile to a label weight via linear
+3. **Rank** each species within its bin by percentile (fraction of species
+   in that bin with fewer observations).
+4. **Map** each (region, species) percentile to a soft target via linear
    interpolation controlled by `--label_freq_weight_pct_lo` and
    `--label_freq_weight_pct_hi`.
+5. **Fall back** to the species' global-max-percentile target for (region,
+   species) cells where the species was not directly observed in that
+   region (e.g. when label propagation introduced pseudo-labels).  This
+   preserves the propagation signal without polluting unrelated regions.
 
-This makes weights independent of absolute observation density: a species at
-the 90th percentile in Colombia gets the same weight as one at the 90th
-percentile in the US — regardless of raw count differences.
+At sample time, each present species' label is set to
+`region_target[sample_region, species]`.  This means the same species can
+have different soft targets at different locations: a Common Loon labeled
+present in northern Minnesota gets a high target there, while the same
+species labeled present at a sparse southern location gets a much lower
+target — producing a clean ranked list at every location.
 
 #### Linear mapping
 
-The position between `pct_lo` (default 1) and `pct_hi` (default 99) is
+The position between `pct_lo` (default 15) and `pct_hi` (default 95) is
 linearly interpolated:
 
 $$
@@ -452,42 +466,142 @@ t = \frac{p - p_{\text{lo}}}{p_{\text{hi}} - p_{\text{lo}}}, \qquad
 w = w_{\text{min}} + t \cdot (1 - w_{\text{min}})
 $$
 
-Species at or below `pct_lo` get `min_weight`; species at or above `pct_hi`
-get weight 1.0.  Only positive labels (1s) are affected — zeros stay at 0,
-so this does **not** act as label smoothing.
+Species at or below `pct_lo` get `min_weight`; species at or above
+`pct_hi` get target 1.0.  Only positive labels are affected — zeros stay
+at 0 (or `label_smoothing` if smoothing is on).
 
-#### Weight curve
+#### Soft target curve (defaults)
 
-The table below shows the resulting label weight at various regional
-percentile positions (with default `pct_lo=1`, `pct_hi=99`,
-`min_weight=0.01`):
+With `pct_lo=15`, `pct_hi=95`, `min_weight=0.1`:
 
-| Regional percentile | Label weight | Category |
+| Regional percentile | Soft target | Category |
 |---|---|---|
-| ≤ 1 (pct_lo) | **0.01** | Rare — minimal gradient contribution |
-| 10 | 0.10 | Uncommon |
-| 25 | 0.25 | Below average |
-| 50 | 0.50 | Average |
-| 75 | 0.76 | Common |
-| 90 | 0.91 | Very common |
-| ≥ 99 (pct_hi) | **1.00** | Abundant — full gradient contribution |
+| ≤ 15 (`pct_lo`) | **0.10** | Rare in region — minimal positive signal |
+| 30 | 0.27 | Uncommon |
+| 50 | 0.49 | Average for the region |
+| 70 | 0.72 | Common |
+| 85 | 0.88 | Very common |
+| ≥ 95 (`pct_hi`) | **1.00** | Top species in the region — full positive signal |
+
+With only the top 5% saturating at 1.0, the model retains incentive to
+rank species *within* the common group — producing a clear fall-off even
+at species-rich locations like Ithaca, NY.
+
+#### Interaction with label smoothing and AN loss
+
+- `--label_freq_weight_min` is automatically raised to `2 ×
+  --label_smoothing` (with a printed warning) if set lower, so that
+  present-but-rare species (target = `min_weight`) remain distinguishable
+  from smoothed assumed-negatives (target = `label_smoothing`).
+- The Assume-Negative loss (`--species_loss an`) treats any
+  strictly-positive target as a positive (not just `> 0.5`), so soft
+  targets do not silently flip rare positives into assumed-negatives.
 
 #### Parameters
 
 | Parameter | Default | Description |
 |---|---|---|
-| `--label_freq_weight` | off | Enable region-normalized label weighting |
-| `--label_freq_weight_min` | `0.01` | Minimum weight assigned to rare species |
-| `--label_freq_weight_pct_lo` | `10` | Regional percentile at or below which species get min weight |
-| `--label_freq_weight_pct_hi` | `95` | Regional percentile at or above which species get weight 1.0 |
+| `--label_freq_weight` | off | Enable per-region soft target frequencies |
+| `--label_freq_weight_min` | `0.1` | Floor soft target for rare species (auto-raised above `--label_smoothing`) |
+| `--label_freq_weight_pct_lo` | `15` | Within-region percentile at or below which species get `min_weight` |
+| `--label_freq_weight_pct_hi` | `95` | Within-region percentile at or above which species get target 1.0 |
+| `--label_freq_weight_curve` | `1.0` | Exponent applied to the percentile ramp (`>1` = power-law cliff) |
 
 ```bash
-python train.py --label_freq_weight --label_freq_weight_min 0.01
+python train.py --label_freq_weight
 ```
 
 !!! note
-    Label frequency weighting applies to the **training set only** — validation
+    Soft target frequencies apply to the **training set only** — validation
     uses standard binary labels for unbiased evaluation.
+
+!!! tip
+    To make the fall-off even sharper at very rich locations, push
+    `--label_freq_weight_pct_hi` higher still (e.g. `99` — only the top
+    1% saturate).  Conversely, lower it (e.g. `90`) for a softer top end.
+    Raising `--label_freq_weight_pct_lo` (e.g. `25`) collapses more rare
+    species into the floor; lowering it (e.g. `5`) keeps them on the ramp.
+
+!!! tip "Sharper cliff with `--label_freq_weight_curve`"
+    The default ramp is **linear in percentile**, so a species at the 75th
+    regional percentile already gets a target of `~0.77`.  In well-surveyed
+    cells this saturates many moderately-common species into the
+    high-confidence band and produces over-long predicted lists.  Set
+    `--label_freq_weight_curve 3` (or higher) to bend the ramp into a
+    power-law cliff: with `pct_lo=15`, `pct_hi=95`, `curve=3`, the 75th
+    percentile species gets target `~0.43` instead of `~0.77`, while the
+    genuinely top-recorded species still saturate at `1.0`.  Use this in
+    combination with `--threshold` at inference for crisp short lists.
+
+### Ubiquitous-Species Soft Injection
+
+Synanthropic taxa — humans, livestock, dogs, cats, commensal rats,
+honey bees, the chicken proxy *Gallus gallus* — are present essentially
+anywhere humans are, but they are massively under-recorded in
+citizen-science data because observers focus on wild species.  Without a
+prior, the model learns sharply confident absences for these species
+across most of its training cells.
+
+The training loop addresses this by reading a small whitelist file and
+randomly injecting whitelisted species as **soft positives** during
+training.  At every batch, for each whitelisted species that is *not*
+already a positive in a given sample, a Bernoulli draw at the per-species
+probability decides whether the target is set to `--ubiquitous_target`
+(default `0.5`).  Existing positives are never overwritten — observed
+data always wins.
+
+#### Whitelist file format
+
+`species-data/ubiquitous_species.txt` ships with the repository.  Two
+whitespace-separated columns per line, plus an optional `#` comment:
+
+```
+<species_code>   <injection_probability>    # comment
+```
+
+- `species_code` matches the labels used in training (eBird 6-letter
+  codes for birds; numeric iNaturalist IDs for non-birds).  Codes that
+  are not in the trained vocabulary are silently dropped at load time.
+- `injection_probability` ∈ `[0, 1]` is applied independently per
+  `(sample, species)` draw.
+
+Probability tiers used in the default file:
+
+| Tier | Probability | Examples |
+|---|---|---|
+| Cosmopolitan | `0.50` | Human, dog, cat, honey bee, chicken |
+| Globally widespread | `0.30` | Cattle, sheep, goat, horse, brown rat, black rat |
+| Strongly regional | `0.15` | *Bombus terrestris*, *B. impatiens* |
+
+#### Curation rules of the default list
+
+- **No wild birds.**  The only bird is `redjun` (*Gallus gallus*), which
+  serves as the chicken proxy because GBIF/iNaturalist records of
+  domestic chickens fall under the species-level taxon.
+- **No small mammals an audio model cannot detect** (mice, rabbits
+  removed; rats kept because they are commensal and heavily recorded
+  near settlements).
+- **No regional umbrella taxa** (Gray Wolf and European Wildcat were
+  removed — these are wild species, not synanthropes).
+
+#### Disabling
+
+Pass `--ubiquitous_species ''` to disable the feature entirely.  The
+ubiquitous injection is **applied to the training set only** —
+validation always uses observed binary labels.
+
+!!! note
+    The injection is a noisy soft prior, not a constant one.  Different
+    samples in the same epoch see different injection patterns, and the
+    same sample sees different patterns in different epochs.  This
+    discourages the model from memorising the prior and lets the
+    observed signal still dominate at well-surveyed cells.
+
+!!! tip
+    Combine with `--max_obs_per_species` if you want to additionally
+    flatten the dominance of the most-recorded synanthropes (humans
+    have orders of magnitude more iNaturalist records than any other
+    taxon).
 
 ### Environmental Neighbor Label Propagation
 
@@ -528,6 +642,11 @@ species encoding, so propagated species participate fully in training.
    because the environment matches.
 8. **Merge** the neighbor species into the sparse sample's list
    (union, no duplicates).
+9. **Optionally smooth temporal gaps** — if `--smooth_gaps N` is greater
+  than zero, fill absent runs of up to `N` weeks in each per-cell,
+  per-species 1..48 week series, but only when the run is bounded by
+  positives on both sides. The week cycle is circular, so gaps across the
+  week 48 → week 1 boundary can be filled.
 
 #### Parameters
 
@@ -540,6 +659,7 @@ species encoding, so propagated species participate fully in training.
 | `--propagate_min_obs` | 10 | Sparsity threshold (species count) |
 | `--propagate_env_dist_max` | 2.0 | Max env-space distance for neighbor eligibility |
 | `--propagate_range_cap` | 500 | Hard km ceiling on per-species propagation distance |
+| `--smooth_gaps` | 0 | Fill bounded temporal gaps up to N missing weeks after propagation (0..48) |
 
 !!! tip
     Start with defaults and check whether the model's predictions in
@@ -672,9 +792,10 @@ python train.py --data_path data.parquet --autotune lr pos_lambda    # tune spec
 | `coord_harmonics` | 2 → 8 (integer) |
 | `week_harmonics` | 2 → 8 (integer) |
 | `label_freq_weight` | {true, false} |
-| `label_freq_weight_min` | 0.01 → 0.5 (log scale) |
-| `label_freq_weight_pct_lo` | 1.0 → 25.0 |
-| `label_freq_weight_pct_hi` | 75.0 → 99.0 |
+| `label_freq_weight_min` | 0.05 → 0.3 (log scale) |
+| `label_freq_weight_pct_lo` | 5.0 → 35.0 |
+| `label_freq_weight_pct_hi` | 70.0 → 95.0 |
+| `label_freq_weight_curve` | 1.0 → 5.0 |
 
 The dataset is built once before tuning starts.  Data-affecting parameters
 (`--max_obs_per_species`, `--min_obs_per_species`, `--no_yearly`) are set via
@@ -687,8 +808,11 @@ the CLI and stay fixed across all trials.
 | `--autotune` | — | Enable autotune. Without args: tune all. With args: tune listed params only. |
 | `--autotune_trials` | `30` | Number of Optuna trials |
 | `--autotune_epochs` | `15` | Epochs per trial |
+| `--autotune_ranges` | — | JSON overrides for per-parameter search spaces; use `[lo, hi]` for numeric params or a list of allowed values for categorical params |
 
 Each trial trains a fresh model and optimizes towards validation GeoScore.  Optuna's `MedianPruner` kills unpromising trials early (after 3 warmup epochs).  Results are saved to `checkpoints/autotune/autotune_results.json`, and a suggested `train.py` command with the best parameters is printed.
+
+`--autotune_ranges` applies to every autotunable parameter.  For example, `{"coord_harmonics": [8, 16], "week_harmonics": [8, 16]}` constrains those integer searches to that interval instead of the default bounds.
 
 ## References
 

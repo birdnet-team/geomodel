@@ -3,6 +3,7 @@
 
 # Exclude species data
 species-data/
+wanted_species.txt
 
 # Exclude report dir
 report/

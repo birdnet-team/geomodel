@@ -31,6 +31,7 @@ import pickle
 from pathlib import Path
 from typing import Dict, List, Optional
 
+import numpy as np
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
@@ -40,7 +41,7 @@ from model.model import create_model
 from model.loss import MultiTaskLoss
 from model.metrics import compute_geoscore
 from model.autotune import TUNABLE_PARAMS, run_autotune
-from utils.data import H3DataLoader, H3DataPreprocessor, create_dataloaders
+from utils.data import H3DataLoader, H3DataPreprocessor, create_dataloaders, load_ubiquitous_species
 from utils.regions import HOLDOUT_REGIONS, resolve_holdout_regions, REGION_BOUNDS
 
 
@@ -56,11 +57,13 @@ _DATA_CACHE_KEYS = [
     'no_yearly',
     'propagate_labels', 'propagate_k', 'propagate_max_radius',
     'propagate_min_obs', 'propagate_max_spread',
+    'propagate_env_dist_max', 'propagate_range_cap', 'smooth_gaps',
     'max_obs_per_species', 'min_obs_per_species', 'max_species',
     'val_size', 'sample_fraction',
     'holdout_regions',
     'label_freq_weight', 'label_freq_weight_min',
     'label_freq_weight_pct_lo', 'label_freq_weight_pct_hi',
+    'label_freq_weight_curve',
 ]
 
 
@@ -894,15 +897,46 @@ def main():
                         help='Jitter training coordinates within H3 cells each epoch '
                              '(Gaussian noise scaled to cell size, augments spatial inputs)')
     parser.add_argument('--label_freq_weight', action='store_true',
-                        help='Weight positive labels by species frequency '
-                             '(common=1.0, rare=min_weight, linear '
-                             'interpolation between lo/hi percentile)')
-    parser.add_argument('--label_freq_weight_min', type=float, default=0.01,
-                        help='Minimum label weight for rare species (default: 0.01)')
-    parser.add_argument('--label_freq_weight_pct_lo', type=float, default=10.0,
-                        help='Lower percentile: species at or below get min_weight (default: 10)')
+                        help='Replace positive labels with per-region '
+                             'soft target frequencies (turns BCE into a '
+                             'graded-probability ranker; common species in '
+                             "the sample's region get target 1.0, rare "
+                             'ones get min_weight, linear interpolation '
+                             'between lo/hi percentile)')
+    parser.add_argument('--label_freq_weight_min', type=float, default=0.1,
+                        help='Floor soft target for rare species '
+                             '(default: 0.1; auto-raised above '
+                             '--label_smoothing if set lower)')
+    parser.add_argument('--label_freq_weight_pct_lo', type=float, default=15.0,
+                        help='Lower percentile within a region: species at '
+                             'or below get min_weight (default: 15)')
     parser.add_argument('--label_freq_weight_pct_hi', type=float, default=95.0,
-                        help='Upper percentile: species at or above get weight 1.0 (default: 95)')
+                        help='Upper percentile within a region: species at '
+                             'or above get target 1.0 (default: 95; only the '
+                             'top 5%% saturate, keeping a sharp common-vs-rare ramp)')
+    parser.add_argument('--label_freq_weight_curve', type=float, default=1.0,
+                        help='Exponent applied to the percentile ramp '
+                             '(default: 1.0 = linear). Values >1 produce a '
+                             'power-law cliff that keeps high targets reserved '
+                             'for genuinely top-recorded species and shortens '
+                             'predicted lists in well-surveyed cells (try 3.0).')
+
+    # Ubiquitous species injection (humans, livestock, commensals, pollinators).
+    # Counters under-recording of synanthropic taxa: at each training sample
+    # every whitelisted species that is not already a positive is set to a
+    # soft target with a per-species probability defined in the file.
+    parser.add_argument('--ubiquitous_species', type=str,
+                        default='species-data/ubiquitous_species.txt',
+                        help='Path to a two-column whitelist file '
+                             '(<code> <prob> per line) of species randomly '
+                             'injected as soft positives during training. '
+                             'Pass an empty string to disable. '
+                             'Default: species-data/ubiquitous_species.txt')
+    parser.add_argument('--ubiquitous_target', type=float, default=0.5,
+                        help='Soft target value written for fired ubiquitous '
+                             'injections (default: 0.5; lower than 1.0 '
+                             'because the model should not be confidently '
+                             'certain absent species are present)')
 
     # Label propagation (env neighbor)
     parser.add_argument('--propagate_labels', action='store_true',
@@ -923,6 +957,10 @@ def main():
     parser.add_argument('--propagate_range_cap', type=float, default=1500.0,
                         help='Hard cap in km on per-species propagation distance from '
                              'nearest observation. 0 = disabled (default: 1500).')
+    parser.add_argument('--smooth_gaps', type=int, default=0,
+                        help='Fill bounded temporal gaps up to N missing weeks after '
+                             'label propagation (0..48). 0 = disabled; try 2 for GIF-like '
+                             'range smoothing (default: 0).')
 
     # LR schedule
     parser.add_argument('--lr_schedule', type=str, default='cosine', choices=['cosine', 'none'],
@@ -1037,8 +1075,12 @@ def main():
         print(f"  Jitter:     enabled (Gaussian noise within H3 cells)")
     if args.label_freq_weight:
         print(f"  Freq weight: enabled (min={args.label_freq_weight_min})")
+    if args.ubiquitous_species:
+        print(f"  Ubiquitous: {args.ubiquitous_species} "
+              f"(target={args.ubiquitous_target})")
     if args.propagate_labels:
-        print(f"  Propagate:  k={args.propagate_k}, radius={args.propagate_max_radius}km, min_obs={args.propagate_min_obs}")
+        print(f"  Propagate:  k={args.propagate_k}, radius={args.propagate_max_radius}km, "
+              f"min_obs={args.propagate_min_obs}, smooth_gaps={args.smooth_gaps}")
     if args.sample_fraction < 1.0:
         print(f"  Sample fraction: {args.sample_fraction} (subsampled by location once)")
     if args.holdout_regions:
@@ -1089,11 +1131,16 @@ def main():
         # Save pre-propagation species lists for frequency weight computation.
         # Propagation inflates counts for common species and skews regional
         # percentile estimates, so weights must be derived from original data.
-        species_lists_original = list(species_lists) if args.propagate_labels else None
+        species_lists_original = [list(sl) for sl in species_lists] if args.propagate_labels else None
 
         # Environmental neighbor label propagation (before preprocessing)
         if args.propagate_labels:
             print("   Propagating labels from observed to sparse cells...")
+            samples_per_cell = 48 + (0 if args.no_yearly else 1)
+            sample_cell_indices = np.repeat(
+                np.arange(len(species_lists) // samples_per_cell),
+                samples_per_cell,
+            )
             
             species_lists = H3DataPreprocessor.propagate_env_labels(
                 lats, lons, weeks, species_lists, env_features,
@@ -1103,6 +1150,8 @@ def main():
                 max_spread_factor=args.propagate_max_spread,
                 env_dist_max=args.propagate_env_dist_max,
                 range_cap_km=args.propagate_range_cap,
+                smooth_gaps=args.smooth_gaps,
+                sample_cell_indices=sample_cell_indices,
             )
 
         print("3. Preprocessing...")
@@ -1127,11 +1176,27 @@ def main():
         # so pseudo-labels don't skew regional abundance percentiles.
         freq_weights = None
         if args.label_freq_weight:
+            # The "weight" is actually a soft BCE target: a present species
+            # gets target = w[s] instead of 1.0, training the model to rank
+            # by regional observation frequency.  The floor must stay above
+            # the label-smoothing epsilon, otherwise a present-but-rare
+            # species (target = min_weight) becomes indistinguishable from
+            # a smoothed absent species (target = label_smoothing).
+            if args.label_freq_weight_min <= args.label_smoothing:
+                new_min = float(args.label_smoothing) * 2.0
+                print(
+                    f"   WARNING: --label_freq_weight_min "
+                    f"({args.label_freq_weight_min}) ≤ --label_smoothing "
+                    f"({args.label_smoothing}); raising floor to {new_min} "
+                    f"to keep rare positives separable from smoothed negatives."
+                )
+                args.label_freq_weight_min = new_min
             _freq_sl = species_lists_original if species_lists_original is not None else species_lists
             freq_weights = preprocessor.compute_species_freq_weights(
                 _freq_sl, min_weight=args.label_freq_weight_min,
                 pct_lo=args.label_freq_weight_pct_lo,
                 pct_hi=args.label_freq_weight_pct_hi,
+                curve=args.label_freq_weight_curve,
                 lats=inputs['lat'], lons=inputs['lon'],
             )
 
@@ -1190,6 +1255,24 @@ def main():
         train_tgt, val_tgt, n_species,
     )
 
+    # Resolve ubiquitous-species whitelist against the current vocabulary.
+    # Empty string disables the feature; missing files print a warning but
+    # do not abort (training without injection is still valid).
+    ubi_idx = ubi_prob = None
+    if args.ubiquitous_species:
+        ubi_path = Path(args.ubiquitous_species)
+        if ubi_path.is_file():
+            print(f"\n   Loading ubiquitous-species whitelist: {ubi_path}")
+            entries = load_ubiquitous_species(str(ubi_path))
+            ubi_idx, ubi_prob = preprocessor.resolve_ubiquitous_species(entries)
+            if len(ubi_idx) == 0:
+                print("   No ubiquitous species matched the vocabulary; "
+                      "injection disabled.")
+                ubi_idx = ubi_prob = None
+        else:
+            print(f"\n   WARNING: --ubiquitous_species path not found "
+                  f"({args.ubiquitous_species}); injection disabled.")
+
     print("5. Creating DataLoaders...")
     train_loader, val_loader = create_dataloaders(
         train_in, train_tgt, val_in, val_tgt,
@@ -1198,6 +1281,11 @@ def main():
         n_species=n_species,
         jitter_std=jitter_std,
         species_freq_weights=freq_weights,
+        species_region_weights=getattr(
+            preprocessor, 'species_region_weights', None),
+        ubiquitous_indices=ubi_idx,
+        ubiquitous_probs=ubi_prob,
+        ubiquitous_target=args.ubiquitous_target,
     )
 
     # Create holdout DataLoader if regions were masked

@@ -6,6 +6,7 @@ Handles the full pipeline from parquet files to training-ready DataLoaders:
 - H3DataPreprocessor: Sinusoidal encoding, normalization, species vocab, splitting
 - BirdSpeciesDataset: PyTorch Dataset wrapper
 - create_dataloaders / get_class_weights: DataLoader and class weight utilities
+- load_ubiquitous_species: parse a per-species probability whitelist file
 """
 
 import geopandas as gpd
@@ -212,6 +213,103 @@ class H3DataPreprocessor:
         self._fraction_cols: List[str] = []
         self._continuous_cols: List[str] = []
         self._category_maps: Dict[str, List] = {}  # col → sorted unique values (for one-hot)
+
+    @staticmethod
+    def smooth_temporal_gaps(
+        lats: np.ndarray,
+        lons: np.ndarray,
+        weeks: np.ndarray,
+        species_lists: List[List[str]],
+        max_gap: int,
+        sample_cell_indices: Optional[np.ndarray] = None,
+        candidate_species: Optional[Set[str]] = None,
+    ) -> int:
+        """Fill bounded weekly gaps in per-cell species presence series.
+
+        A zero-run is filled only when it is bracketed by existing positives on
+        both sides in the circular 1..48 week cycle. This repairs holes without
+        extending the first or last observed/propagated seasonal block.
+
+        Args:
+            lats: Per-sample latitudes.
+            lons: Per-sample longitudes.
+            weeks: Per-sample week numbers. Only weeks 1..48 are smoothed;
+                week 0 yearly samples are ignored.
+            species_lists: Per-sample species occurrence lists (mutable).
+            max_gap: Maximum number of consecutive absent weeks to fill.
+            sample_cell_indices: Optional per-sample cell ids. If omitted,
+                samples are grouped by exact latitude/longitude.
+            candidate_species: Optional species-code subset to smooth.
+
+        Returns:
+            Number of species labels added by temporal gap filling.
+        """
+        max_gap = int(max_gap)
+        if max_gap <= 0:
+            return 0
+        if max_gap > 48:
+            raise ValueError("smooth_gaps must be between 0 and 48")
+
+        weeks_arr = np.asarray(weeks)
+        weekly_mask = (weeks_arr >= 1) & (weeks_arr <= 48)
+        if not weekly_mask.any():
+            return 0
+
+        if sample_cell_indices is None:
+            coords = np.column_stack([lats, lons])
+            _, cell_indices = np.unique(coords, axis=0, return_inverse=True)
+        else:
+            cell_indices = np.asarray(sample_cell_indices)
+            if len(cell_indices) != len(species_lists):
+                raise ValueError("sample_cell_indices must match species_lists length")
+
+        candidate_species = set(candidate_species) if candidate_species is not None else None
+        week_order = list(range(1, 49))
+        week_to_pos = {week: pos for pos, week in enumerate(week_order)}
+        n_weeks = len(week_order)
+
+        cell_week_to_sample: Dict[Any, Dict[int, int]] = {}
+        cell_species_weeks: Dict[Any, Dict[str, Set[int]]] = {}
+
+        for sample_idx in np.where(weekly_mask)[0]:
+            cell_id = cell_indices[sample_idx]
+            week = int(weeks_arr[sample_idx])
+            cell_week_to_sample.setdefault(cell_id, {})[week] = sample_idx
+            species_weeks = cell_species_weeks.setdefault(cell_id, {})
+            for species_id in species_lists[sample_idx]:
+                if candidate_species is not None and species_id not in candidate_species:
+                    continue
+                species_weeks.setdefault(species_id, set()).add(week)
+
+        added = 0
+        for cell_id, species_weeks in cell_species_weeks.items():
+            week_to_sample = cell_week_to_sample[cell_id]
+            for species_id, present_weeks in species_weeks.items():
+                positions = sorted(
+                    week_to_pos[week] for week in present_weeks
+                    if week in week_to_pos
+                )
+                if len(positions) < 2:
+                    continue
+
+                for left, right in zip(positions, positions[1:] + [positions[0] + n_weeks]):
+                    gap = right - left - 1
+                    if gap <= 0 or gap > max_gap:
+                        continue
+                    for pos in range(left + 1, right):
+                        week = week_order[pos % n_weeks]
+                        sample_idx = week_to_sample.get(week)
+                        if sample_idx is None:
+                            continue
+                        species_list = species_lists[sample_idx]
+                        if species_id not in species_list:
+                            if not isinstance(species_list, list):
+                                species_list = list(species_list)
+                                species_lists[sample_idx] = species_list
+                            species_list.append(species_id)
+                            added += 1
+
+        return added
 
     # -- Encoding ---------------------------------------------------------
     # NOTE: Circular encoding of lat/lon/week is now handled inside the model
@@ -511,6 +609,10 @@ class H3DataPreprocessor:
         max_spread_factor: float = 2.0,
         env_dist_max: float = 2.0,
         range_cap_km: float = 500.0,
+        candidate_species: Optional[Set[str]] = None,
+        env_row_indices: Optional[np.ndarray] = None,
+        smooth_gaps: int = 0,
+        sample_cell_indices: Optional[np.ndarray] = None,
     ) -> List[List[str]]:
         """Propagate species labels from observed to sparse/unobserved cells.
 
@@ -550,6 +652,20 @@ class H3DataPreprocessor:
                 species' bounding-box range would allow propagation farther,
                 it is clamped to at most *range_cap_km*.  Set to 0 to disable
                 (default 500).
+            candidate_species: Optional species-code subset to propagate.
+                When provided, observed/sparse cell selection still uses the
+                full species lists, but only these species are copied. Default
+                None propagates all species.
+            env_row_indices: Optional index array mapping each sample to a row
+                in *env_features*. Use this when many samples share the same
+                cell-level environmental features. Default None assumes one
+                env row per sample.
+            smooth_gaps: Fill temporal gaps up to this many missing weeks in
+                each per-cell, per-species 1..48 week presence series after
+                spatial propagation. 0 disables smoothing.
+            sample_cell_indices: Optional per-sample cell ids for temporal gap
+                smoothing. If omitted and smoothing is enabled, samples are
+                grouped by exact latitude/longitude.
 
         Returns:
             Modified species_lists with propagated labels (also mutated
@@ -569,30 +685,51 @@ class H3DataPreprocessor:
         n_sparse = int(sparse_mask.sum())
         n_observed = int(observed_mask.sum())
         if n_sparse == 0 or n_observed == 0:
+            temporal_added = H3DataPreprocessor.smooth_temporal_gaps(
+                lats, lons, weeks, species_lists, smooth_gaps,
+                sample_cell_indices=sample_cell_indices,
+                candidate_species=candidate_species,
+            )
             print(f"   Env label propagation: nothing to propagate "
                   f"({n_observed:,} observed, {n_sparse:,} sparse)")
+            if temporal_added > 0:
+                print(f"   Temporal gap smoothing: added {temporal_added:,} labels "
+                      f"(max_gap={int(smooth_gaps)})")
             return species_lists
 
         # --- Build species vocabulary and sparse membership matrix ---
         # This replaces the per-species Python loops with sparse matrix ops.
+        candidate_species = set(candidate_species) if candidate_species is not None else None
         all_sp: set = set()
+        total_entries = 0
         for sl in species_lists:
-            all_sp.update(sl)
+            if candidate_species is None:
+                all_sp.update(sl)
+                total_entries += len(sl)
+            else:
+                for species_id in sl:
+                    if species_id in candidate_species:
+                        all_sp.add(species_id)
+                        total_entries += 1
         sp_list = sorted(all_sp)
         sp_to_idx = {s: i for i, s in enumerate(sp_list)}
         n_sp = len(sp_list)
 
+        if n_sp == 0:
+            print("   Env label propagation: no eligible species to propagate")
+            return species_lists
+
         # Flatten (sample_index, species_index) pairs for CSR construction
-        total_entries = int(obs_counts.sum())
         mem_r = np.empty(total_entries, dtype=np.int32)
         mem_c = np.empty(total_entries, dtype=np.int32)
         pos = 0
         for i, sl in enumerate(species_lists):
-            n_sl = len(sl)
-            if n_sl > 0:
-                mem_r[pos:pos + n_sl] = i
-                mem_c[pos:pos + n_sl] = [sp_to_idx[s] for s in sl]
-                pos += n_sl
+            ids = [sp_to_idx[s] for s in sl if s in sp_to_idx]
+            n_ids = len(ids)
+            if n_ids > 0:
+                mem_r[pos:pos + n_ids] = i
+                mem_c[pos:pos + n_ids] = ids
+                pos += n_ids
         membership = sps.csr_matrix(
             (np.ones(pos, dtype=np.float32), (mem_r[:pos], mem_c[:pos])),
             shape=(n, n_sp),
@@ -688,6 +825,8 @@ class H3DataPreprocessor:
 
         scaler = StandardScaler()
         env_scaled = scaler.fit_transform(env_arr).astype(np.float32)
+        if env_row_indices is not None:
+            env_scaled = env_scaled[env_row_indices]
 
         # Pre-convert coords to radians for vectorized haversine
         lats_rad = np.radians(lats.astype(np.float64))
@@ -834,6 +973,15 @@ class H3DataPreprocessor:
               f"(k={k}, max_radius={max_radius_km:.0f}km, "
               f"min_obs={min_obs_threshold}{gate_str})")
 
+        temporal_added = H3DataPreprocessor.smooth_temporal_gaps(
+            lats, lons, weeks, species_lists, smooth_gaps,
+            sample_cell_indices=sample_cell_indices,
+            candidate_species=candidate_species,
+        )
+        if temporal_added > 0:
+            print(f"   Temporal gap smoothing: added {temporal_added:,} labels "
+                  f"(max_gap={int(smooth_gaps)})")
+
         return species_lists
 
     # Heuristic: if dense matrix would exceed this many bytes, use sparse
@@ -906,11 +1054,77 @@ class H3DataPreprocessor:
 
         # Frequency-based label weights (computed here, applied in Dataset)
         self.species_freq_weights = None
+        self.species_region_weights = None
 
         return inputs, targets
 
     _REGION_LAT_BIN = 30.0   # degrees per latitude bin
     _REGION_LON_BIN = 60.0   # degrees per longitude bin
+    _N_REGIONS = 60          # 6 lat bins × 10 (lat*10 + lon encoding)
+
+    @staticmethod
+    def compute_region_ids(lats: np.ndarray, lons: np.ndarray) -> np.ndarray:
+        """Map (lat, lon) arrays to integer region ids in ``[0, _N_REGIONS)``.
+
+        Used both during freq-weight computation and at sample time to look
+        up per-region soft target labels.  The encoding ``lat_bin * 10 +
+        lon_bin`` leaves gaps in the integer space (max id is 55) but keeps
+        the lookup arrays sized at ``_N_REGIONS = 60``.
+        """
+        lat_bins = np.clip(
+            ((lats + 90.0) / H3DataPreprocessor._REGION_LAT_BIN).astype(int),
+            0, 5,
+        )
+        lon_bins = np.clip(
+            ((lons + 180.0) / H3DataPreprocessor._REGION_LON_BIN).astype(int),
+            0, 5,
+        )
+        return (lat_bins * 10 + lon_bins).astype(np.int64)
+
+    def resolve_ubiquitous_species(
+        self,
+        entries: List[Tuple[str, float]],
+        verbose: bool = True,
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        """Map a ubiquitous-species whitelist to vocabulary indices.
+
+        Filters out codes that are not in the trained species vocabulary
+        (``self.species_to_idx``) and returns aligned arrays of indices
+        and per-species injection probabilities.
+
+        Args:
+            entries: List of ``(species_code, probability)`` tuples as
+                returned by :func:`load_ubiquitous_species`.
+            verbose: If True, print a one-line summary of how many
+                entries were matched and which codes were dropped.
+
+        Returns:
+            ``(indices, probs)`` where ``indices`` is an ``int64`` array
+            of vocabulary indices and ``probs`` is a ``float32`` array
+            of the same length.  Both are empty arrays when no entries
+            match the current vocabulary.
+        """
+        idxs: List[int] = []
+        probs: List[float] = []
+        dropped: List[str] = []
+        for code, prob in entries:
+            i = self.species_to_idx.get(code)
+            if i is None:
+                dropped.append(code)
+                continue
+            idxs.append(i)
+            probs.append(prob)
+        if verbose:
+            print(f"Ubiquitous species: matched {len(idxs)} / {len(entries)} "
+                  f"to current vocabulary")
+            if dropped:
+                preview = ', '.join(dropped[:8])
+                more = '' if len(dropped) <= 8 else f' (+{len(dropped) - 8} more)'
+                print(f"  dropped (not in vocab): {preview}{more}")
+        return (
+            np.asarray(idxs, dtype=np.int64),
+            np.asarray(probs, dtype=np.float32),
+        )
 
     def compute_species_freq_weights(
         self,
@@ -920,16 +1134,33 @@ class H3DataPreprocessor:
         min_weight: float = 0.1,
         pct_lo: float = 10.0,
         pct_hi: float = 90.0,
+        curve: float = 1.0,
     ) -> np.ndarray:
-        """Compute per-species label weights via region-normalized frequency.
+        """Compute per-(region, species) **soft target labels** via region-normalized frequency.
+
+        Despite the legacy name (``freq_weights``), the returned values are
+        **not** loss weights — they are used to *replace* the binary positive
+        target ``1.0`` in `BirdSpeciesDataset` so that BCE trains the model
+        to predict an estimate of *how often / how likely* a species is
+        observed at a location, rather than mere presence vs. absence.  This
+        turns the multi-label classifier into a graded-probability ranker
+        whose output approximates regional detection frequency.
+
+        **Per-location targets.**  Soft targets are computed *per geographic
+        bin*: a species' target value at a sample equals its percentile rank
+        within that sample's region, mapped through the lo/hi ramp.  This
+        produces a sharp common-vs-rare fall-off at every location — a
+        species that is common somewhere but rare in this region gets a low
+        target here, instead of a globally inflated one.
 
         Citizen-science observation density varies enormously across regions.
         The US alone can contribute an order of magnitude more records than
         the Neotropics, so a naive global frequency count would assign high
-        weights to common US species while suppressing species-rich tropical
-        communities.  Region-normalized weighting solves this by computing
-        frequency **percentile ranks within geographic bins** and using the
-        **maximum regional percentile** as each species' weight basis.
+        targets to common US species while suppressing species-rich tropical
+        communities.  Region-normalized soft labels solve this by computing
+        frequency **percentile ranks within geographic bins**.  A species at
+        the 90th percentile in Colombia gets the same target as one at the
+        90th percentile in the US.
 
         Algorithm:
 
@@ -937,36 +1168,37 @@ class H3DataPreprocessor:
         2. Within each bin, count per-species occurrences.
         3. Within each bin, compute the percentile rank of every species
            (among species present in that bin).
-        4. For each species, take the **max** percentile rank across bins.
-        5. Map that max-regional-percentile to a weight via linear
-           interpolation controlled by *pct_lo* / *pct_hi*.
-
-        This makes weights independent of absolute observation density:
-        a species at the 90th percentile in Colombia gets the same weight
-        as one at the 90th percentile in the US.
+        4. Map each (region, species) percentile to a soft target via
+           linear interpolation controlled by *pct_lo* / *pct_hi*.
+        5. For (region, species) pairs where the species was never observed
+           in that region (e.g. propagated pseudo-labels), fall back to the
+           species' **global-max-percentile** target so the propagation
+           signal is preserved.
 
         Args:
             species_lists: Per-sample species occurrence lists.
             lats: Per-sample latitudes.
             lons: Per-sample longitudes.
-            min_weight: Floor weight for rare species.
+            min_weight: Floor target value for rare species.  Should be
+                strictly greater than the BCE ``label_smoothing`` epsilon
+                so that present-but-rare species remain distinguishable
+                from smoothed assumed-negatives.
             pct_lo: Lower percentile threshold.  Default 10.
             pct_hi: Upper percentile threshold.  Default 90.
 
         Returns:
-            Array of shape ``(n_species,)`` stored as
-            ``self.species_freq_weights``.
+            Array of shape ``(n_species,)`` of **fallback** soft target
+            values (the global-max-percentile mapping), stored as
+            ``self.species_freq_weights``.  The full per-region matrix
+            of shape ``(_N_REGIONS, n_species)`` is stored as
+            ``self.species_region_weights``.
         """
         from collections import Counter, defaultdict
 
         n_species = len(self.species_vocab)
+        N_REGIONS = self._N_REGIONS
 
-        # Assign samples to geographic bins
-        lat_bins = np.clip(
-            ((lats + 90.0) / self._REGION_LAT_BIN).astype(int), 0, 5)
-        lon_bins = np.clip(
-            ((lons + 180.0) / self._REGION_LON_BIN).astype(int), 0, 5)
-        region_ids = lat_bins * 10 + lon_bins
+        region_ids = self.compute_region_ids(lats, lons)
 
         # Count per-species occurrences within each region
         region_counts: Dict[int, Counter] = defaultdict(Counter)
@@ -977,7 +1209,9 @@ class H3DataPreprocessor:
                 if idx is not None:
                     region_counts[rid][idx] += 1
 
-        # For each region compute percentile ranks; track max across regions
+        # Build per-(region, species) percentile matrix and presence mask.
+        region_pctile = np.zeros((N_REGIONS, n_species), dtype=np.float32)
+        present = np.zeros((N_REGIONS, n_species), dtype=bool)
         max_pctile = np.zeros(n_species, dtype=np.float64)
 
         for rid, sp_counter in region_counts.items():
@@ -987,42 +1221,73 @@ class H3DataPreprocessor:
             n = len(counts)
             if n < 2:
                 # Singleton region — give 50th percentile by default
-                max_pctile[indices] = np.maximum(
-                    max_pctile[indices], 50.0)
-                continue
+                pctiles = np.full(n, 50.0, dtype=np.float64)
+            else:
+                # Percentile rank = fraction of species with strictly lower
+                # count in this region, scaled to [0, 100).
+                sorted_counts = np.sort(counts)
+                pctiles = (np.searchsorted(sorted_counts, counts,
+                                           side='left') / n * 100.0)
 
-            # Percentile rank = fraction of species with strictly lower
-            # count in this region, scaled to [0, 100).
-            sorted_counts = np.sort(counts)
-            pctiles = (np.searchsorted(sorted_counts, counts, side='left')
-                       / n * 100.0)
-
-            # Update per-species max percentile
+            region_pctile[rid, indices] = pctiles.astype(np.float32)
+            present[rid, indices] = True
             np.maximum.at(max_pctile, indices, pctiles)
 
-        # Map max-regional-percentile → weight via linear interpolation
-        weights = np.full(n_species, min_weight, dtype=np.float32)
-        span = pct_hi - pct_lo
-        if span > 0:
-            for i in range(n_species):
-                p = max_pctile[i]
-                if p >= pct_hi:
-                    weights[i] = 1.0
-                elif p > pct_lo:
-                    t = (p - pct_lo) / span
-                    weights[i] = min_weight + t * (1.0 - min_weight)
-                # else: stays at min_weight (species absent or very rare
-                #        in every region they appear)
+        # Vectorized percentile → soft-target mapping.  The ramp from
+        # ``min_weight`` to ``1.0`` between ``pct_lo`` and ``pct_hi`` is
+        # raised to ``curve`` so values >1 produce a power-law cliff that
+        # keeps high targets reserved for the genuinely top-recorded
+        # species (see Stage L investigation: linear ramp saturated 50-90
+        # percentile species into the 0.4-0.9 target band, producing
+        # over-long predicted lists in well-surveyed cells).
+        _curve = float(max(curve, 1e-3))
+
+        def _pct_to_weight(p: np.ndarray) -> np.ndarray:
+            w = np.full(p.shape, min_weight, dtype=np.float32)
+            span = pct_hi - pct_lo
+            if span > 0:
+                ramp_t = np.clip((p - pct_lo) / span, 0.0, 1.0)
+                if _curve != 1.0:
+                    ramp_t = ramp_t ** _curve
+                w_ramp = (min_weight
+                          + ramp_t * (1.0 - min_weight)).astype(np.float32)
+                # Above threshold → 1.0; in ramp → interpolated; else floor.
+                w = np.where(p >= pct_hi, np.float32(1.0), w_ramp)
+                w = np.where(p > pct_lo, w, np.float32(min_weight))
+            return w.astype(np.float32)
+
+        # Per-species fallback (global-max-percentile mapping) — used both
+        # to fill (region, species) cells where the species was never
+        # observed and as the validation/legacy 1-D weight vector.
+        weights = _pct_to_weight(max_pctile)  # (n_species,)
+        region_weights = _pct_to_weight(region_pctile)  # (N_REGIONS, n_species)
+        # Where a species was absent in a region, use the species fallback.
+        region_weights = np.where(
+            present, region_weights,
+            np.broadcast_to(weights, region_weights.shape),
+        ).astype(np.float32)
 
         self.species_freq_weights = weights
+        self.species_region_weights = region_weights
 
         n_regions = len(region_counts)
         n_max_w = (weights >= 0.99).sum()
         n_min_w = (weights <= min_weight + 0.001).sum()
+        # Diagnostics on per-region target spread (over observed cells only).
+        observed_w = region_weights[present]
+        if observed_w.size:
+            rw_med = float(np.median(observed_w))
+            rw_p90 = float(np.percentile(observed_w, 90))
+            rw_p10 = float(np.percentile(observed_w, 10))
+        else:
+            rw_med = rw_p90 = rw_p10 = 0.0
         print(f"   Freq label weights ({n_regions} regional bins): "
-              f"min={weights.min():.3f}, median={np.median(weights):.3f}, "
+              f"global min={weights.min():.3f}, median={np.median(weights):.3f}, "
               f"max={weights.max():.3f}  "
               f"({n_max_w:,} species at 1.0, {n_min_w:,} at floor)")
+        print(f"   Per-region soft targets: "
+              f"p10={rw_p10:.3f}, median={rw_med:.3f}, p90={rw_p90:.3f} "
+              f"(over observed (region, species) cells)")
         return weights
 
     def _cap_observations(
@@ -1286,7 +1551,11 @@ class BirdSpeciesDataset(Dataset):
 
     def __init__(self, inputs: Dict[str, np.ndarray], targets: Dict[str, Any],
                  n_species: int = 0, jitter_std: float = 0.0,
-                 species_freq_weights: Optional[np.ndarray] = None):
+                 species_freq_weights: Optional[np.ndarray] = None,
+                 species_region_weights: Optional[np.ndarray] = None,
+                 ubiquitous_indices: Optional[np.ndarray] = None,
+                 ubiquitous_probs: Optional[np.ndarray] = None,
+                 ubiquitous_target: float = 0.5):
         """Wrap preprocessed arrays as a PyTorch Dataset.
 
         Args:
@@ -1297,9 +1566,37 @@ class BirdSpeciesDataset(Dataset):
                 to lat/lon coordinates each time a sample is drawn.  Set to
                 0.0 to disable (default).  Typically derived from H3 cell
                 resolution via ``H3DataLoader.compute_jitter_std``.
-            species_freq_weights: Optional 1-D array of per-species label
-                weights.  When provided, positive labels use the weight
-                instead of 1.0.
+            species_freq_weights: Optional 1-D array of per-species **soft
+                target labels** (fallback / global-max-percentile mapping).
+                When provided, positive labels use the weight instead of
+                1.0.  Used directly when ``species_region_weights`` is
+                ``None``; otherwise serves as the fallback for (region,
+                species) cells where the species was unobserved in that
+                region (e.g. propagated pseudo-labels).
+            species_region_weights: Optional 2-D array of shape
+                ``(n_regions, n_species)`` of **per-region soft target
+                labels**.  When provided, positive labels at a sample use
+                the row corresponding to the sample's geographic region,
+                producing a sharp common-vs-rare fall-off at every
+                location.
+            ubiquitous_indices: Optional ``int64`` array of vocabulary
+                indices for the ubiquitous-species whitelist (humans,
+                livestock, commensals, cosmopolitan pollinators).  At each
+                training sample, every listed species that is *not*
+                already a positive is set to ``ubiquitous_target`` with
+                its per-species probability from ``ubiquitous_probs``.
+                Pass ``None`` to disable injection (validation should
+                always disable).
+            ubiquitous_probs: Per-species injection probabilities aligned
+                with ``ubiquitous_indices`` (same length, dtype float32,
+                values in ``[0, 1]``).  Required iff ``ubiquitous_indices``
+                is not ``None``.
+            ubiquitous_target: Soft-target value written into the species
+                vector when an injection fires (default ``0.5``).  Lower
+                than 1.0 because the model should not be confidently
+                certain a species is present without an observation —
+                only that it is likely present given human-dominated
+                landscapes.
         """
         self.lat = torch.from_numpy(inputs['lat']).float()
         self.lon = torch.from_numpy(inputs['lon']).float()
@@ -1313,11 +1610,41 @@ class BirdSpeciesDataset(Dataset):
         else:
             self.obs_density = None
 
-        # Per-species label weights (frequency-based)
+        # Per-species label weights (frequency-based, fallback / 1-D)
         if species_freq_weights is not None:
             self.species_freq_weights = torch.from_numpy(species_freq_weights).float()
         else:
             self.species_freq_weights = None
+
+        # Per-(region, species) label weights and per-sample region ids.
+        if species_region_weights is not None:
+            self.species_region_weights = torch.from_numpy(
+                species_region_weights).float()
+            region_ids = H3DataPreprocessor.compute_region_ids(
+                inputs['lat'], inputs['lon'])
+            self.region_ids = torch.from_numpy(region_ids).long()
+        else:
+            self.species_region_weights = None
+            self.region_ids = None
+
+        # Ubiquitous-species whitelist (random soft-positive injection).
+        # Stored as torch tensors so __getitem__ can do the Bernoulli draw
+        # without per-sample numpy conversion.
+        if ubiquitous_indices is not None and len(ubiquitous_indices) > 0:
+            if ubiquitous_probs is None or len(ubiquitous_probs) != len(ubiquitous_indices):
+                raise ValueError(
+                    "ubiquitous_probs must align with ubiquitous_indices "
+                    f"(got {None if ubiquitous_probs is None else len(ubiquitous_probs)} "
+                    f"vs {len(ubiquitous_indices)})")
+            self.ubiquitous_indices = torch.from_numpy(
+                np.asarray(ubiquitous_indices, dtype=np.int64))
+            self.ubiquitous_probs = torch.from_numpy(
+                np.asarray(ubiquitous_probs, dtype=np.float32))
+            self.ubiquitous_target = float(ubiquitous_target)
+        else:
+            self.ubiquitous_indices = None
+            self.ubiquitous_probs = None
+            self.ubiquitous_target = float(ubiquitous_target)
 
         species = targets['species']
         if isinstance(species, np.ndarray):
@@ -1351,10 +1678,35 @@ class BirdSpeciesDataset(Dataset):
 
         if self.species_dense is not None:
             sp = self.species_dense[idx]
-            if self.species_freq_weights is not None:
+            if self.species_region_weights is not None:
+                mask = sp > 0
+                sp = sp.clone()
+                rid = int(self.region_ids[idx])
+                sp[mask] = self.species_region_weights[rid][mask]
+            elif self.species_freq_weights is not None:
                 mask = sp > 0
                 sp = sp.clone()
                 sp[mask] = self.species_freq_weights[mask]
+            else:
+                # Avoid mutating the cached dense tensor when injecting
+                # ubiquitous targets below.
+                if self.ubiquitous_indices is not None:
+                    sp = sp.clone()
+
+            # Ubiquitous-species injection (training only).  For each
+            # whitelisted species that is *not* already a positive at this
+            # sample, set the target to ``ubiquitous_target`` with the
+            # per-species probability.  Uses an independent Bernoulli draw
+            # per (sample, species) so the injection pattern varies across
+            # epochs and within an epoch — the model sees these labels as
+            # noisy soft positives, not constants.
+            if self.ubiquitous_indices is not None:
+                ui = self.ubiquitous_indices
+                draws = torch.rand(ui.numel())
+                fire = (draws < self.ubiquitous_probs) & (sp[ui] == 0)
+                if fire.any():
+                    sp[ui[fire]] = self.ubiquitous_target
+
             inp = {'lat': lat, 'lon': lon, 'week': self.week[idx]}
             if self.obs_density is not None:
                 inp['obs_density'] = self.obs_density[idx]
@@ -1370,6 +1722,8 @@ class BirdSpeciesDataset(Dataset):
             inp = {'lat': lat, 'lon': lon, 'week': self.week[idx]}
             if self.obs_density is not None:
                 inp['obs_density'] = self.obs_density[idx]
+            if self.region_ids is not None:
+                inp['region_id'] = self.region_ids[idx]
             return (
                 inp,
                 {'species_indices': indices, 'env_features': self.env_features[idx]},
@@ -1379,14 +1733,30 @@ class BirdSpeciesDataset(Dataset):
 def _make_sparse_collate_fn(
     n_species: int,
     species_freq_weights: Optional[torch.Tensor] = None,
+    species_region_weights: Optional[torch.Tensor] = None,
+    ubiquitous_indices: Optional[torch.Tensor] = None,
+    ubiquitous_probs: Optional[torch.Tensor] = None,
+    ubiquitous_target: float = 0.5,
 ):
     """Return a collate function that builds dense species tensors from sparse indices.
 
     Instead of each ``__getitem__`` call allocating a 40 KB dense vector,
     the collate function builds one ``(batch, n_species)`` tensor per batch.
     This cuts per-epoch allocation by ~1000×.
+
+    The optional ``ubiquitous_*`` arguments perform random soft-positive
+    injection of the ubiquitous-species whitelist (humans, livestock,
+    commensals, cosmopolitan pollinators).  For each batch, every listed
+    species that is not already a positive in a given sample is set to
+    ``ubiquitous_target`` with its per-species probability.  Pass
+    ``ubiquitous_indices=None`` to disable (validation should always
+    disable).
     """
-    _weights = species_freq_weights  # captured once
+    _weights = species_freq_weights              # (n_species,) fallback / global
+    _region_weights = species_region_weights      # (n_regions, n_species) per-region
+    _ubi_idx = ubiquitous_indices                 # (K,) long
+    _ubi_prob = ubiquitous_probs                  # (K,) float
+    _ubi_target = float(ubiquitous_target)
 
     def collate_fn(batch):
         inputs_list, targets_list = zip(*batch)
@@ -1408,10 +1778,27 @@ def _make_sparse_collate_fn(
             indices = tgt['species_indices']
             if len(indices) > 0:
                 idx_t = torch.from_numpy(indices).long() if not isinstance(indices, torch.Tensor) else indices.long()
-                if _weights is not None:
+                if _region_weights is not None:
+                    rid = int(inputs_list[i]['region_id'])
+                    species[i, idx_t] = _region_weights[rid][idx_t]
+                elif _weights is not None:
                     species[i, idx_t] = _weights[idx_t]
                 else:
                     species[i, idx_t] = 1.0
+
+        # Ubiquitous-species injection (vectorized over the batch).  Draw
+        # an independent Bernoulli per (sample, species) and only write
+        # where the species was not already a positive.
+        if _ubi_idx is not None and _ubi_idx.numel() > 0:
+            K = _ubi_idx.numel()
+            draws = torch.rand(B, K)
+            fire = draws < _ubi_prob.unsqueeze(0)              # (B, K)
+            current = species[:, _ubi_idx]                     # (B, K)
+            write = fire & (current == 0)
+            if write.any():
+                # Build a (B, n_species) sparse-style update via index_put.
+                row, col = write.nonzero(as_tuple=True)
+                species[row, _ubi_idx[col]] = _ubi_target
 
         return (
             inp,
@@ -1432,6 +1819,10 @@ def create_dataloaders(
     n_species: int = 0,
     jitter_std: float = 0.0,
     species_freq_weights: Optional[np.ndarray] = None,
+    species_region_weights: Optional[np.ndarray] = None,
+    ubiquitous_indices: Optional[np.ndarray] = None,
+    ubiquitous_probs: Optional[np.ndarray] = None,
+    ubiquitous_target: float = 0.5,
 ) -> Tuple[DataLoader, DataLoader]:
     """Create training and validation DataLoaders.
 
@@ -1447,18 +1838,42 @@ def create_dataloaders(
         jitter_std: Gaussian noise std (degrees) added to training
             coordinates each time a sample is drawn.  Validation
             coordinates are never jittered.
-        species_freq_weights: Optional per-species label weights.
-            Applied to training set only; validation uses binary labels.
+        species_freq_weights: Optional per-species soft target labels
+            (1-D fallback / global-max-percentile mapping).  Applied to
+            training set only; validation uses binary labels.
+        species_region_weights: Optional per-(region, species) soft target
+            labels of shape ``(n_regions, n_species)``.  When provided,
+            takes precedence over ``species_freq_weights`` at sample time.
+        ubiquitous_indices: Optional vocabulary indices for the
+            ubiquitous-species whitelist (training-only soft-positive
+            injection).  See :class:`BirdSpeciesDataset` and
+            :func:`load_ubiquitous_species`.
+        ubiquitous_probs: Per-species injection probabilities aligned
+            with ``ubiquitous_indices``.
+        ubiquitous_target: Soft target value for fired injections
+            (default ``0.5``).
     """
-    train_ds = BirdSpeciesDataset(train_inputs, train_targets,
-                                  n_species=n_species, jitter_std=jitter_std,
-                                  species_freq_weights=species_freq_weights)
+    train_ds = BirdSpeciesDataset(
+        train_inputs, train_targets,
+        n_species=n_species, jitter_std=jitter_std,
+        species_freq_weights=species_freq_weights,
+        species_region_weights=species_region_weights,
+        ubiquitous_indices=ubiquitous_indices,
+        ubiquitous_probs=ubiquitous_probs,
+        ubiquitous_target=ubiquitous_target,
+    )
     val_ds = BirdSpeciesDataset(val_inputs, val_targets, n_species=n_species)
 
     # Use custom collation when species targets are sparse
     _is_sparse = train_ds.species_sparse is not None
     train_collate = _make_sparse_collate_fn(
-        n_species, train_ds.species_freq_weights) if _is_sparse else None
+        n_species,
+        species_freq_weights=train_ds.species_freq_weights,
+        species_region_weights=train_ds.species_region_weights,
+        ubiquitous_indices=train_ds.ubiquitous_indices,
+        ubiquitous_probs=train_ds.ubiquitous_probs,
+        ubiquitous_target=train_ds.ubiquitous_target,
+    ) if _is_sparse else None
     val_collate = _make_sparse_collate_fn(n_species) if _is_sparse else None
 
     _persistent = num_workers > 0
@@ -1488,3 +1903,64 @@ def get_class_weights(
     neg = (1 - t).sum(dim=0)
     weights = (neg + smoothing) / (pos + smoothing)
     return torch.clamp(weights, max=max_weight)
+
+
+# ---------------------------------------------------------------------------
+# Ubiquitous species whitelist
+# ---------------------------------------------------------------------------
+
+def load_ubiquitous_species(path: str) -> List[Tuple[str, float]]:
+    """Parse a ubiquitous-species whitelist file.
+
+    The file format is one species per line with two whitespace-separated
+    columns and an optional ``#`` comment::
+
+        <species_code>   <injection_probability>    # optional comment
+
+    Codes can be eBird 6-letter codes (birds) or numeric iNaturalist IDs
+    (non-birds), matching the labels used in training.  Probabilities
+    must be in ``[0, 1]``.  Blank lines and lines beginning with ``#``
+    are ignored.
+
+    See ``species-data/ubiquitous_species.txt`` for the curated default
+    list shipped with the repository (humans, livestock, commensals,
+    cosmopolitan pollinators).  Used by training to randomly inject these
+    species as soft positives in cells where they were not observed,
+    counteracting under-recording of synanthropic taxa.
+
+    Args:
+        path: Path to the whitelist file.
+
+    Returns:
+        List of ``(code, probability)`` tuples in file order.
+
+    Raises:
+        FileNotFoundError: If ``path`` does not exist.
+        ValueError: If a non-comment line cannot be parsed or a
+            probability is outside ``[0, 1]``.
+    """
+    p = Path(path)
+    if not p.is_file():
+        raise FileNotFoundError(f"Ubiquitous species file not found: {path}")
+    out: List[Tuple[str, float]] = []
+    for lineno, raw in enumerate(p.read_text(encoding='utf-8').splitlines(), 1):
+        # Strip inline comments and surrounding whitespace
+        line = raw.split('#', 1)[0].strip()
+        if not line:
+            continue
+        parts = line.split()
+        if len(parts) != 2:
+            raise ValueError(
+                f"{path}:{lineno}: expected '<code> <prob>', got: {raw!r}")
+        code, prob_str = parts[0], parts[1]
+        try:
+            prob = float(prob_str)
+        except ValueError as exc:
+            raise ValueError(
+                f"{path}:{lineno}: invalid probability {prob_str!r}") from exc
+        if not (0.0 <= prob <= 1.0):
+            raise ValueError(
+                f"{path}:{lineno}: probability {prob} outside [0, 1]")
+        out.append((code, prob))
+    return out
+

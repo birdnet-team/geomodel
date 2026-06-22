@@ -8,11 +8,12 @@ import math
 from pathlib import Path
 from typing import Callable, Dict
 
+import numpy as np
 import torch
 
 from model.model import create_model
 from model.loss import MultiTaskLoss
-from utils.data import H3DataLoader, H3DataPreprocessor, create_dataloaders
+from utils.data import H3DataLoader, H3DataPreprocessor, create_dataloaders, load_ubiquitous_species
 
 
 TUNABLE_PARAMS = [
@@ -24,10 +25,56 @@ TUNABLE_PARAMS = [
     'focal_alpha', 'focal_gamma',
     'label_freq_weight', 'label_freq_weight_min',
     'label_freq_weight_pct_lo', 'label_freq_weight_pct_hi',
+    'label_freq_weight_curve',
     'propagate_k', 'propagate_max_radius',
     'propagate_min_obs', 'propagate_max_spread',
     'propagate_env_dist_max', 'propagate_range_cap',
+    'smooth_gaps',
 ]
+
+
+def _override_bounds(args, name: str, default_lo, default_hi):
+    """Return override bounds for a numeric autotune parameter if provided."""
+    overrides: dict = getattr(args, 'autotune_ranges', None) or {}
+    override = overrides.get(name)
+    if override is None:
+        return default_lo, default_hi
+    if not isinstance(override, list) or len(override) != 2:
+        raise ValueError(
+            f"autotune_ranges[{name!r}] must be a two-item list [lo, hi] for numeric params"
+        )
+    return override[0], override[1]
+
+
+def _override_choices(args, name: str, default_choices):
+    """Return override choices for a categorical autotune parameter if provided."""
+    overrides: dict = getattr(args, 'autotune_ranges', None) or {}
+    override = overrides.get(name)
+    if override is None:
+        return default_choices
+    if not isinstance(override, list) or not override:
+        raise ValueError(
+            f"autotune_ranges[{name!r}] must be a non-empty list of choices for categorical params"
+        )
+    return override
+
+
+def _suggest_float(trial, args, name: str, default_lo: float, default_hi: float, *, log: bool = False):
+    """Suggest a float, honoring any user-provided autotune override bounds."""
+    lo, hi = _override_bounds(args, name, default_lo, default_hi)
+    return trial.suggest_float(name, float(lo), float(hi), log=log)
+
+
+def _suggest_int(trial, args, name: str, default_lo: int, default_hi: int):
+    """Suggest an int, honoring any user-provided autotune override bounds."""
+    lo, hi = _override_bounds(args, name, default_lo, default_hi)
+    return trial.suggest_int(name, int(lo), int(hi))
+
+
+def _suggest_categorical(trial, args, name: str, default_choices):
+    """Suggest a categorical value, honoring any user-provided choice override."""
+    choices = _override_choices(args, name, default_choices)
+    return trial.suggest_categorical(name, choices)
 
 
 def _suggest_param(trial, name: str, args):
@@ -38,61 +85,56 @@ def _suggest_param(trial, name: str, args):
     ``[lo, hi]`` for float/int params or a list of allowed values for
     categoricals.
     """
-    overrides: dict = getattr(args, 'autotune_ranges', None) or {}
-    ov = overrides.get(name)
-
     if name == 'pos_lambda':
-        return trial.suggest_float('pos_lambda', 1.0, 64.0, log=True)
+        return _suggest_float(trial, args, 'pos_lambda', 1.0, 64.0, log=True)
     if name == 'neg_samples':
-        return trial.suggest_categorical('neg_samples', [128, 256, 512, 1024, 2048, 4096])
+        return _suggest_categorical(trial, args, 'neg_samples', [128, 256, 512, 1024, 2048, 4096])
     if name == 'label_smoothing':
-        return trial.suggest_float('label_smoothing', 0.0, 0.1)
+        return _suggest_float(trial, args, 'label_smoothing', 0.0, 0.1)
     if name == 'env_weight':
-        return trial.suggest_float('env_weight', 0.01, 1.0, log=True)
+        return _suggest_float(trial, args, 'env_weight', 0.01, 1.0, log=True)
     if name == 'jitter':
-        return trial.suggest_categorical('jitter', [True, False])
+        return _suggest_categorical(trial, args, 'jitter', [True, False])
     if name == 'species_loss':
-        return trial.suggest_categorical('species_loss', ['asl', 'an', 'bce', 'focal'])
+        return _suggest_categorical(trial, args, 'species_loss', ['asl', 'an', 'bce', 'focal'])
     if name == 'asl_gamma_neg':
-        return trial.suggest_float('asl_gamma_neg', 1.0, 8.0)
+        return _suggest_float(trial, args, 'asl_gamma_neg', 1.0, 8.0)
     if name == 'asl_clip':
-        return trial.suggest_float('asl_clip', 0.0, 0.2)
+        return _suggest_float(trial, args, 'asl_clip', 0.0, 0.2)
     if name == 'model_scale':
-        return trial.suggest_float('model_scale', 0.25, 3.0, log=True)
+        return _suggest_float(trial, args, 'model_scale', 0.25, 3.0, log=True)
     if name == 'coord_harmonics':
-        return trial.suggest_int('coord_harmonics', 2, 8)
+        return _suggest_int(trial, args, 'coord_harmonics', 2, 8)
     if name == 'week_harmonics':
-        return trial.suggest_int('week_harmonics', 2, 8)
+        return _suggest_int(trial, args, 'week_harmonics', 2, 8)
     if name == 'focal_alpha':
-        return trial.suggest_float('focal_alpha', 0.1, 0.9)
+        return _suggest_float(trial, args, 'focal_alpha', 0.1, 0.9)
     if name == 'focal_gamma':
-        return trial.suggest_float('focal_gamma', 0.5, 5.0)
+        return _suggest_float(trial, args, 'focal_gamma', 0.5, 5.0)
     if name == 'label_freq_weight':
-        return trial.suggest_categorical('label_freq_weight', [True, False])
+        return _suggest_categorical(trial, args, 'label_freq_weight', [True, False])
     if name == 'label_freq_weight_min':
-        return trial.suggest_float('label_freq_weight_min', 0.01, 0.5, log=True)
+        return _suggest_float(trial, args, 'label_freq_weight_min', 0.05, 0.3, log=True)
     if name == 'label_freq_weight_pct_lo':
-        return trial.suggest_float('label_freq_weight_pct_lo', 1.0, 25.0)
+        return _suggest_float(trial, args, 'label_freq_weight_pct_lo', 5.0, 35.0)
     if name == 'label_freq_weight_pct_hi':
-        return trial.suggest_float('label_freq_weight_pct_hi', 75.0, 99.0)
+        return _suggest_float(trial, args, 'label_freq_weight_pct_hi', 70.0, 95.0)
+    if name == 'label_freq_weight_curve':
+        return _suggest_float(trial, args, 'label_freq_weight_curve', 1.0, 5.0)
     if name == 'propagate_k':
-        lo, hi = (ov[0], ov[1]) if ov else (1, 20)
-        return trial.suggest_int('propagate_k', lo, hi)
+        return _suggest_int(trial, args, 'propagate_k', 1, 20)
     if name == 'propagate_max_radius':
-        lo, hi = (ov[0], ov[1]) if ov else (100.0, 1500.0)
-        return trial.suggest_float('propagate_max_radius', lo, hi, log=True)
+        return _suggest_float(trial, args, 'propagate_max_radius', 100.0, 1500.0, log=True)
     if name == 'propagate_min_obs':
-        lo, hi = (ov[0], ov[1]) if ov else (1, 20)
-        return trial.suggest_int('propagate_min_obs', lo, hi)
+        return _suggest_int(trial, args, 'propagate_min_obs', 1, 20)
     if name == 'propagate_max_spread':
-        lo, hi = (ov[0], ov[1]) if ov else (0.5, 3.0)
-        return trial.suggest_float('propagate_max_spread', lo, hi)
+        return _suggest_float(trial, args, 'propagate_max_spread', 0.5, 3.0)
     if name == 'propagate_env_dist_max':
-        lo, hi = (ov[0], ov[1]) if ov else (0.5, 5.0)
-        return trial.suggest_float('propagate_env_dist_max', lo, hi)
+        return _suggest_float(trial, args, 'propagate_env_dist_max', 0.5, 5.0)
     if name == 'propagate_range_cap':
-        lo, hi = (ov[0], ov[1]) if ov else (200.0, 2000.0)
-        return trial.suggest_float('propagate_range_cap', lo, hi)
+        return _suggest_float(trial, args, 'propagate_range_cap', 200.0, 2000.0)
+    if name == 'smooth_gaps':
+        return _suggest_int(trial, args, 'smooth_gaps', 0, 4)
     raise ValueError(f"Unknown tunable param: {name}")
 
 
@@ -121,7 +163,11 @@ def run_autotune(
         print(f"Available: {TUNABLE_PARAMS}")
         return
 
-    _PROPAGATION_PARAMS = {'propagate_k', 'propagate_max_radius', 'propagate_min_obs', 'propagate_max_spread', 'propagate_env_dist_max', 'propagate_range_cap'}
+    _PROPAGATION_PARAMS = {
+        'propagate_k', 'propagate_max_radius', 'propagate_min_obs',
+        'propagate_max_spread', 'propagate_env_dist_max',
+        'propagate_range_cap', 'smooth_gaps',
+    }
     _tune_propagation = bool(_PROPAGATION_PARAMS & set(tune_params))
 
     n_trials = args.autotune_trials
@@ -151,6 +197,7 @@ def run_autotune(
         val_tgt = cached['val_tgt']
         preprocessor = cached['preprocessor']
         _freq_weights = cached['freq_weights']
+        _region_weights = cached.get('region_weights')
         _jitter_std = cached['jitter_std']
         n_species = cached['n_species']
         n_env = cached['n_env']
@@ -174,11 +221,16 @@ def run_autotune(
             ocean_sample_rate=args.ocean_sample_rate,
             include_yearly=not args.no_yearly,
         )
+        samples_per_cell = 48 + (0 if args.no_yearly else 1)
+        sample_cell_indices = np.repeat(
+            np.arange(len(species_lists) // samples_per_cell),
+            samples_per_cell,
+        )
 
         del loader
         gc.collect()
 
-        species_lists_original = list(species_lists) if args.propagate_labels else None
+        species_lists_original = [list(sl) for sl in species_lists] if args.propagate_labels else None
 
         # When tuning propagation params, save raw data before propagation.
         # Each trial will re-propagate with its own suggested params.
@@ -204,6 +256,8 @@ def run_autotune(
                 max_spread_factor=args.propagate_max_spread,
                 env_dist_max=args.propagate_env_dist_max,
                 range_cap_km=args.propagate_range_cap,
+                smooth_gaps=args.smooth_gaps,
+                sample_cell_indices=sample_cell_indices,
             )
 
         print("3. Preprocessing...")
@@ -230,7 +284,8 @@ def run_autotune(
         print(f"   Samples: {len(inputs['lat']):,}  |  Species: {n_species:,}  |  Env features: {n_env}")
 
         _tune_freq_shape = bool(
-            {'label_freq_weight_min', 'label_freq_weight_pct_lo', 'label_freq_weight_pct_hi'}
+            {'label_freq_weight_min', 'label_freq_weight_pct_lo', 'label_freq_weight_pct_hi',
+             'label_freq_weight_curve'}
             & set(tune_params)
         )
         _freq_sl = species_lists_original if species_lists_original is not None else species_lists
@@ -239,14 +294,20 @@ def run_autotune(
             min_weight=args.label_freq_weight_min,
             pct_lo=args.label_freq_weight_pct_lo,
             pct_hi=args.label_freq_weight_pct_hi,
+            curve=args.label_freq_weight_curve,
             lats=inputs['lat'],
             lons=inputs['lon'],
         )
+        _region_weights = getattr(preprocessor, 'species_region_weights', None)
         _species_lists_ref = _freq_sl if _tune_freq_shape else None
         _lats_ref = inputs['lat'] if _tune_freq_shape else None
         _lons_ref = inputs['lon'] if _tune_freq_shape else None
 
-        del species_lists, species_lists_original, _freq_sl
+        # ``species_lists`` may already have been deleted above when
+        # ``_tune_propagation`` is False; drop it defensively.
+        if _tune_propagation:
+            del species_lists
+        del species_lists_original, _freq_sl
         gc.collect()
 
         print("4. Splitting data...")
@@ -279,6 +340,7 @@ def run_autotune(
                 'val_tgt': val_tgt,
                 'preprocessor': preprocessor,
                 'freq_weights': _freq_weights,
+                'region_weights': _region_weights,
                 'jitter_std': _jitter_std,
                 'n_species': n_species,
                 'n_env': n_env,
@@ -289,7 +351,8 @@ def run_autotune(
         )
 
     _tune_freq_shape = bool(
-        {'label_freq_weight_min', 'label_freq_weight_pct_lo', 'label_freq_weight_pct_hi'}
+        {'label_freq_weight_min', 'label_freq_weight_pct_lo', 'label_freq_weight_pct_hi',
+         'label_freq_weight_curve'}
         & set(tune_params)
     )
 
@@ -301,6 +364,21 @@ def run_autotune(
         n_species,
     )
     print(f"   Train: {len(train_in['lat']):,}  |  Val: {len(val_in['lat']):,}")
+
+    # Load ubiquitous-species whitelist entries once.  Indices are resolved
+    # per-trial against the active preprocessor (trial-specific when
+    # propagation is being tuned, since vocabulary may change).
+    _ubi_entries = None
+    _ubi_path = getattr(args, 'ubiquitous_species', '') or ''
+    if _ubi_path and Path(_ubi_path).is_file():
+        try:
+            _ubi_entries = load_ubiquitous_species(_ubi_path)
+            print(f"   Ubiquitous whitelist: {len(_ubi_entries)} entries from {_ubi_path}")
+        except (FileNotFoundError, ValueError) as exc:
+            print(f"   WARNING: failed to load ubiquitous whitelist: {exc}")
+            _ubi_entries = None
+    elif _ubi_path:
+        print(f"   WARNING: --ubiquitous_species path not found ({_ubi_path}); injection disabled.")
 
     def objective(trial: 'optuna.Trial') -> float:
         p = {}
@@ -323,19 +401,6 @@ def run_autotune(
         jitter_std = _jitter_std if use_jitter else 0.0
 
         use_freq_wt = bool(p.get('label_freq_weight', args.label_freq_weight))
-        if use_freq_wt and _tune_freq_shape and _species_lists_ref is not None:
-            _trial_freq_weights = preprocessor.compute_species_freq_weights(
-                _species_lists_ref,
-                min_weight=float(p.get('label_freq_weight_min', args.label_freq_weight_min)),
-                pct_lo=float(p.get('label_freq_weight_pct_lo', args.label_freq_weight_pct_lo)),
-                pct_hi=float(p.get('label_freq_weight_pct_hi', args.label_freq_weight_pct_hi)),
-                lats=_lats_ref,
-                lons=_lons_ref,
-            )
-        elif use_freq_wt:
-            _trial_freq_weights = _freq_weights
-        else:
-            _trial_freq_weights = None
 
         # -- Per-trial data when tuning propagation params ----------------
         _t_train_in = train_in
@@ -344,6 +409,15 @@ def run_autotune(
         _t_val_tgt = val_tgt
         _t_n_species = n_species
         _t_n_env = n_env
+        # Preprocessor whose vocabulary matches the trial's sparse indices.
+        # When propagation is tuned, the per-trial preprocessor has a different
+        # vocabulary than the outer one, so freq weights must be computed
+        # against it (otherwise the weight tensor is sized for the wrong vocab
+        # and collation indexes out of bounds).
+        _trial_pp_for_weights = preprocessor
+        _trial_sl_for_weights = _species_lists_ref
+        _trial_lats_for_weights = _lats_ref
+        _trial_lons_for_weights = _lons_ref
 
         if _tune_propagation and _raw_species_lists is not None:
             import copy as _copy
@@ -357,6 +431,8 @@ def run_autotune(
                 max_spread_factor=float(p['propagate_max_spread']),
                 env_dist_max=float(p.get('propagate_env_dist_max', args.propagate_env_dist_max)),
                 range_cap_km=float(p.get('propagate_range_cap', args.propagate_range_cap)),
+                smooth_gaps=int(p.get('smooth_gaps', args.smooth_gaps)),
+                sample_cell_indices=sample_cell_indices,
             )
             _trial_pp = H3DataPreprocessor()
             _trial_inputs, _trial_targets = _trial_pp.prepare_training_data(
@@ -375,8 +451,71 @@ def run_autotune(
                 random_state=42,
                 split_by_location=True,
             )
-            del _trial_sl, _trial_inputs, _trial_targets, _trial_pp
+            # Use the trial preprocessor (and its propagated species lists +
+            # raw coordinates) when computing per-trial frequency weights so
+            # the resulting tensor matches the trial vocabulary size.
+            _trial_pp_for_weights = _trial_pp
+            _trial_sl_for_weights = _trial_sl
+            _trial_lats_for_weights = _raw_lats
+            _trial_lons_for_weights = _raw_lons
+            del _trial_inputs, _trial_targets
             gc.collect()
+
+        if use_freq_wt and _tune_freq_shape and _trial_sl_for_weights is not None:
+            _trial_freq_weights = _trial_pp_for_weights.compute_species_freq_weights(
+                _trial_sl_for_weights,
+                min_weight=float(p.get('label_freq_weight_min', args.label_freq_weight_min)),
+                pct_lo=float(p.get('label_freq_weight_pct_lo', args.label_freq_weight_pct_lo)),
+                pct_hi=float(p.get('label_freq_weight_pct_hi', args.label_freq_weight_pct_hi)),
+                curve=float(p.get('label_freq_weight_curve', args.label_freq_weight_curve)),
+                lats=_trial_lats_for_weights,
+                lons=_trial_lons_for_weights,
+            )
+            _trial_region_weights = getattr(
+                _trial_pp_for_weights, 'species_region_weights', None)
+        elif use_freq_wt and _tune_propagation and _trial_sl_for_weights is not None:
+            # Propagation changed vocab — recompute weights with default shape
+            # against the trial preprocessor.
+            _trial_freq_weights = _trial_pp_for_weights.compute_species_freq_weights(
+                _trial_sl_for_weights,
+                min_weight=args.label_freq_weight_min,
+                pct_lo=args.label_freq_weight_pct_lo,
+                pct_hi=args.label_freq_weight_pct_hi,
+                curve=args.label_freq_weight_curve,
+                lats=_trial_lats_for_weights,
+                lons=_trial_lons_for_weights,
+            )
+            _trial_region_weights = getattr(
+                _trial_pp_for_weights, 'species_region_weights', None)
+        elif use_freq_wt:
+            _trial_freq_weights = _freq_weights
+            _trial_region_weights = _region_weights
+        else:
+            _trial_freq_weights = None
+            _trial_region_weights = None
+
+        if _tune_propagation and _raw_species_lists is not None:
+            # Resolve ubiquitous whitelist against the trial preprocessor
+            # *before* freeing it (its vocabulary differs from the outer
+            # one when propagation changes the surviving species set).
+            _trial_ubi_idx = _trial_ubi_prob = None
+            if _ubi_entries is not None:
+                _trial_ubi_idx, _trial_ubi_prob = _trial_pp_for_weights.resolve_ubiquitous_species(
+                    _ubi_entries, verbose=False)
+                if len(_trial_ubi_idx) == 0:
+                    _trial_ubi_idx = _trial_ubi_prob = None
+            del _trial_sl, _trial_pp
+            _trial_pp_for_weights = None
+            _trial_sl_for_weights = None
+            gc.collect()
+        else:
+            # Outer preprocessor vocabulary matches the trial DataLoader.
+            _trial_ubi_idx = _trial_ubi_prob = None
+            if _ubi_entries is not None:
+                _trial_ubi_idx, _trial_ubi_prob = preprocessor.resolve_ubiquitous_species(
+                    _ubi_entries, verbose=False)
+                if len(_trial_ubi_idx) == 0:
+                    _trial_ubi_idx = _trial_ubi_prob = None
 
         t_loader, v_loader = create_dataloaders(
             _t_train_in,
@@ -389,6 +528,10 @@ def run_autotune(
             n_species=_t_n_species,
             jitter_std=jitter_std,
             species_freq_weights=_trial_freq_weights,
+            species_region_weights=_trial_region_weights,
+            ubiquitous_indices=_trial_ubi_idx,
+            ubiquitous_probs=_trial_ubi_prob,
+            ubiquitous_target=getattr(args, 'ubiquitous_target', 0.5),
         )
 
         model = create_model(
