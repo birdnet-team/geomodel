@@ -214,6 +214,103 @@ class H3DataPreprocessor:
         self._continuous_cols: List[str] = []
         self._category_maps: Dict[str, List] = {}  # col → sorted unique values (for one-hot)
 
+    @staticmethod
+    def smooth_temporal_gaps(
+        lats: np.ndarray,
+        lons: np.ndarray,
+        weeks: np.ndarray,
+        species_lists: List[List[str]],
+        max_gap: int,
+        sample_cell_indices: Optional[np.ndarray] = None,
+        candidate_species: Optional[Set[str]] = None,
+    ) -> int:
+        """Fill bounded weekly gaps in per-cell species presence series.
+
+        A zero-run is filled only when it is bracketed by existing positives on
+        both sides in the circular 1..48 week cycle. This repairs holes without
+        extending the first or last observed/propagated seasonal block.
+
+        Args:
+            lats: Per-sample latitudes.
+            lons: Per-sample longitudes.
+            weeks: Per-sample week numbers. Only weeks 1..48 are smoothed;
+                week 0 yearly samples are ignored.
+            species_lists: Per-sample species occurrence lists (mutable).
+            max_gap: Maximum number of consecutive absent weeks to fill.
+            sample_cell_indices: Optional per-sample cell ids. If omitted,
+                samples are grouped by exact latitude/longitude.
+            candidate_species: Optional species-code subset to smooth.
+
+        Returns:
+            Number of species labels added by temporal gap filling.
+        """
+        max_gap = int(max_gap)
+        if max_gap <= 0:
+            return 0
+        if max_gap > 48:
+            raise ValueError("smooth_gaps must be between 0 and 48")
+
+        weeks_arr = np.asarray(weeks)
+        weekly_mask = (weeks_arr >= 1) & (weeks_arr <= 48)
+        if not weekly_mask.any():
+            return 0
+
+        if sample_cell_indices is None:
+            coords = np.column_stack([lats, lons])
+            _, cell_indices = np.unique(coords, axis=0, return_inverse=True)
+        else:
+            cell_indices = np.asarray(sample_cell_indices)
+            if len(cell_indices) != len(species_lists):
+                raise ValueError("sample_cell_indices must match species_lists length")
+
+        candidate_species = set(candidate_species) if candidate_species is not None else None
+        week_order = list(range(1, 49))
+        week_to_pos = {week: pos for pos, week in enumerate(week_order)}
+        n_weeks = len(week_order)
+
+        cell_week_to_sample: Dict[Any, Dict[int, int]] = {}
+        cell_species_weeks: Dict[Any, Dict[str, Set[int]]] = {}
+
+        for sample_idx in np.where(weekly_mask)[0]:
+            cell_id = cell_indices[sample_idx]
+            week = int(weeks_arr[sample_idx])
+            cell_week_to_sample.setdefault(cell_id, {})[week] = sample_idx
+            species_weeks = cell_species_weeks.setdefault(cell_id, {})
+            for species_id in species_lists[sample_idx]:
+                if candidate_species is not None and species_id not in candidate_species:
+                    continue
+                species_weeks.setdefault(species_id, set()).add(week)
+
+        added = 0
+        for cell_id, species_weeks in cell_species_weeks.items():
+            week_to_sample = cell_week_to_sample[cell_id]
+            for species_id, present_weeks in species_weeks.items():
+                positions = sorted(
+                    week_to_pos[week] for week in present_weeks
+                    if week in week_to_pos
+                )
+                if len(positions) < 2:
+                    continue
+
+                for left, right in zip(positions, positions[1:] + [positions[0] + n_weeks]):
+                    gap = right - left - 1
+                    if gap <= 0 or gap > max_gap:
+                        continue
+                    for pos in range(left + 1, right):
+                        week = week_order[pos % n_weeks]
+                        sample_idx = week_to_sample.get(week)
+                        if sample_idx is None:
+                            continue
+                        species_list = species_lists[sample_idx]
+                        if species_id not in species_list:
+                            if not isinstance(species_list, list):
+                                species_list = list(species_list)
+                                species_lists[sample_idx] = species_list
+                            species_list.append(species_id)
+                            added += 1
+
+        return added
+
     # -- Encoding ---------------------------------------------------------
     # NOTE: Circular encoding of lat/lon/week is now handled inside the model
     # (see model/model.py CircularEncoding + SpatioTemporalEncoder).
@@ -512,6 +609,10 @@ class H3DataPreprocessor:
         max_spread_factor: float = 2.0,
         env_dist_max: float = 2.0,
         range_cap_km: float = 500.0,
+        candidate_species: Optional[Set[str]] = None,
+        env_row_indices: Optional[np.ndarray] = None,
+        smooth_gaps: int = 0,
+        sample_cell_indices: Optional[np.ndarray] = None,
     ) -> List[List[str]]:
         """Propagate species labels from observed to sparse/unobserved cells.
 
@@ -551,6 +652,20 @@ class H3DataPreprocessor:
                 species' bounding-box range would allow propagation farther,
                 it is clamped to at most *range_cap_km*.  Set to 0 to disable
                 (default 500).
+            candidate_species: Optional species-code subset to propagate.
+                When provided, observed/sparse cell selection still uses the
+                full species lists, but only these species are copied. Default
+                None propagates all species.
+            env_row_indices: Optional index array mapping each sample to a row
+                in *env_features*. Use this when many samples share the same
+                cell-level environmental features. Default None assumes one
+                env row per sample.
+            smooth_gaps: Fill temporal gaps up to this many missing weeks in
+                each per-cell, per-species 1..48 week presence series after
+                spatial propagation. 0 disables smoothing.
+            sample_cell_indices: Optional per-sample cell ids for temporal gap
+                smoothing. If omitted and smoothing is enabled, samples are
+                grouped by exact latitude/longitude.
 
         Returns:
             Modified species_lists with propagated labels (also mutated
@@ -570,30 +685,51 @@ class H3DataPreprocessor:
         n_sparse = int(sparse_mask.sum())
         n_observed = int(observed_mask.sum())
         if n_sparse == 0 or n_observed == 0:
+            temporal_added = H3DataPreprocessor.smooth_temporal_gaps(
+                lats, lons, weeks, species_lists, smooth_gaps,
+                sample_cell_indices=sample_cell_indices,
+                candidate_species=candidate_species,
+            )
             print(f"   Env label propagation: nothing to propagate "
                   f"({n_observed:,} observed, {n_sparse:,} sparse)")
+            if temporal_added > 0:
+                print(f"   Temporal gap smoothing: added {temporal_added:,} labels "
+                      f"(max_gap={int(smooth_gaps)})")
             return species_lists
 
         # --- Build species vocabulary and sparse membership matrix ---
         # This replaces the per-species Python loops with sparse matrix ops.
+        candidate_species = set(candidate_species) if candidate_species is not None else None
         all_sp: set = set()
+        total_entries = 0
         for sl in species_lists:
-            all_sp.update(sl)
+            if candidate_species is None:
+                all_sp.update(sl)
+                total_entries += len(sl)
+            else:
+                for species_id in sl:
+                    if species_id in candidate_species:
+                        all_sp.add(species_id)
+                        total_entries += 1
         sp_list = sorted(all_sp)
         sp_to_idx = {s: i for i, s in enumerate(sp_list)}
         n_sp = len(sp_list)
 
+        if n_sp == 0:
+            print("   Env label propagation: no eligible species to propagate")
+            return species_lists
+
         # Flatten (sample_index, species_index) pairs for CSR construction
-        total_entries = int(obs_counts.sum())
         mem_r = np.empty(total_entries, dtype=np.int32)
         mem_c = np.empty(total_entries, dtype=np.int32)
         pos = 0
         for i, sl in enumerate(species_lists):
-            n_sl = len(sl)
-            if n_sl > 0:
-                mem_r[pos:pos + n_sl] = i
-                mem_c[pos:pos + n_sl] = [sp_to_idx[s] for s in sl]
-                pos += n_sl
+            ids = [sp_to_idx[s] for s in sl if s in sp_to_idx]
+            n_ids = len(ids)
+            if n_ids > 0:
+                mem_r[pos:pos + n_ids] = i
+                mem_c[pos:pos + n_ids] = ids
+                pos += n_ids
         membership = sps.csr_matrix(
             (np.ones(pos, dtype=np.float32), (mem_r[:pos], mem_c[:pos])),
             shape=(n, n_sp),
@@ -689,6 +825,8 @@ class H3DataPreprocessor:
 
         scaler = StandardScaler()
         env_scaled = scaler.fit_transform(env_arr).astype(np.float32)
+        if env_row_indices is not None:
+            env_scaled = env_scaled[env_row_indices]
 
         # Pre-convert coords to radians for vectorized haversine
         lats_rad = np.radians(lats.astype(np.float64))
@@ -834,6 +972,15 @@ class H3DataPreprocessor:
               f"to {cells_modified:,}/{n_sparse:,} sparse samples "
               f"(k={k}, max_radius={max_radius_km:.0f}km, "
               f"min_obs={min_obs_threshold}{gate_str})")
+
+        temporal_added = H3DataPreprocessor.smooth_temporal_gaps(
+            lats, lons, weeks, species_lists, smooth_gaps,
+            sample_cell_indices=sample_cell_indices,
+            candidate_species=candidate_species,
+        )
+        if temporal_added > 0:
+            print(f"   Temporal gap smoothing: added {temporal_added:,} labels "
+                  f"(max_gap={int(smooth_gaps)})")
 
         return species_lists
 
@@ -987,6 +1134,7 @@ class H3DataPreprocessor:
         min_weight: float = 0.1,
         pct_lo: float = 10.0,
         pct_hi: float = 90.0,
+        curve: float = 1.0,
     ) -> np.ndarray:
         """Compute per-(region, species) **soft target labels** via region-normalized frequency.
 
@@ -1085,12 +1233,22 @@ class H3DataPreprocessor:
             present[rid, indices] = True
             np.maximum.at(max_pctile, indices, pctiles)
 
-        # Vectorized percentile → soft-target mapping (piecewise linear).
+        # Vectorized percentile → soft-target mapping.  The ramp from
+        # ``min_weight`` to ``1.0`` between ``pct_lo`` and ``pct_hi`` is
+        # raised to ``curve`` so values >1 produce a power-law cliff that
+        # keeps high targets reserved for the genuinely top-recorded
+        # species (see Stage L investigation: linear ramp saturated 50-90
+        # percentile species into the 0.4-0.9 target band, producing
+        # over-long predicted lists in well-surveyed cells).
+        _curve = float(max(curve, 1e-3))
+
         def _pct_to_weight(p: np.ndarray) -> np.ndarray:
             w = np.full(p.shape, min_weight, dtype=np.float32)
             span = pct_hi - pct_lo
             if span > 0:
                 ramp_t = np.clip((p - pct_lo) / span, 0.0, 1.0)
+                if _curve != 1.0:
+                    ramp_t = ramp_t ** _curve
                 w_ramp = (min_weight
                           + ramp_t * (1.0 - min_weight)).astype(np.float32)
                 # Above threshold → 1.0; in ramp → interpolated; else floor.

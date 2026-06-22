@@ -31,6 +31,7 @@ import pickle
 from pathlib import Path
 from typing import Dict, List, Optional
 
+import numpy as np
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
@@ -56,11 +57,13 @@ _DATA_CACHE_KEYS = [
     'no_yearly',
     'propagate_labels', 'propagate_k', 'propagate_max_radius',
     'propagate_min_obs', 'propagate_max_spread',
+    'propagate_env_dist_max', 'propagate_range_cap', 'smooth_gaps',
     'max_obs_per_species', 'min_obs_per_species', 'max_species',
     'val_size', 'sample_fraction',
     'holdout_regions',
     'label_freq_weight', 'label_freq_weight_min',
     'label_freq_weight_pct_lo', 'label_freq_weight_pct_hi',
+    'label_freq_weight_curve',
 ]
 
 
@@ -911,6 +914,12 @@ def main():
                         help='Upper percentile within a region: species at '
                              'or above get target 1.0 (default: 95; only the '
                              'top 5%% saturate, keeping a sharp common-vs-rare ramp)')
+    parser.add_argument('--label_freq_weight_curve', type=float, default=1.0,
+                        help='Exponent applied to the percentile ramp '
+                             '(default: 1.0 = linear). Values >1 produce a '
+                             'power-law cliff that keeps high targets reserved '
+                             'for genuinely top-recorded species and shortens '
+                             'predicted lists in well-surveyed cells (try 3.0).')
 
     # Ubiquitous species injection (humans, livestock, commensals, pollinators).
     # Counters under-recording of synanthropic taxa: at each training sample
@@ -948,6 +957,10 @@ def main():
     parser.add_argument('--propagate_range_cap', type=float, default=1500.0,
                         help='Hard cap in km on per-species propagation distance from '
                              'nearest observation. 0 = disabled (default: 1500).')
+    parser.add_argument('--smooth_gaps', type=int, default=0,
+                        help='Fill bounded temporal gaps up to N missing weeks after '
+                             'label propagation (0..48). 0 = disabled; try 2 for GIF-like '
+                             'range smoothing (default: 0).')
 
     # LR schedule
     parser.add_argument('--lr_schedule', type=str, default='cosine', choices=['cosine', 'none'],
@@ -1066,7 +1079,8 @@ def main():
         print(f"  Ubiquitous: {args.ubiquitous_species} "
               f"(target={args.ubiquitous_target})")
     if args.propagate_labels:
-        print(f"  Propagate:  k={args.propagate_k}, radius={args.propagate_max_radius}km, min_obs={args.propagate_min_obs}")
+        print(f"  Propagate:  k={args.propagate_k}, radius={args.propagate_max_radius}km, "
+              f"min_obs={args.propagate_min_obs}, smooth_gaps={args.smooth_gaps}")
     if args.sample_fraction < 1.0:
         print(f"  Sample fraction: {args.sample_fraction} (subsampled by location once)")
     if args.holdout_regions:
@@ -1117,11 +1131,16 @@ def main():
         # Save pre-propagation species lists for frequency weight computation.
         # Propagation inflates counts for common species and skews regional
         # percentile estimates, so weights must be derived from original data.
-        species_lists_original = list(species_lists) if args.propagate_labels else None
+        species_lists_original = [list(sl) for sl in species_lists] if args.propagate_labels else None
 
         # Environmental neighbor label propagation (before preprocessing)
         if args.propagate_labels:
             print("   Propagating labels from observed to sparse cells...")
+            samples_per_cell = 48 + (0 if args.no_yearly else 1)
+            sample_cell_indices = np.repeat(
+                np.arange(len(species_lists) // samples_per_cell),
+                samples_per_cell,
+            )
             
             species_lists = H3DataPreprocessor.propagate_env_labels(
                 lats, lons, weeks, species_lists, env_features,
@@ -1131,6 +1150,8 @@ def main():
                 max_spread_factor=args.propagate_max_spread,
                 env_dist_max=args.propagate_env_dist_max,
                 range_cap_km=args.propagate_range_cap,
+                smooth_gaps=args.smooth_gaps,
+                sample_cell_indices=sample_cell_indices,
             )
 
         print("3. Preprocessing...")
@@ -1175,6 +1196,7 @@ def main():
                 _freq_sl, min_weight=args.label_freq_weight_min,
                 pct_lo=args.label_freq_weight_pct_lo,
                 pct_hi=args.label_freq_weight_pct_hi,
+                curve=args.label_freq_weight_curve,
                 lats=inputs['lat'], lons=inputs['lon'],
             )
 

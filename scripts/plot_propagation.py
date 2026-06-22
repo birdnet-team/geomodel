@@ -294,6 +294,8 @@ def main():
                         help='Max environmental distance for neighbor eligibility (default: 2.0)')
     parser.add_argument('--propagate_range_cap', type=float, default=500.0,
                         help='Hard km ceiling on per-species propagation distance (default: 500)')
+    parser.add_argument('--smooth_gaps', type=int, default=0,
+                        help='Fill bounded temporal gaps up to N missing weeks after propagation (0..48). 0 disables (try 2).')
     parser.add_argument('--no_yearly', action='store_true',
                         help='Exclude yearly (week 0) samples')
     parser.add_argument('--outdir', type=str, default='outputs/plots/propagation',
@@ -311,6 +313,11 @@ def main():
     print("Flattening to samples...")
     lats, lons, weeks, species_lists, env_features = loader.flatten_to_samples(
         include_yearly=not args.no_yearly,
+    )
+    samples_per_cell = 48 + (0 if args.no_yearly else 1)
+    sample_cell_indices = np.repeat(
+        np.arange(len(species_lists) // samples_per_cell),
+        samples_per_cell,
     )
     print(f"  {len(species_lists):,} samples "
           f"({len(np.unique(np.column_stack([lats, lons]), axis=0)):,} unique locations)")
@@ -330,6 +337,8 @@ def main():
         max_spread_factor=args.propagate_max_spread,
         env_dist_max=args.propagate_env_dist_max,
         range_cap_km=args.propagate_range_cap,
+        smooth_gaps=args.smooth_gaps,
+        sample_cell_indices=sample_cell_indices,
     )
 
     # Global summary plot

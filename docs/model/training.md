@@ -75,6 +75,7 @@ The training script handles the full pipeline automatically:
 | `--label_freq_weight_min` | `0.1` | Floor soft target for rare species (auto-raised above `--label_smoothing`) |
 | `--label_freq_weight_pct_lo` | `15` | Lower percentile within a region: species at or below get min target |
 | `--label_freq_weight_pct_hi` | `95` | Upper percentile within a region: species at or above get target 1.0 |
+| `--label_freq_weight_curve` | `1.0` | Exponent on the percentile ramp; values >1 give a sharper power-law cliff |
 | `--ubiquitous_species` | `species-data/ubiquitous_species.txt` | Path to a 2-column whitelist (`<code> <prob>`) of synanthropic species randomly injected as soft positives during training (empty string disables) |
 | `--ubiquitous_target` | `0.5` | Soft target value written for fired ubiquitous injections |
 | `--propagate_labels` | off | Propagate species labels from observed to sparse cells via env similarity |
@@ -84,6 +85,7 @@ The training script handles the full pipeline automatically:
 | `--propagate_min_obs` | `10` | Samples with fewer species than this receive propagated labels |
 | `--propagate_env_dist_max` | `2.0` | Max env-space Euclidean distance (post-StandardScaler) for a neighbor to contribute labels (0 = disabled) |
 | `--propagate_range_cap` | `500` | Hard cap in km on per-species propagation distance from nearest observation (0 = disabled) |
+| `--smooth_gaps` | `0` | Fill bounded temporal gaps up to N missing weeks after propagation (0..48; 0 = disabled; try 2) |
 
 ### Learning Rate Schedule
 
@@ -503,6 +505,7 @@ at species-rich locations like Ithaca, NY.
 | `--label_freq_weight_min` | `0.1` | Floor soft target for rare species (auto-raised above `--label_smoothing`) |
 | `--label_freq_weight_pct_lo` | `15` | Within-region percentile at or below which species get `min_weight` |
 | `--label_freq_weight_pct_hi` | `95` | Within-region percentile at or above which species get target 1.0 |
+| `--label_freq_weight_curve` | `1.0` | Exponent applied to the percentile ramp (`>1` = power-law cliff) |
 
 ```bash
 python train.py --label_freq_weight
@@ -518,6 +521,17 @@ python train.py --label_freq_weight
     1% saturate).  Conversely, lower it (e.g. `90`) for a softer top end.
     Raising `--label_freq_weight_pct_lo` (e.g. `25`) collapses more rare
     species into the floor; lowering it (e.g. `5`) keeps them on the ramp.
+
+!!! tip "Sharper cliff with `--label_freq_weight_curve`"
+    The default ramp is **linear in percentile**, so a species at the 75th
+    regional percentile already gets a target of `~0.77`.  In well-surveyed
+    cells this saturates many moderately-common species into the
+    high-confidence band and produces over-long predicted lists.  Set
+    `--label_freq_weight_curve 3` (or higher) to bend the ramp into a
+    power-law cliff: with `pct_lo=15`, `pct_hi=95`, `curve=3`, the 75th
+    percentile species gets target `~0.43` instead of `~0.77`, while the
+    genuinely top-recorded species still saturate at `1.0`.  Use this in
+    combination with `--threshold` at inference for crisp short lists.
 
 ### Ubiquitous-Species Soft Injection
 
@@ -628,6 +642,11 @@ species encoding, so propagated species participate fully in training.
    because the environment matches.
 8. **Merge** the neighbor species into the sparse sample's list
    (union, no duplicates).
+9. **Optionally smooth temporal gaps** — if `--smooth_gaps N` is greater
+  than zero, fill absent runs of up to `N` weeks in each per-cell,
+  per-species 1..48 week series, but only when the run is bounded by
+  positives on both sides. The week cycle is circular, so gaps across the
+  week 48 → week 1 boundary can be filled.
 
 #### Parameters
 
@@ -640,6 +659,7 @@ species encoding, so propagated species participate fully in training.
 | `--propagate_min_obs` | 10 | Sparsity threshold (species count) |
 | `--propagate_env_dist_max` | 2.0 | Max env-space distance for neighbor eligibility |
 | `--propagate_range_cap` | 500 | Hard km ceiling on per-species propagation distance |
+| `--smooth_gaps` | 0 | Fill bounded temporal gaps up to N missing weeks after propagation (0..48) |
 
 !!! tip
     Start with defaults and check whether the model's predictions in
@@ -775,6 +795,7 @@ python train.py --data_path data.parquet --autotune lr pos_lambda    # tune spec
 | `label_freq_weight_min` | 0.05 → 0.3 (log scale) |
 | `label_freq_weight_pct_lo` | 5.0 → 35.0 |
 | `label_freq_weight_pct_hi` | 70.0 → 95.0 |
+| `label_freq_weight_curve` | 1.0 → 5.0 |
 
 The dataset is built once before tuning starts.  Data-affecting parameters
 (`--max_obs_per_species`, `--min_obs_per_species`, `--no_yearly`) are set via
@@ -787,8 +808,11 @@ the CLI and stay fixed across all trials.
 | `--autotune` | — | Enable autotune. Without args: tune all. With args: tune listed params only. |
 | `--autotune_trials` | `30` | Number of Optuna trials |
 | `--autotune_epochs` | `15` | Epochs per trial |
+| `--autotune_ranges` | — | JSON overrides for per-parameter search spaces; use `[lo, hi]` for numeric params or a list of allowed values for categorical params |
 
 Each trial trains a fresh model and optimizes towards validation GeoScore.  Optuna's `MedianPruner` kills unpromising trials early (after 3 warmup epochs).  Results are saved to `checkpoints/autotune/autotune_results.json`, and a suggested `train.py` command with the best parameters is printed.
+
+`--autotune_ranges` applies to every autotunable parameter.  For example, `{"coord_harmonics": [8, 16], "week_harmonics": [8, 16]}` constrains those integer searches to that interval instead of the default bounds.
 
 ## References
 
