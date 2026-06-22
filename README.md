@@ -9,7 +9,7 @@
   <a href="https://www.python.org/"><img src="https://img.shields.io/badge/python-3.10+-blue.svg" alt="Python 3.10+"></a>
   <a href="https://pytorch.org/"><img src="https://img.shields.io/badge/PyTorch-2.0+-ee4c2c.svg" alt="PyTorch"></a>
   <a href="https://birdnet-team.github.io/geomodel/"><img src="https://img.shields.io/badge/docs-mkdocs-blue.svg" alt="Documentation"></a>
-  <img src="https://img.shields.io/badge/species-12%2C012-brightgreen" alt="12,313 species">
+  <img src="https://img.shields.io/badge/species-12%2C313-brightgreen" alt="12,313 species">
 </p>
 
 <p align="center">
