@@ -13,6 +13,17 @@ Usage:
 
     # Higher resolution (slower)
     python scripts/plot_demo_gif.py --resolution 0.5 --width 1920 --height 1080
+
+    # Ground-truth observations from an H3 weekly parquet instead of predictions
+    python scripts/plot_demo_gif.py \
+        --ground_truth /pelican/GeoModel/GBIF/animalia_all/gbif_processed_with_ee.parquet
+
+    # Keep prediction and ground-truth GIFs side-by-side
+    python scripts/plot_demo_gif.py --ground_truth data.parquet --output demo_migrants_gt.gif
+
+    # Ground truth plus label-propagated additions
+    python scripts/plot_demo_gif.py --ground_truth data.parquet --propagate_labels \
+        --propagate_k 18 --propagate_max_radius 1321.51
 """
 
 import argparse
@@ -22,7 +33,7 @@ import os
 import sys
 import warnings
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Dict, Iterable, List, Optional, Tuple
 
 import cartopy.crs as ccrs
 import cartopy.feature as cfeature
@@ -36,6 +47,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from model.model import create_model
 from predict import load_labels
+from utils.data import H3DataPreprocessor
 
 # ── Default species selection ────────────────────────────────────────────
 # 12 spectacular long-distance migrants that showcase global movement
@@ -73,6 +85,7 @@ def _load_model(checkpoint_path: str, device: torch.device):
     cfg = ckpt["model_config"]
     vocab = ckpt["species_vocab"]
     idx_to_species = vocab["idx_to_species"]
+    expected_species = int(cfg["n_species"])
 
     model = create_model(
         n_species=cfg["n_species"],
@@ -86,11 +99,65 @@ def _load_model(checkpoint_path: str, device: torch.device):
     model.to(device)
     model.eval()
 
-    ckpt_dir = Path(checkpoint_path).parent
-    labels_path = ckpt_dir / "labels.txt"
-    labels = load_labels(str(labels_path)) if labels_path.exists() else {}
+    labels, labels_path = _load_labels_for_checkpoint(checkpoint_path, expected_species)
+    if labels_path is None:
+        warnings.warn(
+            f"No labels file found for checkpoint {checkpoint_path}; "
+            "species name lookup may fail.",
+            stacklevel=2,
+        )
+    elif len(labels) != expected_species:
+        warnings.warn(
+            f"Labels count mismatch in {labels_path}: "
+            f"{len(labels)} entries vs checkpoint n_species={expected_species}.",
+            stacklevel=2,
+        )
 
     return model, idx_to_species, labels
+
+
+def _load_labels_for_checkpoint(
+    checkpoint_path: str,
+    expected_species: Optional[int] = None,
+) -> Tuple[Dict[int, Tuple[str, str, str]], Optional[Path]]:
+    """Load the most suitable labels file for a checkpoint.
+
+    Preference order:
+    1) <checkpoint_stem>_labels.txt
+    2) labels.txt
+    3) any *_labels.txt in checkpoint directory
+    4) any *labels*.txt in checkpoint directory
+    """
+    ckpt_path = Path(checkpoint_path)
+    ckpt_dir = ckpt_path.parent
+    ckpt_stem = ckpt_path.stem
+
+    candidates: List[Path] = []
+    for path in (
+        ckpt_dir / f"{ckpt_stem}_labels.txt",
+        ckpt_dir / "labels.txt",
+    ):
+        if path.exists() and path not in candidates:
+            candidates.append(path)
+
+    for pattern in ("*_labels.txt", "*labels*.txt"):
+        for path in sorted(ckpt_dir.glob(pattern)):
+            if path not in candidates:
+                candidates.append(path)
+
+    first_nonempty: Optional[Tuple[Dict[int, Tuple[str, str, str]], Path]] = None
+    for path in candidates:
+        labels = load_labels(str(path))
+        if not labels:
+            continue
+        if first_nonempty is None:
+            first_nonempty = (labels, path)
+        if expected_species is None or len(labels) == expected_species:
+            return labels, path
+
+    if first_nonempty is not None:
+        return first_nonempty
+    return {}, None
 
 
 def _resolve_species(
@@ -111,7 +178,7 @@ def _resolve_species(
                 code, sci, com = label
             else:
                 code = sci = com = str(species_id)
-            if q == sci.lower() or q == com.lower():
+            if q == str(code).lower() or q == sci.lower() or q == com.lower():
                 match = (idx, code, sci, com)
                 break
         # Second pass: substring match
@@ -123,7 +190,7 @@ def _resolve_species(
                     code, sci, com = label
                 else:
                     code = sci = com = str(species_id)
-                if q in sci.lower() or q in com.lower():
+                if q in str(code).lower() or q in sci.lower() or q in com.lower():
                     match = (idx, code, sci, com)
                     break
         if match and not any(r[0] == match[0] for r in results):
@@ -131,6 +198,30 @@ def _resolve_species(
         elif match is None:
             print(f"Warning: '{name}' not found in labels, skipping.")
     return results
+
+
+def _load_species_catalog(checkpoint_path: str) -> Tuple[Dict[int, str], Dict[int, Tuple[str, str, str]]]:
+    """Load species labels for name resolution without constructing the model."""
+    ckpt = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+    expected_species = int(ckpt["model_config"]["n_species"])
+    idx_to_species = {
+        int(idx): str(species_id)
+        for idx, species_id in ckpt["species_vocab"]["idx_to_species"].items()
+    }
+    labels, labels_path = _load_labels_for_checkpoint(checkpoint_path, expected_species)
+    if labels_path is None:
+        warnings.warn(
+            f"No labels file found for checkpoint {checkpoint_path}; "
+            "species name lookup may fail.",
+            stacklevel=2,
+        )
+    elif len(labels) != expected_species:
+        warnings.warn(
+            f"Labels count mismatch in {labels_path}: "
+            f"{len(labels)} entries vs checkpoint n_species={expected_species}.",
+            stacklevel=2,
+        )
+    return idx_to_species, labels
 
 
 # ── Grid & inference ─────────────────────────────────────────────────────
@@ -170,6 +261,139 @@ def _predict_week(
     return np.concatenate(chunks, axis=0)
 
 
+# ── Ground truth loading ─────────────────────────────────────────────────
+
+
+def _iter_species_ids(value) -> Iterable[str]:
+    if value is None:
+        return ()
+    if isinstance(value, np.ndarray):
+        return (str(species_id) for species_id in value.tolist())
+    if isinstance(value, (list, tuple, set)):
+        return (str(species_id) for species_id in value)
+    return ()
+
+
+def _parquet_columns(data_path: str) -> List[str]:
+    import pyarrow.parquet as pq
+
+    return pq.ParquetFile(data_path).schema_arrow.names
+
+
+def _load_ground_truth_table(data_path: str, weeks: List[int], include_env: bool = False):
+    import h3
+    import pandas as pd
+
+    week_columns = [f"week_{week}" for week in weeks]
+    env_columns: List[str] = []
+    if include_env:
+        env_columns = [
+            col for col in _parquet_columns(data_path)
+            if not col.startswith("week_")
+            and col not in ("h3_index", "geometry", "h3_resolution", "target_km")
+        ]
+    columns = ["h3_index", *week_columns, *env_columns]
+    df = pd.read_parquet(data_path, columns=columns)
+
+    h3_cells = df["h3_index"].apply(
+        lambda cell: cell if isinstance(cell, str) else h3.int_to_str(cell)
+    ).values
+    coords = np.array([h3.cell_to_latlng(cell) for cell in h3_cells])
+    env_features = df[env_columns] if include_env else None
+    return df, coords[:, 0], coords[:, 1], env_features
+
+
+def _ground_truth_week(
+    df,
+    week: int,
+    species_codes: List[str],
+) -> np.ndarray:
+    values = np.zeros((len(df), len(species_codes)), dtype=np.float32)
+    code_to_idx = {str(code): idx for idx, code in enumerate(species_codes)}
+    col = f"week_{week}"
+    if col not in df.columns:
+        return values
+
+    for row_idx, observed in enumerate(df[col].values):
+        for species_id in _iter_species_ids(observed):
+            species_idx = code_to_idx.get(species_id)
+            if species_idx is not None:
+                values[row_idx, species_idx] = 1.0
+    return values
+
+
+def _propagated_overlays_all_weeks(
+    df,
+    lats: np.ndarray,
+    lons: np.ndarray,
+    env_features,
+    weeks: List[int],
+    species_codes: List[str],
+    k: int,
+    max_radius_km: float,
+    min_obs_threshold: int,
+    max_spread_factor: float,
+    env_dist_max: float,
+    range_cap_km: float,
+    smooth_gaps: int,
+) -> Dict[int, np.ndarray]:
+    n_cells = len(lats)
+    n_weeks = len(weeks)
+    n_species = len(species_codes)
+    species_to_idx = {str(code): idx for idx, code in enumerate(species_codes)}
+    week_values = [df[f"week_{week}"].values for week in weeks]
+
+    species_lists: List[List[str]] = []
+    original_selected = np.zeros((n_cells * n_weeks, n_species), dtype=bool)
+    for cell_idx in range(n_cells):
+        for week_pos, values in enumerate(week_values):
+            sample_idx = cell_idx * n_weeks + week_pos
+            species_ids = list(_iter_species_ids(values[cell_idx]))
+            species_lists.append(species_ids)
+            for species_id in species_ids:
+                species_idx = species_to_idx.get(species_id)
+                if species_idx is not None:
+                    original_selected[sample_idx, species_idx] = True
+
+    flat_lats = np.repeat(lats, n_weeks)
+    flat_lons = np.repeat(lons, n_weeks)
+    flat_weeks = np.tile(np.asarray(weeks, dtype=np.int16), n_cells)
+    env_row_indices = np.repeat(np.arange(n_cells), n_weeks)
+
+    H3DataPreprocessor.propagate_env_labels(
+        flat_lats,
+        flat_lons,
+        flat_weeks,
+        species_lists,
+        env_features,
+        k=k,
+        max_radius_km=max_radius_km,
+        min_obs_threshold=min_obs_threshold,
+        max_spread_factor=max_spread_factor,
+        env_dist_max=env_dist_max,
+        range_cap_km=range_cap_km,
+        candidate_species=set(species_codes),
+        env_row_indices=env_row_indices,
+        smooth_gaps=smooth_gaps,
+        sample_cell_indices=env_row_indices,
+    )
+
+    overlays = {
+        week: np.zeros((n_cells, n_species), dtype=np.float32)
+        for week in weeks
+    }
+    for sample_idx, species_ids in enumerate(species_lists):
+        cell_idx = sample_idx // n_weeks
+        week_pos = sample_idx % n_weeks
+        for species_id in species_ids:
+            species_idx = species_to_idx.get(str(species_id))
+            if species_idx is None or original_selected[sample_idx, species_idx]:
+                continue
+            overlays[weeks[week_pos]][cell_idx, species_idx] = 1.0
+
+    return overlays
+
+
 # ── Rendering ────────────────────────────────────────────────────────────
 
 # Perceptually uniform colormap: dark-body radiator (black → red → yellow → white)
@@ -194,6 +418,9 @@ def _render_frame(
     fig_w: float,
     fig_h: float,
     dpi: int,
+    gridded: bool = True,
+    title_prefix: str = "Geomodel Predictions",
+    overlay_probs: Optional[np.ndarray] = None,
 ) -> Image.Image:
     """Render one animation frame as a PIL Image."""
     n_species = len(species_list)
@@ -248,17 +475,46 @@ def _render_frame(
         )
 
         # Data layer
-        prob_grid = sp_probs.reshape(n_lats, n_lons)
-        prob_grid = np.ma.masked_less_equal(prob_grid, 0.005)
-        ax.pcolormesh(
-            lon_edges,
-            lat_edges,
-            prob_grid,
-            cmap=cmap,
-            norm=norm,
-            transform=ccrs.PlateCarree(),
-            zorder=2,
-        )
+        if gridded:
+            prob_grid = sp_probs.reshape(n_lats, n_lons)
+            prob_grid = np.ma.masked_less_equal(prob_grid, 0.005)
+            ax.pcolormesh(
+                lon_edges,
+                lat_edges,
+                prob_grid,
+                cmap=cmap,
+                norm=norm,
+                transform=ccrs.PlateCarree(),
+                zorder=2,
+            )
+        else:
+            present = sp_probs > 0
+            if present.any():
+                ax.scatter(
+                    lons[present],
+                    lats[present],
+                    color="#7b2cbf",
+                    s=max(1.2, fig_w / 480),
+                    marker="s",
+                    linewidths=0,
+                    alpha=0.75,
+                    transform=ccrs.PlateCarree(),
+                    zorder=2,
+                )
+            if overlay_probs is not None:
+                overlay_present = overlay_probs[:, sp_idx] > 0
+                if overlay_present.any():
+                    ax.scatter(
+                        lons[overlay_present],
+                        lats[overlay_present],
+                        color="#2ca25f",
+                        s=max(1.4, fig_w / 440),
+                        marker="s",
+                        linewidths=0,
+                        alpha=0.78,
+                        transform=ccrs.PlateCarree(),
+                        zorder=3,
+                    )
 
         # Species label – compact, white box with slight transparency
         ax.set_title(
@@ -281,7 +537,7 @@ def _render_frame(
 
     # Title: version + week label
     fig.suptitle(
-        f"Geomodel Predictions — {_week_label(week)}",
+        f"{title_prefix} — {_week_label(week)}",
         fontsize=max(10, int(fig_w / dpi * 1.1)),
         fontweight="bold",
         color="#333333",
@@ -310,8 +566,18 @@ def generate_demo_gif(
     height: int = 900,
     cols: int = 4,
     outdir: str = "outputs/plots",
+    output: Optional[str] = None,
     device: str = "auto",
     batch_size: int = 8192,
+    ground_truth_path: Optional[str] = None,
+    propagate_labels: bool = False,
+    propagate_k: int = 20,
+    propagate_max_radius: float = 1000.0,
+    propagate_min_obs: int = 12,
+    propagate_max_spread: float = 1.0,
+    propagate_env_dist_max: float = 5.0,
+    propagate_range_cap: float = 1500.0,
+    smooth_gaps: int = 0,
 ):
     if species_names is None:
         species_names = DEFAULT_SPECIES
@@ -320,10 +586,14 @@ def generate_demo_gif(
         "cuda" if device == "auto" and torch.cuda.is_available() else
         device if device != "auto" else "cpu"
     )
-    print(f"Device: {dev}")
+    if ground_truth_path:
+        print(f"Ground truth: {ground_truth_path}")
+        idx_to_species, labels = _load_species_catalog(checkpoint_path)
+        model = None
+    else:
+        print(f"Device: {dev}")
+        model, idx_to_species, labels = _load_model(checkpoint_path, dev)
 
-    # Load model
-    model, idx_to_species, labels = _load_model(checkpoint_path, dev)
     species_list = _resolve_species(species_names, idx_to_species, labels)
     if not species_list:
         print("No valid species found.")
@@ -336,29 +606,71 @@ def generate_demo_gif(
     for _, code, sci, com in species_list:
         print(f"  {code}: {com} ({sci})")
 
-    # Build grid
-    lats, lons = _build_grid(resolution_deg)
-    print(f"Grid: {len(lats):,} cells at {resolution_deg}° resolution")
-
     model_indices = [s[0] for s in species_list]
+    species_codes = [str(s[1]) for s in species_list]
     weeks = list(range(1, 49))
 
-    # Predict all 48 weeks
-    all_probs = {}
-    for i, week in enumerate(weeks):
-        print(f"\r  Predicting week {week}/48...", end="", flush=True)
-        all_probs[week] = _predict_week(
-            model, lats, lons, week, model_indices, dev, batch_size
+    if ground_truth_path:
+        gt_df, lats, lons, env_features = _load_ground_truth_table(
+            ground_truth_path, weeks, include_env=propagate_labels,
         )
-    print("\r  Predictions complete.            ")
+        print(f"H3 cells: {len(lats):,}")
+        all_probs = None
+        vmax_per_species = [1.0] * n_species
+        gridded = False
+        title_prefix = "Ground Truth + Label Propagation" if propagate_labels else "Ground Truth Observations"
+        if propagate_labels:
+            print(
+                "Label propagation: "
+                f"k={propagate_k}, radius={propagate_max_radius:g}km, "
+                f"min_obs={propagate_min_obs}, spread={propagate_max_spread:g}, "
+                f"env_dist_max={propagate_env_dist_max:g}, range_cap={propagate_range_cap:g}km, "
+                f"smooth_gaps={smooth_gaps}"
+            )
+            print("Running label propagation once for all 48 weeks...")
+            overlay_by_week = _propagated_overlays_all_weeks(
+                gt_df,
+                lats,
+                lons,
+                env_features,
+                weeks,
+                species_codes,
+                propagate_k,
+                propagate_max_radius,
+                propagate_min_obs,
+                propagate_max_spread,
+                propagate_env_dist_max,
+                propagate_range_cap,
+                smooth_gaps,
+            )
+            total_propagated = sum(int(overlay.sum()) for overlay in overlay_by_week.values())
+            print(f"Label propagation overlay: {total_propagated:,} selected-species additions")
+        else:
+            overlay_by_week = {}
+    else:
+        # Build grid
+        lats, lons = _build_grid(resolution_deg)
+        print(f"Grid: {len(lats):,} cells at {resolution_deg}° resolution")
 
-    # Per-species vmax from 99th percentile across all weeks
-    vmax_per_species = []
-    for sp_idx in range(n_species):
-        vals = np.concatenate([all_probs[w][:, sp_idx] for w in weeks])
-        pos = vals[vals > 0]
-        vmax = float(np.percentile(pos, 99)) if len(pos) > 0 else 1.0
-        vmax_per_species.append(max(vmax, 0.05))
+        # Predict all 48 weeks
+        all_probs = {}
+        for i, week in enumerate(weeks):
+            print(f"\r  Predicting week {week}/48...", end="", flush=True)
+            all_probs[week] = _predict_week(
+                model, lats, lons, week, model_indices, dev, batch_size
+            )
+        print("\r  Predictions complete.            ")
+
+        # Per-species vmax from 99th percentile across all weeks
+        vmax_per_species = []
+        for sp_idx in range(n_species):
+            vals = np.concatenate([all_probs[w][:, sp_idx] for w in weeks])
+            pos = vals[vals > 0]
+            vmax = float(np.percentile(pos, 99)) if len(pos) > 0 else 1.0
+            vmax_per_species.append(max(vmax, 0.05))
+        gridded = True
+        title_prefix = "Geomodel Predictions"
+        overlay_by_week = {}
 
     # Compute DPI to hit target pixel dimensions
     # figsize is in inches, dpi * figsize = pixels
@@ -370,10 +682,17 @@ def generate_demo_gif(
     frames: List[Image.Image] = []
     for i, week in enumerate(weeks):
         print(f"\r  Rendering frame {i + 1}/48...", end="", flush=True)
+        overlay_probs = None
+        if ground_truth_path:
+            probs = _ground_truth_week(gt_df, week, species_codes)
+            if propagate_labels:
+                overlay_probs = overlay_by_week[week]
+        else:
+            probs = all_probs[week]
         img = _render_frame(
-            lats, lons, all_probs[week], species_list, week,
+            lats, lons, probs, species_list, week,
             resolution_deg, n_cols, vmax_per_species,
-            fig_w, fig_h, dpi,
+            fig_w, fig_h, dpi, gridded, title_prefix, overlay_probs,
         )
         # Resize to exact target (matplotlib may produce slightly different sizes)
         if img.size != (width, height):
@@ -383,7 +702,13 @@ def generate_demo_gif(
 
     # Assemble GIF
     os.makedirs(outdir, exist_ok=True)
-    out_path = os.path.join(outdir, "demo_migrants.gif")
+    if output:
+        out_path = output
+        if not os.path.isabs(out_path) and not os.path.dirname(out_path):
+            out_path = os.path.join(outdir, out_path)
+    else:
+        out_path = os.path.join(outdir, "demo_migrants.gif")
+    os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
     duration_ms = int(duration * 1000 / 48)
 
     frames[0].save(
@@ -438,6 +763,10 @@ def main():
         help="Output directory (default: outputs/plots)",
     )
     parser.add_argument(
+        "--output", default=None,
+        help="Output GIF path or filename (default: <outdir>/demo_migrants.gif)",
+    )
+    parser.add_argument(
         "--device", default="auto", choices=["auto", "cuda", "cpu"],
         help="Device for inference (default: auto)",
     )
@@ -445,7 +774,47 @@ def main():
         "--batch_size", type=int, default=8192,
         help="Batch size for inference (default: 8192)",
     )
+    parser.add_argument(
+        "--ground_truth", "--ground_truth_path", dest="ground_truth_path",
+        default=None,
+        help="Path to H3 weekly parquet; when set, plot observed species cells instead of model predictions.",
+    )
+    parser.add_argument(
+        "--propagate_labels", action="store_true",
+        help="Overlay label-propagated additions for selected species. Requires --ground_truth.",
+    )
+    parser.add_argument(
+        "--propagate_k", type=int, default=20,
+        help="Number of nearest env-space neighbors for label propagation (default: 20)",
+    )
+    parser.add_argument(
+        "--propagate_max_radius", type=float, default=1000.0,
+        help="Geographic radius cap in km for label propagation (default: 1000)",
+    )
+    parser.add_argument(
+        "--propagate_min_obs", type=int, default=12,
+        help="Samples with fewer species than this receive propagated labels (default: 12)",
+    )
+    parser.add_argument(
+        "--propagate_max_spread", type=float, default=1.0,
+        help="Restrict propagation distance by observed range radius times this factor (default: 1.0). 0 disables.",
+    )
+    parser.add_argument(
+        "--propagate_env_dist_max", type=float, default=5.0,
+        help="Max standardized env-space distance for contributing neighbors. 0 disables (default: 5.0).",
+    )
+    parser.add_argument(
+        "--propagate_range_cap", type=float, default=1500.0,
+        help="Hard km cap on propagation distance from nearest observation. 0 disables (default: 1500).",
+    )
+    parser.add_argument(
+        "--smooth_gaps", type=int, default=0,
+        help="Fill bounded temporal gaps up to N missing weeks after propagation (0..48). 0 disables (try 2).",
+    )
     args = parser.parse_args()
+
+    if args.propagate_labels and not args.ground_truth_path:
+        parser.error("--propagate_labels requires --ground_truth")
 
     generate_demo_gif(
         species_names=args.species,
@@ -456,8 +825,18 @@ def main():
         height=args.height,
         cols=args.cols,
         outdir=args.outdir,
+        output=args.output,
         device=args.device,
         batch_size=args.batch_size,
+        ground_truth_path=args.ground_truth_path,
+        propagate_labels=args.propagate_labels,
+        propagate_k=args.propagate_k,
+        propagate_max_radius=args.propagate_max_radius,
+        propagate_min_obs=args.propagate_min_obs,
+        propagate_max_spread=args.propagate_max_spread,
+        propagate_env_dist_max=args.propagate_env_dist_max,
+        propagate_range_cap=args.propagate_range_cap,
+        smooth_gaps=args.smooth_gaps,
     )
 
 
