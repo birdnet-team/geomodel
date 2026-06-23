@@ -117,7 +117,7 @@ def _validate(
     print(
         f"  Validation — max diff: {max_diff:.6f}  mean diff: {mean_diff:.6f}  ", end=""
     )
-    return tol - max_diff
+    return max_diff <= tol, max_diff
 
 
 # ---------------------------------------------------------------------------
@@ -244,12 +244,12 @@ def _export_onnx(
         effective_tol = 0.08
     else:
         effective_tol = tol
-    max_diff = _validate(ref_outputs, exported, effective_tol)
+    passed, max_diff = _validate(ref_outputs, exported, effective_tol)
 
     total_bytes = path.stat().st_size
     size_mb = total_bytes / (1024 * 1024)
     print(f"  File size: {size_mb:.1f} MB")
-    return True, max_diff
+    return passed, max_diff
 
 
 # ---------------------------------------------------------------------------
@@ -299,9 +299,9 @@ def _export_tf_saved_model(
         out = infer(tf.constant(ref_inputs))
         # output key varies — take first tensor
         exported = list(out.values())[0].numpy()
-    max_diff = _validate(ref_outputs, exported, tol)
+    passed, max_diff = _validate(ref_outputs, exported, tol)
 
-    return True, max_diff
+    return passed, max_diff
 
 
 def _export_tflite(
@@ -393,11 +393,11 @@ def _export_tflite(
     exported = np.concatenate(exported_list, axis=0)
 
     extra_tol = {"fp32": 1, "fp16": 800, "int8": 2000}[mode]
-    max_diff = _validate(ref_outputs, exported, tol * extra_tol)
+    passed, max_diff = _validate(ref_outputs, exported, tol * extra_tol)
 
     size_mb = path.stat().st_size / (1024 * 1024)
     print(f"  File size: {size_mb:.1f} MB")
-    return True, max_diff
+    return passed, max_diff
 
 
 # ---------------------------------------------------------------------------
@@ -414,7 +414,7 @@ def convert(
     tol: float = 1e-4,
     device: str = "auto",
     keep_io_fp32: bool = True,
-) -> dict[str, bool]:
+) -> dict[str, tuple[bool, float]]:
     """Convert a checkpoint to the requested formats.
 
     Args:
@@ -428,7 +428,10 @@ def convert(
             numerical divergence.  Default ``True``.
 
     Returns:
-        Dict mapping format name to success boolean.
+        Dict mapping format name to a ``(passed, max_diff)`` tuple, where
+        *passed* is ``True`` if the export validated within tolerance and
+        *max_diff* is the maximum absolute difference versus the PyTorch
+        reference (``nan`` if the export failed before validation).
     """
     if formats is None:
         formats = ["onnx_fp16"]
@@ -500,7 +503,7 @@ def convert(
         print(f"Copied MODEL_LICENSE.txt → {outpath / 'MODEL_LICENSE.txt'}")
 
     # Run conversions
-    results: dict[str, bool] = {}
+    results: dict[str, tuple[bool, float]] = {}
     dispatch = {
         "onnx": lambda: _export_onnx(
             wrapper, ref_inputs, ref_outputs, outpath, fp16=False, tol=tol, device=dev
@@ -544,18 +547,19 @@ def convert(
     print("\n" + "=" * 60)
     print("  Conversion Summary")
     print("=" * 60)
-    for fmt, (ok, tol_diff) in results.items():
-        status = "CONVERTED" if ok else "FAIL"
-        if ok:
-            diff_str = f"  tol_diff={tol_diff:.6f}" if not math.isnan(tol_diff) else ""
-            tol_str = "PASS" if tol_diff > 0 else "FAIL"
+    for fmt, (passed, max_diff) in results.items():
+        converted = not math.isnan(max_diff)
+        status = "CONVERTED" if converted else "FAIL"
+        if converted:
+            diff_str = f"  max_diff={max_diff:.6f}"
+            tol_str = "PASS" if passed else "FAIL"
         else:
             diff_str = ""
             tol_str = "FAIL"
         print(f"  {fmt:15s}  {status:10s}  {tol_str}{diff_str}")
     print("=" * 60)
 
-    n_fail = sum(1 for ok, tol_diff in results.values() if not ok or tol_diff < 0)
+    n_fail = sum(1 for passed, _ in results.values() if not passed)
     if n_fail:
         print(f"\n{n_fail} conversion(s) failed.")
     else:
