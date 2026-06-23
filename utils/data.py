@@ -1808,6 +1808,86 @@ def _make_sparse_collate_fn(
     return collate_fn
 
 
+def _make_coo_collate_fn(
+    n_species: int,
+    species_freq_weights: Optional[torch.Tensor] = None,
+    species_region_weights: Optional[torch.Tensor] = None,
+    ubiquitous_indices: Optional[torch.Tensor] = None,
+    ubiquitous_probs: Optional[torch.Tensor] = None,
+    ubiquitous_target: float = 0.5,
+):
+    """Collate that emits the species target as sparse COO coordinates.
+
+    Instead of allocating and filling a dense ``(batch, n_species)`` target on
+    the CPU (and copying ~``B*n_species*4`` bytes to the GPU every batch), this
+    emits compact ``species_rows`` / ``species_cols`` / ``species_vals`` built
+    vectorized with ``torch.repeat_interleave`` + ``torch.cat``.  The dense
+    target is rebuilt on the GPU by the trainer (see
+    ``Trainer._build_species_target``), which also performs the training-only
+    ubiquitous-species injection there.  ``species_vals`` carries arbitrary
+    float soft-target values (region/frequency soft labels or 1.0), so the
+    rebuilt dense target is identical to the dense-collate path.
+
+    The ubiquitous tensors are passed through unchanged for the trainer to
+    apply on-GPU; validation collates pass ``ubiquitous_indices=None``.
+    """
+    _weights = species_freq_weights
+    _region_weights = species_region_weights
+    _ubi_idx = ubiquitous_indices
+    _ubi_prob = ubiquitous_probs
+    _ubi_target = float(ubiquitous_target)
+
+    def collate_fn(batch):
+        inputs_list, targets_list = zip(*batch)
+        lat = torch.stack([inp['lat'] for inp in inputs_list])
+        lon = torch.stack([inp['lon'] for inp in inputs_list])
+        week = torch.stack([inp['week'] for inp in inputs_list])
+        env = torch.stack([tgt['env_features'] for tgt in targets_list])
+
+        inp = {'lat': lat, 'lon': lon, 'week': week}
+        if 'obs_density' in inputs_list[0]:
+            inp['obs_density'] = torch.stack([i['obs_density'] for i in inputs_list])
+
+        B = len(batch)
+        idx_arrays = []
+        counts = torch.empty(B, dtype=torch.long)
+        for i, tgt in enumerate(targets_list):
+            indices = tgt['species_indices']
+            if not isinstance(indices, torch.Tensor):
+                indices = torch.from_numpy(indices)
+            indices = indices.long()
+            idx_arrays.append(indices)
+            counts[i] = indices.numel()
+
+        cols = torch.cat(idx_arrays) if idx_arrays else torch.empty(0, dtype=torch.long)
+        rows = torch.repeat_interleave(torch.arange(B), counts)
+
+        if _region_weights is not None:
+            region_ids = torch.tensor(
+                [int(inputs_list[i]['region_id']) for i in range(B)], dtype=torch.long)
+            rid_exp = torch.repeat_interleave(region_ids, counts)
+            vals = _region_weights[rid_exp, cols] if cols.numel() else torch.empty(0)
+        elif _weights is not None:
+            vals = _weights[cols] if cols.numel() else torch.empty(0)
+        else:
+            vals = torch.ones(cols.numel(), dtype=torch.float32)
+
+        targets = {
+            'env_features': env,
+            'species_rows': rows, 'species_cols': cols,
+            'species_vals': vals.float(),
+            'species_n': n_species, 'species_B': B,
+        }
+        if _ubi_idx is not None and _ubi_idx.numel() > 0:
+            targets['ubi_idx'] = _ubi_idx
+            targets['ubi_prob'] = _ubi_prob
+            targets['ubi_target'] = _ubi_target
+
+        return (inp, targets)
+
+    return collate_fn
+
+
 def create_dataloaders(
     train_inputs: Dict[str, np.ndarray],
     train_targets: Dict[str, Any],
@@ -1823,6 +1903,7 @@ def create_dataloaders(
     ubiquitous_indices: Optional[np.ndarray] = None,
     ubiquitous_probs: Optional[np.ndarray] = None,
     ubiquitous_target: float = 0.5,
+    gpu_target_build: bool = False,
 ) -> Tuple[DataLoader, DataLoader]:
     """Create training and validation DataLoaders.
 
@@ -1864,9 +1945,14 @@ def create_dataloaders(
     )
     val_ds = BirdSpeciesDataset(val_inputs, val_targets, n_species=n_species)
 
-    # Use custom collation when species targets are sparse
+    # Use custom collation when species targets are sparse. With
+    # gpu_target_build the collate emits sparse COO coords (no dense CPU
+    # alloc, no large host->device copy); the dense target is rebuilt on the
+    # GPU by the trainer. Otherwise the dense matrix is built on the CPU.
     _is_sparse = train_ds.species_sparse is not None
-    train_collate = _make_sparse_collate_fn(
+    _train_collate_factory = _make_coo_collate_fn if gpu_target_build else _make_sparse_collate_fn
+    _val_collate_factory = _make_coo_collate_fn if gpu_target_build else _make_sparse_collate_fn
+    train_collate = _train_collate_factory(
         n_species,
         species_freq_weights=train_ds.species_freq_weights,
         species_region_weights=train_ds.species_region_weights,
@@ -1874,7 +1960,7 @@ def create_dataloaders(
         ubiquitous_probs=train_ds.ubiquitous_probs,
         ubiquitous_target=train_ds.ubiquitous_target,
     ) if _is_sparse else None
-    val_collate = _make_sparse_collate_fn(n_species) if _is_sparse else None
+    val_collate = _val_collate_factory(n_species) if _is_sparse else None
 
     _persistent = num_workers > 0
 

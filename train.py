@@ -295,6 +295,41 @@ class Trainer:
 
     # -- single epoch -----------------------------------------------------
 
+    def _build_species_target(self, targets: Dict, training: bool) -> torch.Tensor:
+        """Materialize the dense species target on the device.
+
+        With the COO collate (``--gpu_target_build``), the batch carries sparse
+        ``species_rows``/``cols``/``vals`` instead of a dense matrix; rebuild the
+        dense ``(B, n_species)`` target on the GPU via scatter (no large
+        host->device copy). The training-only ubiquitous-species injection is
+        applied here on the GPU with identical semantics to the dense-collate
+        path (Bernoulli per (sample, species), only where not already a
+        positive, written as the soft target value). Falls back to the dense
+        path when a precomputed ``'species'`` tensor is present.
+        """
+        if 'species_rows' not in targets:
+            return targets['species'].to(self.device, non_blocking=True)
+
+        B = int(targets['species_B'])
+        ns = int(targets['species_n'])
+        species = torch.zeros(B, ns, device=self.device)
+        rows = targets['species_rows'].to(self.device, non_blocking=True)
+        cols = targets['species_cols'].to(self.device, non_blocking=True)
+        vals = targets['species_vals'].to(self.device, non_blocking=True)
+        if rows.numel() > 0:
+            species[rows, cols] = vals
+
+        if training and 'ubi_idx' in targets:
+            ui = targets['ubi_idx'].to(self.device, non_blocking=True)
+            up = targets['ubi_prob'].to(self.device, non_blocking=True)
+            ut = float(targets['ubi_target'])
+            draws = torch.rand(B, ui.numel(), device=self.device)
+            write = (draws < up.unsqueeze(0)) & (species[:, ui] == 0)
+            if write.any():
+                r, c = write.nonzero(as_tuple=True)
+                species[r, ui[c]] = ut
+        return species
+
     def train_epoch(self, train_loader: DataLoader) -> Dict[str, float]:
         """Run one training epoch with AMP and gradient clipping.
 
@@ -321,7 +356,7 @@ class Trainer:
             lat = inputs['lat'].to(self.device, non_blocking=True)
             lon = inputs['lon'].to(self.device, non_blocking=True)
             week = inputs['week'].to(self.device, non_blocking=True)
-            species_t = targets['species'].to(self.device, non_blocking=True)
+            species_t = self._build_species_target(targets, training=True)
             env_t = targets['env_features'].to(self.device, non_blocking=True)
 
             self.optimizer.zero_grad(set_to_none=True)
@@ -423,6 +458,13 @@ class Trainer:
         # Each entry holds (scores, labels) lists to compute column-wise AP
         wl_scores: Dict[int, list] = {tk: [] for tk in self.watchlist_indices}
         wl_labels: Dict[int, list] = {tk: [] for tk in self.watchlist_indices}
+        # Precompute the watchlist column indices once so we can gather just
+        # those (~tens of) columns on the GPU each batch, instead of copying
+        # the full (B, n_species) probs+labels tensors to the host.
+        _wl_tks = list(self.watchlist_indices.keys())
+        _wl_cols = (torch.tensor([self.watchlist_indices[tk] for tk in _wl_tks],
+                                 dtype=torch.long, device=self.device)
+                    if _wl_tks else None)
 
         # Density-stratified metric accumulators
         # Collect per-sample AP and obs_density for post-loop stratification
@@ -440,7 +482,7 @@ class Trainer:
             lat = inputs['lat'].to(self.device, non_blocking=True)
             lon = inputs['lon'].to(self.device, non_blocking=True)
             week = inputs['week'].to(self.device, non_blocking=True)
-            species_t = targets['species'].to(self.device, non_blocking=True)
+            species_t = self._build_species_target(targets, training=False)
             env_t = targets['env_features'].to(self.device, non_blocking=True)
 
             # Observation density (optional — present when data pipeline includes it)
@@ -522,15 +564,15 @@ class Trainer:
                 all_density_all.append(batch_density)
 
             # --- Watchlist per-species scores ---
-            if self.watchlist_indices:
-                probs_cpu = probs.cpu()
-                labels_cpu = pos_mask.cpu()
-                for tk, idx in self.watchlist_indices.items():
-                    # .clone() detaches the 1-D slice from the full (B, n_species)
-                    # tensor — without it, the view keeps the entire parent alive
-                    # and memory grows linearly with the number of val batches.
-                    wl_scores[tk].append(probs_cpu[:, idx].clone())
-                    wl_labels[tk].append(labels_cpu[:, idx].float())
+            # Gather only the watchlist columns on the GPU, then move the tiny
+            # (B, n_watchlist) slice to the host — avoids copying the full
+            # (B, n_species) probs+labels tensors every batch.
+            if _wl_cols is not None:
+                wl_p = probs.index_select(1, _wl_cols).cpu()
+                wl_l = pos_mask.index_select(1, _wl_cols).float().cpu()
+                for j, tk in enumerate(_wl_tks):
+                    wl_scores[tk].append(wl_p[:, j].clone())
+                    wl_labels[tk].append(wl_l[:, j].clone())
 
         # F1/precision/recall from micro-averaged TP/FP/FN per threshold
         def _f1(tp, fp, fn):
@@ -1000,6 +1042,11 @@ def main():
 
     # Device
     parser.add_argument('--device', type=str, default='auto', choices=['auto', 'cuda', 'cpu'])
+    parser.add_argument('--cpu_collate', action='store_true',
+                        help='Build the dense species target on the CPU in the '
+                             'collate (legacy path). Default: on CUDA, emit sparse '
+                             'COO coords and rebuild the dense target on the GPU '
+                             '(no per-batch host->device copy of the full target).')
     parser.add_argument('--num_workers', type=int, default=min(4, os.cpu_count() or 1),
                         help='Number of DataLoader worker processes (default: min(4, CPU cores))')
 
@@ -1286,6 +1333,7 @@ def main():
         ubiquitous_indices=ubi_idx,
         ubiquitous_probs=ubi_prob,
         ubiquitous_target=args.ubiquitous_target,
+        gpu_target_build=(device.type == 'cuda' and not args.cpu_collate),
     )
 
     # Create holdout DataLoader if regions were masked
