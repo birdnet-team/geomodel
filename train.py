@@ -664,7 +664,7 @@ class Trainer:
         """
         try:
             ckpt = torch.load(checkpoint_path, map_location=self.device, weights_only=False)
-        except (RuntimeError, EOFError, Exception) as exc:
+        except (RuntimeError, EOFError, pickle.UnpicklingError) as exc:
             import warnings
             warnings.warn(
                 f"Checkpoint {checkpoint_path} is corrupted and will be "
