@@ -60,6 +60,7 @@ _DATA_CACHE_KEYS = [
     'propagate_env_dist_max', 'propagate_range_cap', 'smooth_gaps',
     'max_obs_per_species', 'min_obs_per_species', 'max_species',
     'val_size', 'sample_fraction',
+    'val_split_mode', 'block_h3_res',
     'holdout_regions',
     'label_freq_weight', 'label_freq_weight_min',
     'label_freq_weight_pct_lo', 'label_freq_weight_pct_hi',
@@ -1018,6 +1019,16 @@ def main():
 
     # Data split
     parser.add_argument('--val_size', type=float, default=0.1)
+    parser.add_argument('--val_split_mode', choices=['random', 'location', 'block'],
+                        default='location',
+                        help="Train/val split strategy. 'location' (default) keeps an "
+                             "identical coordinate on one side; 'block' holds out whole "
+                             "coarse H3 cells so no validation block touches a training "
+                             "block (honest spatial-generalisation estimate, less "
+                             "inflated GeoScore); 'random' is per-sample (leaky).")
+    parser.add_argument('--block_h3_res', type=int, default=3,
+                        help='H3 resolution for --val_split_mode block (default 3, '
+                             '~120 km across; lower = larger, more separated blocks).')
     parser.add_argument('--sample_fraction', type=float, default=1.0,
                         help='Fraction of locations to keep (default: 1.0 = all, 0.1 = 10%% random subset, subsampled once)')
 
@@ -1254,7 +1265,8 @@ def main():
         print("4. Splitting data...")
         train_in, val_in, train_tgt, val_tgt = preprocessor.split_data(
             inputs, targets, val_size=args.val_size,
-            random_state=42, split_by_location=True,
+            random_state=42, split_mode=args.val_split_mode,
+            block_h3_res=args.block_h3_res,
         )
         print(f"   Train: {len(train_in['lat']):,}  |  Val: {len(val_in['lat']):,}")
 
