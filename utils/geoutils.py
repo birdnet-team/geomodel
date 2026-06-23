@@ -623,8 +623,20 @@ def fill_missing_with_nearest(gdf: gpd.GeoDataFrame, columns: Optional[List[str]
         for mi in missing_idx:
             if not rows_with_any[mi]:
                 continue
-            # squared distances to non-missing points
-            dists = np.sum((coords[non_missing_idx] - coords[mi]) ** 2, axis=1)
+            # Great-circle (haversine) distances to non-missing points.
+            # coords columns are [lon, lat] in degrees; a plain Euclidean
+            # distance on degrees is wrong on a sphere: it ignores the
+            # cos(latitude) scaling of longitude and treats the +/-180 deg
+            # antimeridian as maximally far apart, so it can pick a nearest
+            # neighbour on the opposite side of the globe.
+            lon0, lat0 = np.radians(coords[mi])
+            lons = np.radians(coords[non_missing_idx, 0])
+            lats = np.radians(coords[non_missing_idx, 1])
+            dlon = lons - lon0
+            dlat = lats - lat0
+            a = (np.sin(dlat / 2.0) ** 2
+                 + np.cos(lat0) * np.cos(lats) * np.sin(dlon / 2.0) ** 2)
+            dists = 2.0 * np.arcsin(np.sqrt(np.clip(a, 0.0, 1.0)))
             # indices of the k nearest non-missing points
             order = np.argsort(dists)[:k]
             nearest_idx = non_missing_idx[order]
