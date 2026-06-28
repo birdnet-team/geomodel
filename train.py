@@ -1075,12 +1075,13 @@ def main():
         else 'cpu' if args.device == 'auto' else args.device
     )
 
-    # Allow PyTorch to grow GPU memory dynamically instead of pre-allocating
+    # Allow PyTorch to grow GPU memory dynamically instead of pre-allocating.
+    # expandable_segments must be set BEFORE any call that initialises the
+    # CUDA caching allocator (set_per_process_memory_fraction does that).
     if device.type == 'cuda':
+        os.environ.setdefault('PYTORCH_CUDA_ALLOC_CONF', 'expandable_segments:True')
         torch.cuda.set_per_process_memory_fraction(1.0, device.index or 0)
         torch.cuda.empty_cache()
-        # Use expandable segments so the allocator can release unused blocks
-        os.environ.setdefault('PYTORCH_CUDA_ALLOC_CONF', 'expandable_segments:True')
 
     # -- Autotune mode ----------------------------------------------------
     if args.autotune is not None:
