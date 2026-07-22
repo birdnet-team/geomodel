@@ -28,7 +28,7 @@ Use `--formats all` to export everything at once.
     Unlike the ONNX/TFLite exports (which bake in sigmoid and return
     probabilities), the TorchScript export returns raw species **logits** by
     default. This suits runtimes that apply their own activation — for
-    example, BirdNET's `TorchBackend` and its `apply_sigmoid` flag. Pass
+    example, BirdNET's `pt` and its `apply_sigmoid` flag. Pass
     `--torchscript_sigmoid` to bake sigmoid into the traced graph instead.
 
 ## CLI Reference
