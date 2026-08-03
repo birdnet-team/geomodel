@@ -1,0 +1,2 @@
+from_sci_name,from_species_code,to_species_code,note
+Setophaga petechia,yelwar,yelwar1,"eBird 2024 taxonomy split Setophaga petechia into S. aestiva (American Yellow Warbler) and S. petechia (Mangrove Yellow Warbler). GBIF/iNaturalist records under the lumped name 'Setophaga petechia' are overwhelmingly the widespread American form, so attribute them to yelwar1 (Setophaga aestiva). from_species_code lets an already-combined parquet be remapped at train time without re-running combine.py."

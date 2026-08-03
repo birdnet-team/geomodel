@@ -43,6 +43,7 @@ from model.metrics import compute_geoscore
 from model.autotune import TUNABLE_PARAMS, run_autotune
 from utils.data import H3DataLoader, H3DataPreprocessor, create_dataloaders, load_ubiquitous_species
 from utils.regions import HOLDOUT_REGIONS, resolve_holdout_regions, REGION_BOUNDS
+from utils.taxonomy import TaxonomyManager
 
 
 # ---------------------------------------------------------------------------
@@ -64,6 +65,7 @@ _DATA_CACHE_KEYS = [
     'label_freq_weight', 'label_freq_weight_min',
     'label_freq_weight_pct_lo', 'label_freq_weight_pct_hi',
     'label_freq_weight_curve',
+    'species_remap',
 ]
 
 
@@ -83,6 +85,16 @@ def _data_cache_key(args) -> str:
     for key in _DATA_CACHE_KEYS:
         val = getattr(args, key, None)
         h.update(f"|{key}={val!r}".encode())
+
+    # Fingerprint the species remap file contents (not just its path) so edits
+    # to the remap invalidate the cache.
+    if getattr(args, 'species_remap', None) != '':
+        remap_p = Path(args.species_remap) if getattr(args, 'species_remap', None) \
+            else TaxonomyManager.DEFAULT_REMAP_PATH
+        if remap_p.exists():
+            rstat = remap_p.stat()
+            h.update(f"|remap:{remap_p.resolve()}|mtime:{rstat.st_mtime}"
+                     f"|size:{rstat.st_size}".encode())
 
     return h.hexdigest()[:16]
 
@@ -999,6 +1011,14 @@ def main():
     parser.add_argument('--propagate_range_cap', type=float, default=1500.0,
                         help='Hard cap in km on per-species propagation distance from '
                              'nearest observation. 0 = disabled (default: 1500).')
+    parser.add_argument('--propagate_water_threshold', type=float, default=0.5,
+                        help='water_fraction below which a cell counts as land for the '
+                             'pure-ocean propagation guard (default: 0.5). 0 = disable guard.')
+    parser.add_argument('--propagate_ocean_buffer_km', type=float, default=100.0,
+                        help='A cell is "pure ocean" only if high-water AND farther than '
+                             'this many km from the nearest land cell. Terrestrial/coastal '
+                             'labels are never propagated into pure-ocean cells; land->coastal '
+                             'still flows freely. 0 = disable guard (default: 100).')
     parser.add_argument('--smooth_gaps', type=int, default=0,
                         help='Fill bounded temporal gaps up to N missing weeks after '
                              'label propagation (0..48). 0 = disabled; try 2 for GIF-like '
@@ -1032,6 +1052,12 @@ def main():
     parser.add_argument('--checkpoint_dir', type=str, default='./checkpoints')
     parser.add_argument('--taxonomy', type=str, default=None,
                         help='Path to taxonomy CSV (produced by combine.py). Auto-detected if omitted.')
+    parser.add_argument('--species_remap', type=str, default=None,
+                        help="Species remap CSV (from_species_code -> to_species_code). "
+                             "Rewrites resolved codes in an already-combined parquet at "
+                             "train time so recent taxonomic splits are corrected without "
+                             "re-running combine.py. Default: species-data/species_remap.csv; "
+                             "pass '' to disable.")
     parser.add_argument('--resume', type=str, default=None)
     parser.add_argument('--save_every', type=int, default=5)
     parser.add_argument('--no_cache', action='store_true',
@@ -1166,6 +1192,20 @@ def main():
             include_yearly=not args.no_yearly,
         )
 
+        # Species-code remap: correct recent taxonomic splits directly on the
+        # already-combined parquet (e.g. Setophaga petechia records -> yelwar1),
+        # so a re-run of combine.py is not required.
+        if args.species_remap != '':
+            _remapper = TaxonomyManager(
+                args.taxonomy or '',
+                remap_path=args.species_remap,
+            )
+            if _remapper.code_remap:
+                _changed = _remapper.remap_species_lists(species_lists)
+                pairs = ', '.join(f'{k}->{v}' for k, v in _remapper.code_remap.items())
+                print(f"   Species-code remap ({pairs}): "
+                      f"updated {_changed:,} samples")
+
         # Coordinate jitter
         jitter_std = 0.0
         if args.jitter:
@@ -1198,6 +1238,8 @@ def main():
                 max_spread_factor=args.propagate_max_spread,
                 env_dist_max=args.propagate_env_dist_max,
                 range_cap_km=args.propagate_range_cap,
+                water_threshold=args.propagate_water_threshold,
+                ocean_buffer_km=args.propagate_ocean_buffer_km,
                 smooth_gaps=args.smooth_gaps,
                 sample_cell_indices=sample_cell_indices,
             )

@@ -322,7 +322,7 @@ if __name__ == "__main__":
     parser.add_argument("--resolution", type=int, default=None, help="H3 resolution (auto-detected from data if omitted)")
     parser.add_argument("--workers", type=int, default=1, help="Number of worker processes")
     parser.add_argument("--classes", nargs="+", default=None, help="List of biological classes to include (auto-detected from taxonomy if omitted)")
-    parser.add_argument("--taxonomy_path", help="Path to master taxonomy.csv for label cleanup")
+    parser.add_argument("--taxonomy_path", help="Path to master taxonomy CSV for label cleanup")
 
     args = parser.parse_args()
     combine_data(

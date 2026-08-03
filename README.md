@@ -58,7 +58,7 @@ python utils/geoutils.py --km 350 --out-dir outputs/global_chunks \
 
 # 2. Process GBIF archive
 python utils/gbifutils.py --gbif /path/to/gbif_archive.zip --file occurrence.txt \
-    --output ./outputs/gbif_processed.csv.gz --taxonomy taxonomy.csv
+    --output ./outputs/gbif_processed.csv.gz --taxonomy taxonomy_v0.2-Jun2026.csv
 
 # 3. Combine
 python utils/combine.py --geodata data/global_350km_ee.parquet \

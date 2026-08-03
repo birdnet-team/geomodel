@@ -31,6 +31,8 @@ python scripts/plot_propagation.py --data_path outputs/combined.parquet --lat 50
 | `--propagate_max_spread` | `2.0` | Species range expansion multiplier (0 = disable range check) |
 | `--propagate_env_dist_max` | `2.0` | Max env-space distance for neighbor eligibility (0 = disabled) |
 | `--propagate_range_cap` | `500` | Hard km ceiling on per-species propagation distance from nearest observation (0 = disabled) |
+| `--propagate_water_threshold` | `0.5` | `water_fraction` at or above which a cell is "high water" for the pure-ocean guard (0 = disabled) |
+| `--propagate_ocean_buffer_km` | `100` | A cell is "pure ocean" only if high-water *and* farther than this from the nearest land cell; terrestrial/coastal labels never propagate into one (0 = disabled) |
 | `--smooth_gaps` | `0` | Fill bounded temporal gaps up to N missing weeks after propagation (0..48; 0 = disabled; try 2) |
 | `--no_yearly` | off | Exclude yearly (week 0) samples |
 | `--outdir` | `outputs/plots/propagation` | Output directory |

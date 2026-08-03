@@ -14,6 +14,7 @@ import torch
 from model.model import create_model
 from model.loss import MultiTaskLoss
 from utils.data import H3DataLoader, H3DataPreprocessor, create_dataloaders, load_ubiquitous_species
+from utils.taxonomy import TaxonomyManager
 
 
 TUNABLE_PARAMS = [
@@ -29,6 +30,7 @@ TUNABLE_PARAMS = [
     'propagate_k', 'propagate_max_radius',
     'propagate_min_obs', 'propagate_max_spread',
     'propagate_env_dist_max', 'propagate_range_cap',
+    'propagate_water_threshold', 'propagate_ocean_buffer_km',
     'smooth_gaps',
 ]
 
@@ -133,6 +135,16 @@ def _suggest_param(trial, name: str, args):
         return _suggest_float(trial, args, 'propagate_env_dist_max', 0.5, 5.0)
     if name == 'propagate_range_cap':
         return _suggest_float(trial, args, 'propagate_range_cap', 200.0, 2000.0)
+    if name == 'propagate_water_threshold':
+        # Bounded well inside (0, 1): 0 would disable the guard entirely and
+        # 1.0 would make every cell "land", so neither endpoint is a
+        # meaningful land/water split to sample.
+        return _suggest_float(trial, args, 'propagate_water_threshold', 0.3, 0.9)
+    if name == 'propagate_ocean_buffer_km':
+        # Lower bound ~ one res-4 hexagon edge, so the buffer always reaches
+        # past a cell's immediate neighbors; upper bound keeps large inland
+        # seas and archipelagos from being classified as open ocean.
+        return _suggest_float(trial, args, 'propagate_ocean_buffer_km', 25.0, 400.0)
     if name == 'smooth_gaps':
         return _suggest_int(trial, args, 'smooth_gaps', 0, 4)
     raise ValueError(f"Unknown tunable param: {name}")
@@ -166,7 +178,8 @@ def run_autotune(
     _PROPAGATION_PARAMS = {
         'propagate_k', 'propagate_max_radius', 'propagate_min_obs',
         'propagate_max_spread', 'propagate_env_dist_max',
-        'propagate_range_cap', 'smooth_gaps',
+        'propagate_range_cap', 'propagate_water_threshold',
+        'propagate_ocean_buffer_km', 'smooth_gaps',
     }
     _tune_propagation = bool(_PROPAGATION_PARAMS & set(tune_params))
 
@@ -221,6 +234,19 @@ def run_autotune(
             ocean_sample_rate=args.ocean_sample_rate,
             include_yearly=not args.no_yearly,
         )
+
+        # Species-code remap: correct recent taxonomic splits directly on the
+        # already-combined parquet, matching train.py so tuned params transfer.
+        if getattr(args, 'species_remap', '') != '':
+            _remapper = TaxonomyManager(
+                args.taxonomy or '',
+                remap_path=getattr(args, 'species_remap', None),
+            )
+            if _remapper.code_remap:
+                _changed = _remapper.remap_species_lists(species_lists)
+                pairs = ', '.join(f'{k}->{v}' for k, v in _remapper.code_remap.items())
+                print(f"   Species-code remap ({pairs}): updated {_changed:,} samples")
+
         samples_per_cell = 48 + (0 if args.no_yearly else 1)
         sample_cell_indices = np.repeat(
             np.arange(len(species_lists) // samples_per_cell),
@@ -230,16 +256,18 @@ def run_autotune(
         del loader
         gc.collect()
 
-        species_lists_original = [list(sl) for sl in species_lists] if args.propagate_labels else None
+        # propagate_env_labels() no longer mutates its input (it copies
+        # on write internally), so keeping the pre-propagation species_lists
+        # around just means holding this reference — no deepcopy needed.
+        species_lists_original = species_lists if args.propagate_labels else None
 
         # When tuning propagation params, save raw data before propagation.
         # Each trial will re-propagate with its own suggested params.
         if _tune_propagation:
-            import copy as _copy
             _raw_lats = lats.copy()
             _raw_lons = lons.copy()
             _raw_weeks = weeks.copy()
-            _raw_species_lists = _copy.deepcopy(species_lists)
+            _raw_species_lists = species_lists
             _raw_env = env_features.copy()
 
         if args.propagate_labels:
@@ -256,6 +284,8 @@ def run_autotune(
                 max_spread_factor=args.propagate_max_spread,
                 env_dist_max=args.propagate_env_dist_max,
                 range_cap_km=args.propagate_range_cap,
+                water_threshold=args.propagate_water_threshold,
+                ocean_buffer_km=args.propagate_ocean_buffer_km,
                 smooth_gaps=args.smooth_gaps,
                 sample_cell_indices=sample_cell_indices,
             )
@@ -356,6 +386,25 @@ def run_autotune(
         & set(tune_params)
     )
 
+    def _release_memory():
+        """Reclaim memory after large per-trial (or one-off setup) structures
+        go out of scope. gc.collect() breaks any reference cycles (e.g.
+        DataLoader worker/iterator internals) that plain refcounting can
+        leave for the next generational sweep; malloc_trim(0) then asks
+        glibc to return freed arenas to the OS instead of holding them for
+        reuse — without it, RSS can ratchet up from allocator fragmentation
+        even though no Python objects are actually leaked.
+        """
+        gc.collect()
+        if device.type == 'cuda':
+            torch.cuda.empty_cache()
+        try:
+            import ctypes
+            ctypes.CDLL('libc.so.6').malloc_trim(0)
+        except (OSError, AttributeError):
+            # No glibc (musl, macOS) or no malloc_trim — nothing to trim.
+            pass
+
     check_watchlist_coverage_fn(
         watchlist_species,
         preprocessor.species_to_idx,
@@ -364,6 +413,23 @@ def run_autotune(
         n_species,
     )
     print(f"   Train: {len(train_in['lat']):,}  |  Val: {len(val_in['lat']):,}")
+
+    if _tune_propagation:
+        # When propagation params are tuned, every trial re-propagates from
+        # _raw_* and builds its own train/val split from scratch (see the
+        # `_tune_propagation` branch in objective() below) — the baseline
+        # train_in/val_in/train_tgt/val_tgt/preprocessor-derived weights
+        # built above are only used for the one-time watchlist print and
+        # are never touched again. Previously they were held for the full
+        # run (all N trials), doubling peak/resident memory on top of
+        # whatever each trial allocates for its own propagation + data prep
+        # — with multi-million-row datasets this was enough on its own to
+        # exhaust host RAM and get the process OOM-killed, typically before
+        # or during the second trial.
+        train_in = val_in = train_tgt = val_tgt = None
+        _freq_weights = _region_weights = None
+        _species_lists_ref = _lats_ref = _lons_ref = None
+        _release_memory()
 
     # Load ubiquitous-species whitelist entries once.  Indices are resolved
     # per-trial against the active preprocessor (trial-specific when
@@ -420,17 +486,23 @@ def run_autotune(
         _trial_lons_for_weights = _lons_ref
 
         if _tune_propagation and _raw_species_lists is not None:
-            import copy as _copy
-            _trial_sl = _copy.deepcopy(_raw_species_lists)
+            # propagate_env_labels() copies on write internally, so each
+            # trial can re-propagate directly from the shared raw list
+            # without a per-trial deepcopy of the full nested structure —
+            # that deepcopy was the single most expensive (and most
+            # fragmentation-prone) per-trial allocation at multi-million-row
+            # scale.
             _trial_sl = H3DataPreprocessor.propagate_env_labels(
                 _raw_lats, _raw_lons, _raw_weeks,
-                _trial_sl, _raw_env,
+                _raw_species_lists, _raw_env,
                 k=int(p['propagate_k']),
                 max_radius_km=float(p['propagate_max_radius']),
                 min_obs_threshold=int(p['propagate_min_obs']),
                 max_spread_factor=float(p['propagate_max_spread']),
                 env_dist_max=float(p.get('propagate_env_dist_max', args.propagate_env_dist_max)),
                 range_cap_km=float(p.get('propagate_range_cap', args.propagate_range_cap)),
+                water_threshold=float(p.get('propagate_water_threshold', args.propagate_water_threshold)),
+                ocean_buffer_km=float(p.get('propagate_ocean_buffer_km', args.propagate_ocean_buffer_km)),
                 smooth_gaps=int(p.get('smooth_gaps', args.smooth_gaps)),
                 sample_cell_indices=sample_cell_indices,
             )
@@ -459,7 +531,7 @@ def run_autotune(
             _trial_lats_for_weights = _raw_lats
             _trial_lons_for_weights = _raw_lons
             del _trial_inputs, _trial_targets
-            gc.collect()
+            _release_memory()
 
         if use_freq_wt and _tune_freq_shape and _trial_sl_for_weights is not None:
             _trial_freq_weights = _trial_pp_for_weights.compute_species_freq_weights(
@@ -507,7 +579,7 @@ def run_autotune(
             del _trial_sl, _trial_pp
             _trial_pp_for_weights = None
             _trial_sl_for_weights = None
-            gc.collect()
+            _release_memory()
         else:
             # Outer preprocessor vocabulary matches the trial DataLoader.
             _trial_ubi_idx = _trial_ubi_prob = None
@@ -693,6 +765,7 @@ def run_autotune(
 
     def _after_trial(study, trial):
         _save_study(study)
+        _release_memory()
 
         if trial.state != optuna.trial.TrialState.COMPLETE:
             return
