@@ -51,3 +51,40 @@ Auto-generated alongside the parquet (with `_taxonomy.csv` suffix):
 | `species_code` | eBird species code or iNat ID |
 | `scientificName` | Binomial scientific name |
 | `commonName` | Common name (if available) |
+
+## Species Remapping (recent taxonomic splits)
+
+Observation databases (GBIF, iNaturalist) often keep recording occurrences
+under a **pre-split lumped scientific name** for years after a taxonomic split.
+Because observations are attributed by `verbatimScientificName`, this silently
+routes the wrong species code — for example, the eBird 2024 split of
+*Setophaga petechia* into *S. aestiva* (American Yellow Warbler) and
+*S. petechia* (Mangrove Yellow Warbler) leaves the vast majority of North
+American records still labeled *Setophaga petechia*, which would otherwise be
+attributed to the tropical Mangrove form.
+
+`species-data/species_remap.csv` fixes this at the source. Each row redirects a
+verbatim scientific name to a canonical species code before observations are
+aggregated:
+
+| Column | Description |
+|---|---|
+| `from_sci_name` | Verbatim scientific name as it appears in GBIF/iNat data |
+| `from_species_code` | (Optional) resolved code the split records currently carry |
+| `to_species_code` | Canonical species code to attribute those records to |
+| `note` | Rationale for the remap (free text) |
+
+The remap is loaded automatically by `utils/taxonomy.py: TaxonomyManager`
+(default path `species-data/species_remap.csv`). Both species remain valid
+vocabulary entries — only the attribution of the ambiguous verbatim name
+changes. Add a row whenever a split leaves observations stranded under an
+outdated name.
+
+**Correcting an already-combined parquet without re-running combine.py.**
+The optional `from_species_code` column also defines a direct code→code
+redirect that `train.py` (and the autotuner) apply when loading the parquet, so
+a split can be corrected at train time. For the Yellow Warbler example,
+`from_species_code=yelwar, to_species_code=yelwar1` rewrites every `yelwar`
+label to `yelwar1` during flattening. Controlled by `--species_remap`
+(default `species-data/species_remap.csv`; pass `''` to disable). The data cache
+is keyed on the remap file contents, so edits trigger a reprocess automatically.

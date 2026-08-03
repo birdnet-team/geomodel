@@ -6,7 +6,7 @@ The data pipeline transforms raw geospatial and biodiversity data into training-
 graph LR
     A["H3 Grid<br/>+ Earth Engine"] -->|GeoParquet| C[combine.py]
     B["GBIF Archive<br/>.zip"] -->|Filtered CSV| C
-    C -->|"Combined Parquet<br/>+ taxonomy.csv"| D[train.py]
+    C -->|"Combined Parquet<br/>+ taxonomy_v0.2-Jun2026.csv"| D[train.py]
 ```
 
 ## Stage 1 — Earth Engine Environmental Data

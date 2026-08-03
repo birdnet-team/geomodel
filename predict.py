@@ -246,7 +246,7 @@ def generate_common_species(
     checkpoint_path: str,
     num_species: int = 5000,
     grid_step: float = 5.0,
-    taxonomy_path: str = 'taxonomy.csv',
+    taxonomy_path: Optional[str] = None,
     device: str = 'auto',
     output_path: Optional[str] = None,
 ) -> List[Tuple[str, str, str]]:
@@ -263,9 +263,19 @@ def generate_common_species(
         List of (speciesCode, scientificName, commonName).
     """
     from utils.regions import GLOBAL_SAMPLING_REGIONS
+    from utils.taxonomy import find_taxonomy_csv
 
     model, labels, dev = _load_model_and_labels(checkpoint_path, device)
     n_species = len(labels)
+
+    if taxonomy_path is None:
+        found = find_taxonomy_csv()
+        if found is None:
+            raise FileNotFoundError(
+                "No taxonomy CSV found in ./ or data/. Pass --taxonomy "
+                "explicitly (needed for the bird/non-bird split)."
+            )
+        taxonomy_path = str(found)
 
     print(f"Loading taxonomy from {taxonomy_path}")
     bird_indices = _load_bird_indices(taxonomy_path, labels)
@@ -381,7 +391,9 @@ def main():
     parser.add_argument('--common_species', action='store_true', help='Generate a globally representative common species list')
     parser.add_argument('--num_species', type=int, default=5000, help='Target number of species for --common_species')
     parser.add_argument('--grid_step', type=float, default=5.0, help='Grid spacing in degrees for --common_species')
-    parser.add_argument('--taxonomy', type=str, default='taxonomy.csv', help='Path to taxonomy.csv for bird/non-bird split')
+    parser.add_argument('--taxonomy', type=str, default=None,
+                        help='Path to taxonomy CSV for bird/non-bird split '
+                             '(auto-detected from ./ or data/ if omitted)')
     parser.add_argument('--output', type=str, default=None, help='Output file path for --common_species')
 
     # Single-location mode

@@ -1,0 +1,59 @@
+# Ubiquitous species whitelist
+# ----------------------------
+# Species in this list are randomly injected as soft positives during training
+# (target = --ubiquitous_target, default 0.5) at the per-species probability
+# given in the second column, but only for cells where the species was not
+# already observed. Rationale: humans, livestock, commensals and globally
+# distributed pollinators are present almost everywhere humans go but are
+# under-recorded in the training data because observers focus on wild taxa.
+# Without this prior the model learns sharp, ecologically wrong absences for
+# these species.
+#
+# Format: two whitespace-separated columns per line:
+#     <species_code>   <injection_probability>    # optional comment
+# Codes can be eBird 6-letter codes (birds) or numeric iNaturalist IDs
+# (non-birds), matching the labels.txt vocabulary used during training.
+# Probabilities are in [0, 1] and applied independently per (sample, species).
+# Lines starting with '#' and blank lines are ignored. Unknown codes are
+# silently dropped at load time with an info message.
+#
+# Probability tiers used below:
+#   0.50  cosmopolitan, present essentially anywhere humans live
+#   0.30  globally widespread but with some climatic/ecological gaps
+#   0.15  large continental ranges, but clearly regional
+#
+# Curation rules applied:
+#   * No wild birds. Only the chicken proxy (redjun = Gallus gallus) is
+#     included from class aves.
+#   * No small mammals that are unlikely to be detected by an audio model
+#     (mice, rabbits removed; rats kept because they are commensal and
+#     heavily recorded near human settlements).
+#   * No regional umbrella taxa (Gray Wolf, European Wildcat removed —
+#     these are wild species, not domestic synanthropes).
+#   * Bumblebees get a lower probability because B. terrestris and
+#     B. impatiens together cover only Europe + E North America.
+
+# --- Humans ---
+43584     0.50    # Homo sapiens — Human
+
+# --- Domestic carnivores ---
+47144     0.50    # Canis familiaris — Domestic Dog
+118552    0.50    # Felis catus — Domestic Cat
+
+# --- Livestock ---
+74113     0.30    # Bos taurus — Domestic Cattle
+121578    0.30    # Ovis aries — Domestic Sheep
+123070    0.30    # Capra hircus — Domestic Goat
+209233    0.30    # Equus caballus — Domestic Horse
+
+# --- Commensal rodents ---
+44576     0.30    # Rattus norvegicus — Brown Rat
+44575     0.30    # Rattus rattus — Black Rat
+
+# --- Pollinators ---
+47219     0.50    # Apis mellifera — Western Honey Bee
+57516     0.15    # Bombus terrestris — Buff-tailed Bumble Bee (Europe, N Africa, invasive S America)
+118970    0.15    # Bombus impatiens — Common Eastern Bumble Bee (E North America)
+
+# --- Chicken proxy (only bird in this list) ---
+redjun    0.50    # Gallus gallus — Red Junglefowl (covers domestic chicken records)

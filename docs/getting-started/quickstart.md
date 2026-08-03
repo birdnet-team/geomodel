@@ -33,7 +33,7 @@ python utils/gbifutils.py \
     --gbif /path/to/gbif_archive.zip \
     --file occurrence.csv \
     --output ./outputs/gbif_processed.csv.gz \
-    --taxonomy taxonomy.csv
+    --taxonomy taxonomy_v0.2-Jun2026.csv
 ```
 
 See [GBIF Processing](../pipeline/gbif.md) for details on filters applied.
