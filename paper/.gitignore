@@ -1,0 +1,20 @@
+# LaTeX build artifacts
+*.aux
+*.bbl
+*.blg
+*.fdb_latexmk
+*.fls
+*.log
+*.loa
+*.lof
+*.lot
+*.out
+*.toc
+*.synctex.gz
+*.run.xml
+
+# Build products (regenerate with `make`)
+main.pdf
+arxiv-submission.tar.gz
+main.docx
+main-layout.docx
