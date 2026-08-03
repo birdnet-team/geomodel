@@ -14,7 +14,8 @@ import torch
 from model.model import create_model
 from model.loss import MultiTaskLoss
 from utils.data import H3DataLoader, H3DataPreprocessor, create_dataloaders, load_ubiquitous_species
-from utils.taxonomy import TaxonomyManager
+from utils.regions import build_region_mask
+from utils.taxonomy import TaxonomyManager, find_taxonomy_csv
 
 
 TUNABLE_PARAMS = [
@@ -197,6 +198,8 @@ def run_autotune(
 
     # Raw data references for per-trial re-propagation (set in fresh-load path).
     _raw_lats = _raw_lons = _raw_weeks = _raw_species_lists = _raw_env = None
+    _protected_target_mask = None
+    _protected_aves = None
 
     cache_path = data_cache_path_fn(args)
     # Skip cache when tuning propagation params — cached data has fixed propagation.
@@ -253,6 +256,21 @@ def run_autotune(
             samples_per_cell,
         )
 
+        if getattr(args, 'protect_aves_regions', None):
+            taxonomy_path = Path(args.taxonomy) if args.taxonomy else find_taxonomy_csv()
+            if taxonomy_path is None or not taxonomy_path.exists():
+                raise ValueError('--protect_aves_regions requires a taxonomy CSV')
+            taxonomy = TaxonomyManager(taxonomy_path, remap_path='')
+            _protected_aves = {
+                meta['species_code'] for meta in taxonomy.code_to_meta.values()
+                if str(meta.get('class_name', '')).lower() == 'aves'
+            }
+            _protected_target_mask = build_region_mask(
+                lats, lons, args.protect_aves_regions)
+            print(f"   Protected raw Aves labels: {len(_protected_aves):,} species in "
+                  f"{_protected_target_mask.sum():,}/{len(lats):,} samples "
+                  f"({', '.join(args.protect_aves_regions)})")
+
         del loader
         gc.collect()
 
@@ -288,6 +306,8 @@ def run_autotune(
                 ocean_buffer_km=args.propagate_ocean_buffer_km,
                 smooth_gaps=args.smooth_gaps,
                 sample_cell_indices=sample_cell_indices,
+                protected_target_mask=_protected_target_mask,
+                protected_species=_protected_aves,
             )
 
         print("3. Preprocessing...")
@@ -505,6 +525,8 @@ def run_autotune(
                 ocean_buffer_km=float(p.get('propagate_ocean_buffer_km', args.propagate_ocean_buffer_km)),
                 smooth_gaps=int(p.get('smooth_gaps', args.smooth_gaps)),
                 sample_cell_indices=sample_cell_indices,
+                protected_target_mask=_protected_target_mask,
+                protected_species=_protected_aves,
             )
             _trial_pp = H3DataPreprocessor()
             _trial_inputs, _trial_targets = _trial_pp.prepare_training_data(

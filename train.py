@@ -42,8 +42,9 @@ from model.loss import MultiTaskLoss
 from model.metrics import compute_geoscore
 from model.autotune import TUNABLE_PARAMS, run_autotune
 from utils.data import H3DataLoader, H3DataPreprocessor, create_dataloaders, load_ubiquitous_species
-from utils.regions import HOLDOUT_REGIONS, resolve_holdout_regions, REGION_BOUNDS
-from utils.taxonomy import TaxonomyManager
+from utils.regions import (AVES_PROTECTION_REGIONS, HOLDOUT_REGIONS, REGION_BOUNDS,
+                           build_region_mask, resolve_holdout_regions)
+from utils.taxonomy import TaxonomyManager, find_taxonomy_csv
 
 
 # ---------------------------------------------------------------------------
@@ -59,6 +60,7 @@ _DATA_CACHE_KEYS = [
     'propagate_labels', 'propagate_k', 'propagate_max_radius',
     'propagate_min_obs', 'propagate_max_spread',
     'propagate_env_dist_max', 'propagate_range_cap', 'smooth_gaps',
+    'protect_aves_regions',
     'max_obs_per_species', 'min_obs_per_species', 'max_species',
     'val_size', 'sample_fraction',
     'holdout_regions',
@@ -1023,6 +1025,11 @@ def main():
                         help='Fill bounded temporal gaps up to N missing weeks after '
                              'label propagation (0..48). 0 = disabled; try 2 for GIF-like '
                              'range smoothing (default: 0).')
+    parser.add_argument('--protect_aves_regions', nargs='+',
+                        choices=sorted(AVES_PROTECTION_REGIONS), default=None,
+                        help='Keep raw Aves labels immutable during propagation and gap '
+                             'smoothing in these well-observed regions. Available: '
+                             f"{', '.join(sorted(AVES_PROTECTION_REGIONS))}")
 
     # LR schedule
     parser.add_argument('--lr_schedule', type=str, default='cosine', choices=['cosine', 'none'],
@@ -1229,6 +1236,22 @@ def main():
                 np.arange(len(species_lists) // samples_per_cell),
                 samples_per_cell,
             )
+            protected_target_mask = None
+            protected_aves = None
+            if args.protect_aves_regions:
+                taxonomy_path = Path(args.taxonomy) if args.taxonomy else find_taxonomy_csv()
+                if taxonomy_path is None or not taxonomy_path.exists():
+                    raise ValueError('--protect_aves_regions requires a taxonomy CSV')
+                taxonomy = TaxonomyManager(taxonomy_path, remap_path='')
+                protected_aves = {
+                    meta['species_code'] for meta in taxonomy.code_to_meta.values()
+                    if str(meta.get('class_name', '')).lower() == 'aves'
+                }
+                protected_target_mask = build_region_mask(
+                    lats, lons, args.protect_aves_regions)
+                print(f"   Protected raw Aves labels: {len(protected_aves):,} species in "
+                      f"{protected_target_mask.sum():,}/{len(lats):,} samples "
+                      f"({', '.join(args.protect_aves_regions)})")
             
             species_lists = H3DataPreprocessor.propagate_env_labels(
                 lats, lons, weeks, species_lists, env_features,
@@ -1242,6 +1265,8 @@ def main():
                 ocean_buffer_km=args.propagate_ocean_buffer_km,
                 smooth_gaps=args.smooth_gaps,
                 sample_cell_indices=sample_cell_indices,
+                protected_target_mask=protected_target_mask,
+                protected_species=protected_aves,
             )
 
         print("3. Preprocessing...")

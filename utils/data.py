@@ -223,6 +223,8 @@ class H3DataPreprocessor:
         max_gap: int,
         sample_cell_indices: Optional[np.ndarray] = None,
         candidate_species: Optional[Set[str]] = None,
+        protected_target_mask: Optional[np.ndarray] = None,
+        protected_species: Optional[Set[str]] = None,
     ) -> int:
         """Fill bounded weekly gaps in per-cell species presence series.
 
@@ -264,6 +266,11 @@ class H3DataPreprocessor:
                 raise ValueError("sample_cell_indices must match species_lists length")
 
         candidate_species = set(candidate_species) if candidate_species is not None else None
+        protected_species = set(protected_species or ())
+        if protected_target_mask is not None:
+            protected_target_mask = np.asarray(protected_target_mask, dtype=bool)
+            if len(protected_target_mask) != len(species_lists):
+                raise ValueError("protected_target_mask must match species_lists length")
         week_order = list(range(1, 49))
         week_to_pos = {week: pos for pos, week in enumerate(week_order)}
         n_weeks = len(week_order)
@@ -300,6 +307,10 @@ class H3DataPreprocessor:
                         week = week_order[pos % n_weeks]
                         sample_idx = week_to_sample.get(week)
                         if sample_idx is None:
+                            continue
+                        if (protected_target_mask is not None
+                                and protected_target_mask[sample_idx]
+                                and species_id in protected_species):
                             continue
                         species_list = species_lists[sample_idx]
                         if species_id not in species_list:
@@ -618,6 +629,8 @@ class H3DataPreprocessor:
         env_row_indices: Optional[np.ndarray] = None,
         smooth_gaps: int = 0,
         sample_cell_indices: Optional[np.ndarray] = None,
+        protected_target_mask: Optional[np.ndarray] = None,
+        protected_species: Optional[Set[str]] = None,
     ) -> List[List[str]]:
         """Propagate species labels from observed to sparse/unobserved cells.
 
@@ -688,6 +701,11 @@ class H3DataPreprocessor:
             sample_cell_indices: Optional per-sample cell ids for temporal gap
                 smoothing. If omitted and smoothing is enabled, samples are
                 grouped by exact latitude/longitude.
+            protected_target_mask: Optional boolean per-sample mask. Synthetic
+                labels in ``protected_species`` are not added to masked target
+                samples by either spatial propagation or temporal smoothing.
+            protected_species: Species codes whose raw presence/absence labels
+                are immutable in protected target samples.
 
         Returns:
             A new list-of-lists with propagated labels.  The caller's
@@ -707,6 +725,11 @@ class H3DataPreprocessor:
         # structure first, which is expensive at multi-million-row scale.
         species_lists = list(species_lists)
         n = len(species_lists)
+        protected_species = set(protected_species or ())
+        if protected_target_mask is not None:
+            protected_target_mask = np.asarray(protected_target_mask, dtype=bool)
+            if len(protected_target_mask) != n:
+                raise ValueError("protected_target_mask must match species_lists length")
 
         # Identify observed vs sparse samples
         obs_counts = np.array([len(sl) for sl in species_lists], dtype=np.int32)
@@ -720,6 +743,8 @@ class H3DataPreprocessor:
                 lats, lons, weeks, species_lists, smooth_gaps,
                 sample_cell_indices=sample_cell_indices,
                 candidate_species=candidate_species,
+                protected_target_mask=protected_target_mask,
+                protected_species=protected_species,
             )
             print(f"   Env label propagation: nothing to propagate "
                   f"({n_observed:,} observed, {n_sparse:,} sparse)")
@@ -998,6 +1023,24 @@ class H3DataPreprocessor:
             if len(cand_rows) == 0:
                 continue
 
+            # Preserve raw presence/absence labels for selected taxa in
+            # trusted target regions. Protected observations may still act as
+            # donors, and other taxa may still be propagated into these cells.
+            if protected_target_mask is not None and protected_species:
+                protected_cols = np.fromiter(
+                    (sp in protected_species for sp in sp_list),
+                    dtype=bool, count=n_sp,
+                )
+                keep = ~(
+                    protected_target_mask[sparse_in[cand_rows]]
+                    & protected_cols[cand_cols]
+                )
+                cand_rows = cand_rows[keep]
+                cand_cols = cand_cols[keep]
+
+            if len(cand_rows) == 0:
+                continue
+
             # Range filter: distance to nearest original observation
             if max_spread_factor > 0 and sp_trees:
                 t_lat_r = np.radians(lats[sparse_in[cand_rows]])
@@ -1068,6 +1111,8 @@ class H3DataPreprocessor:
             lats, lons, weeks, species_lists, smooth_gaps,
             sample_cell_indices=sample_cell_indices,
             candidate_species=candidate_species,
+            protected_target_mask=protected_target_mask,
+            protected_species=protected_species,
         )
         if temporal_added > 0:
             print(f"   Temporal gap smoothing: added {temporal_added:,} labels "
@@ -2140,4 +2185,3 @@ def load_ubiquitous_species(path: str) -> List[Tuple[str, float]]:
                 f"{path}:{lineno}: probability {prob} outside [0, 1]")
         out.append((code, prob))
     return out
-
