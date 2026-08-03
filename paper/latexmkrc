@@ -1,0 +1,13 @@
+# latexmk configuration for this paper.
+# Kept minimal and portable: pdfLaTeX + BibTeX, which is what arXiv and Overleaf
+# both run by default. Do not switch to biber -- references.bib is BibTeX format
+# and the bibliography style is plainnat.
+
+$pdf_mode = 1;          # pdflatex
+$bibtex_use = 2;        # always run bibtex, and keep the .bbl (arXiv needs it)
+$out_dir = '.';         # arXiv/Overleaf expect artifacts next to the sources
+$clean_ext = 'bbl nav out snm synctex.gz run.xml';
+
+# Show file:line:error in the terminal, which is what the VS Code problem
+# matcher parses.
+$pdflatex = 'pdflatex -interaction=nonstopmode -file-line-error -synctex=1 %O %S';

@@ -1,0 +1,144 @@
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% BirdNET Geomodel -- arXiv preprint
+%%
+%% Build:  latexmk -pdf main.tex      (or: make)
+%% Style:  arxiv.sty (arXiv preprint template, vendored in this folder)
+%% Engine: pdfLaTeX + BibTeX (natbib).  Do not switch to biber -- arXiv and the
+%%         local toolchain both expect a BibTeX .bbl.
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\documentclass{article}
+
+\usepackage{arxiv}
+
+% Running header: short title left, "Preprint" right, page number centered below.
+\renewcommand{\shorttitle}{BirdNET Geomodel}
+\renewcommand{\headeright}{Preprint}
+\fancyhf{}
+\lhead{\scshape\footnotesize BirdNET Geomodel}
+\rhead{\scshape\footnotesize \headeright}
+\cfoot{\thepage}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[english]{babel}
+\usepackage{microtype}
+
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{tabularx}
+\usepackage{multirow}
+\usepackage{longtable}
+\usepackage{graphicx}
+\usepackage{xcolor}
+\usepackage{caption}
+\usepackage{subcaption}
+\usepackage{float}
+% Do not stretch short pages to full height; the alternative leaves large gaps
+% around figures. Appendix tables are pinned with [H] instead of relying on
+% float barriers, which forced half-empty pages before section breaks.
+\raggedbottom
+% Pseudocode listings float as "Algorithm N" rather than as figures.
+\floatstyle{plain}
+\newfloat{algorithm}{tbp}{loa}
+\floatname{algorithm}{Algorithm}
+\usepackage{url}
+\usepackage[round]{natbib}  % author-year citations, matching the source draft
+\usepackage{hyperref}
+
+\usepackage{tikz}
+\usetikzlibrary{positioning,fit,calc,arrows.meta}
+
+\graphicspath{{figures/}}
+
+\hypersetup{
+  colorlinks=true,
+  linkcolor=black,
+  citecolor=black,
+  urlcolor=blue!60!black,
+  pdftitle={BirdNET Geomodel: Global Species Occurrence Prediction Using Spatiotemporal Implicit Neural Representations},
+  pdfauthor={Stefan Kahl, Max Mauermann, Mario Lasseck, Connor Wood, Holger Klinck},
+}
+
+% Tables in this paper are wide and numerous; keep them readable.
+\captionsetup[table]{skip=4pt}
+\setlength{\tabcolsep}{4pt}
+\renewcommand{\arraystretch}{1.1}
+% Center floats that get a page of their own instead of pinning them to the top.
+\makeatletter
+\setlength{\@fptop}{0pt plus 1fil}
+\setlength{\@fpbot}{0pt plus 1fil}
+\makeatother
+% Subfigure labels: small, upright, close to the panel.
+\captionsetup[subfigure]{font=footnotesize, skip=2pt}
+% X columns wrap ragged-right; justified text in narrow columns looks poor.
+\renewcommand{\tabularxcolumn}[1]{m{#1}}
+\newcolumntype{L}{>{\raggedright\arraybackslash}X}
+
+\title{BirdNET Geomodel: Global Species Occurrence Prediction\\
+       Using Spatiotemporal Implicit Neural Representations}
+
+\author{
+  Stefan Kahl\thanks{Corresponding author: \texttt{stefan.kahl@cornell.edu}}\;\textsuperscript{1,2} \\
+  \And
+  Max Mauermann\;\textsuperscript{1} \\
+  \And
+  Mario Lasseck\;\textsuperscript{2,3} \\
+  \And
+  Connor Wood\;\textsuperscript{2} \\
+  \And
+  Holger Klinck\;\textsuperscript{2} \\
+}
+
+\date{}
+
+\begin{document}
+\maketitle
+
+\begin{center}
+\begin{minipage}{0.9\linewidth}
+\centering\footnotesize
+\textsuperscript{1}\,Chemnitz University of Technology, Germany \quad
+\textsuperscript{2}\,Cornell K.\ Lisa Yang Center for Conservation Bioacoustics, USA \quad
+\textsuperscript{3}\,Museum für Naturkunde Berlin, Germany
+\end{minipage}
+\end{center}
+\vspace{1em}
+
+\begin{abstract}
+Species distribution models are essential tools for biodiversity monitoring and
+conservation planning, yet most require environmental covariates at inference time and
+model one species at a time, which makes them impractical as a component of a real-time
+acoustic classification pipeline. We present BirdNET Geomodel, a multi-task neural
+network that predicts weekly occurrence probabilities for over 10,000 species ---
+birds as well as non-avian taxa --- from latitude, longitude, and week of year alone.
+A shared encoder with multi-harmonic coordinate encoding and FiLM-based temporal
+conditioning feeds a species head and an auxiliary environmental head; the resulting
+model occupies roughly 7\,MB in FP16 and runs on mobile and embedded devices. A staged
+ablation identifies label propagation in environmental space as the dominant design
+choice, tripling mean average precision in sparsely observed regions, and shows that the
+loss function governs probability calibration far more than species ranking. Compared
+against eBird Status and Trends, the model reproduces range geometry and seasonal
+migration without environmental inputs, reaching a mean AUC of 0.975 across ten species
+at two contrasting times of year. Applied as a post-filter to a globally balanced sample
+of BirdNET app submissions, it rejects roughly a quarter of the classifier's second- and
+third-ranked candidates but under 5\% of top-1 predictions, and only 2\% of those the
+classifier is confident about. The model is therefore best understood not as a range map
+but as a plausibility filter: over-inclusive by design, inexpensive enough to run
+everywhere, and accurate enough to remove implausible identifications without
+contradicting confident ones.
+\end{abstract}
+
+\keywords{species distribution modeling \and deep learning \and implicit neural
+representations \and citizen science \and multi-species prediction \and biodiversity
+monitoring}
+
+\input{body}
+
+\bibliographystyle{plainnat}
+\bibliography{references}
+
+\input{appendix}
+
+\end{document}
