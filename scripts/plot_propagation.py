@@ -20,7 +20,6 @@ Usage:
 """
 
 import argparse
-import copy
 import csv
 import sys
 from pathlib import Path
@@ -33,22 +32,26 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from utils.data import H3DataLoader, H3DataPreprocessor
+from utils.taxonomy import find_taxonomy_csv
 
 
 def load_taxonomy(taxonomy_path: Optional[str] = None) -> Dict[str, Tuple[str, str]]:
     """Load taxonomy CSV mapping speciesCode → (scientificName, commonName).
 
-    Auto-detects taxonomy.csv or data/taxonomy.csv if *taxonomy_path* is not
-    provided, falling back to checkpoints/labels.txt (tab-separated
-    code/sciName/comName format).
+    Auto-detects a master taxonomy CSV in the repo root or ``data/`` if
+    *taxonomy_path* is not provided, falling back to checkpoints/labels.txt
+    (tab-separated code/sciName/comName format).
+
+    Discovery is version-agnostic: an unsuffixed ``taxonomy.csv`` wins, then
+    the highest-sorting ``taxonomy_*.csv`` (so ``taxonomy_v0.2-Jun2026.csv``
+    is picked up without hardcoding the release name).
     """
     taxonomy: Dict[str, Tuple[str, str]] = {}
 
     if taxonomy_path is None:
-        for candidate in ['taxonomy.csv', 'data/taxonomy.csv']:
-            if Path(candidate).exists():
-                taxonomy_path = candidate
-                break
+        found = find_taxonomy_csv()
+        if found is not None:
+            taxonomy_path = str(found)
 
     if taxonomy_path is None or not Path(taxonomy_path).exists():
         # Fallback: labels.txt (code\tsciName\tcomName)
@@ -294,6 +297,14 @@ def main():
                         help='Max environmental distance for neighbor eligibility (default: 2.0)')
     parser.add_argument('--propagate_range_cap', type=float, default=500.0,
                         help='Hard km ceiling on per-species propagation distance (default: 500)')
+    parser.add_argument('--propagate_water_threshold', type=float, default=0.5,
+                        help='water_fraction below which a cell counts as land for the '
+                             'pure-ocean propagation guard. 0 disables the guard (default: 0.5)')
+    parser.add_argument('--propagate_ocean_buffer_km', type=float, default=100.0,
+                        help='A cell is "pure ocean" only if high-water AND farther than this '
+                             'many km from the nearest land cell; terrestrial/coastal labels are '
+                             'never propagated into pure-ocean cells, while land->coastal still '
+                             'flows freely. 0 disables the guard (default: 100)')
     parser.add_argument('--smooth_gaps', type=int, default=0,
                         help='Fill bounded temporal gaps up to N missing weeks after propagation (0..48). 0 disables (try 2).')
     parser.add_argument('--no_yearly', action='store_true',
@@ -322,21 +333,23 @@ def main():
     print(f"  {len(species_lists):,} samples "
           f"({len(np.unique(np.column_stack([lats, lons]), axis=0)):,} unique locations)")
 
-    # Deep copy species lists so we have before/after
+    # Snapshot species lists so we have before/after
     species_before = [list(sl) if hasattr(sl, '__iter__') else [] for sl in species_lists]
-    species_after = copy.deepcopy(species_before)
 
-    # Run propagation on the copy
+    # Run propagation. propagate_env_labels() does not modify its input, so
+    # the returned list is the only place the propagated labels appear.
     print("Running label propagation...")
-    
-    H3DataPreprocessor.propagate_env_labels(
-        lats, lons, weeks, species_after, env_features,
+
+    species_after = H3DataPreprocessor.propagate_env_labels(
+        lats, lons, weeks, species_before, env_features,
         k=args.propagate_k,
         max_radius_km=args.propagate_max_radius,
         min_obs_threshold=args.propagate_min_obs,
         max_spread_factor=args.propagate_max_spread,
         env_dist_max=args.propagate_env_dist_max,
         range_cap_km=args.propagate_range_cap,
+        water_threshold=args.propagate_water_threshold,
+        ocean_buffer_km=args.propagate_ocean_buffer_km,
         smooth_gaps=args.smooth_gaps,
         sample_cell_indices=sample_cell_indices,
     )

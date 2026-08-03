@@ -58,6 +58,17 @@ Key parameters and their ecological constraints (interim defaults, pending Stage
   env space — rejects KNN neighbors too dissimilar environmentally
 - `--propagate_range_cap` 500 [100–1000] km: hard km ceiling on per-species propagation
   distance from nearest original observation
+- `--propagate_water_threshold` 0.5 [0.3–0.9] / `--propagate_ocean_buffer_km` 100
+  [25–400] km: pure-ocean
+  target guard. A cell is *pure ocean* only when its `water_fraction` is at or above
+  the threshold **and** it is farther than the buffer from the nearest land cell;
+  terrestrial/coastal labels are never propagated into such a cell. A raw
+  `water_fraction` cutoff alone is not enough — a coarse offshore hexagon overlapping a
+  coastal city has `water_fraction` ~0.95 yet legitimately holds hundreds of terrestrial
+  species. Land→coastal propagation still flows freely, and pure-ocean cells may still
+  seed one another so genuinely marine species keep spreading. Setting either to 0
+  disables the guard; it is also skipped when `env_features` has no `water_fraction`
+  column.
 
 **Range check fix (pre-Stage K):** Stages H–J tuned propagation with a centroid-based
 per-species range check (distance to species centroid). This was incorrect — the code
@@ -72,6 +83,19 @@ Parquet files with H3 cells × 48 weekly species lists + environmental features.
 Species identified by eBird codes (birds) or iNaturalist IDs (non-birds).
 Key pipeline classes in `utils/data.py`: `H3DataLoader`, `H3DataPreprocessor`,
 `BirdSpeciesDataset`.
+
+**Species remapping (taxonomic splits):** `species-data/species_remap.csv`
+(columns: `from_sci_name`, `from_species_code`, `to_species_code`, `note`)
+redirects verbatim GBIF/iNat scientific names to a canonical code, applied
+automatically by `utils/taxonomy.py: TaxonomyManager`. Needed when observation
+databases keep using a pre-split lumped name — e.g. *Setophaga petechia* records
+(mostly the widespread American Yellow Warbler post the eBird 2024 split) are
+remapped from the Mangrove code `yelwar` to the American code `yelwar1`. Both
+species stay in the vocabulary; only the ambiguous name's attribution changes.
+The optional `from_species_code` column additionally drives a train-time
+code→code redirect (`train.py --species_remap`, default on) so an
+already-combined parquet is corrected during flattening without re-running
+`combine.py`.
 
 ## Ubiquitous-Species Soft Injection
 

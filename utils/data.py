@@ -303,10 +303,13 @@ class H3DataPreprocessor:
                             continue
                         species_list = species_lists[sample_idx]
                         if species_id not in species_list:
-                            if not isinstance(species_list, list):
-                                species_list = list(species_list)
-                                species_lists[sample_idx] = species_list
+                            # Clone before appending — species_lists may be a
+                            # shallow copy sharing inner list objects with a
+                            # caller's original data, so mutating in place
+                            # would corrupt it.
+                            species_list = list(species_list)
                             species_list.append(species_id)
+                            species_lists[sample_idx] = species_list
                             added += 1
 
         return added
@@ -609,6 +612,8 @@ class H3DataPreprocessor:
         max_spread_factor: float = 2.0,
         env_dist_max: float = 2.0,
         range_cap_km: float = 500.0,
+        water_threshold: float = 0.5,
+        ocean_buffer_km: float = 100.0,
         candidate_species: Optional[Set[str]] = None,
         env_row_indices: Optional[np.ndarray] = None,
         smooth_gaps: int = 0,
@@ -652,6 +657,23 @@ class H3DataPreprocessor:
                 species' bounding-box range would allow propagation farther,
                 it is clamped to at most *range_cap_km*.  Set to 0 to disable
                 (default 500).
+            water_threshold: ``water_fraction`` below which a cell counts as
+                *land* for the pure-ocean guard (default 0.5).  Cells at or
+                above it are "high water" and are candidates for the pure-ocean
+                classification described under *ocean_buffer_km*.  Requires a
+                ``water_fraction`` column in *env_features*; when absent, the
+                guard is skipped.  Set to 0 to disable.
+            ocean_buffer_km: A cell is treated as *pure ocean* only when it is
+                high-water (see *water_threshold*) AND farther than this many
+                km from the nearest land cell.  Terrestrial/coastal labels are
+                never propagated into a pure-ocean cell, while land→coastal
+                propagation flows freely and pure-ocean cells may still seed
+                one another (preserving genuinely marine species).  This
+                distance test is used instead of a raw water_fraction cutoff
+                because coarse coastal hexagons (e.g. an offshore cell over a
+                coastal city) have water_fraction ~0.95 yet hold hundreds of
+                terrestrial species.  Set to 0 to disable the guard (default
+                100).
             candidate_species: Optional species-code subset to propagate.
                 When provided, observed/sparse cell selection still uses the
                 full species lists, but only these species are copied. Default
@@ -668,13 +690,22 @@ class H3DataPreprocessor:
                 grouped by exact latitude/longitude.
 
         Returns:
-            Modified species_lists with propagated labels (also mutated
-            in place).
+            A new list-of-lists with propagated labels.  The caller's
+            *species_lists* is **not** modified (neither the outer list nor
+            its inner lists), so the return value must be used.
         """
         from sklearn.preprocessing import StandardScaler
         from scipy.spatial import cKDTree
         import scipy.sparse as sps
 
+        # Shallow-copy the outer list so index reassignments below never
+        # mutate the caller's original list-of-lists. Combined with the
+        # copy-on-write clone in smooth_temporal_gaps, this makes the whole
+        # call non-mutating for the caller — callers that need to run this
+        # repeatedly against the same raw data (e.g. per-trial autotuning of
+        # propagate_* params) no longer need to deepcopy the full nested
+        # structure first, which is expensive at multi-million-row scale.
+        species_lists = list(species_lists)
         n = len(species_lists)
 
         # Identify observed vs sparse samples
@@ -828,6 +859,54 @@ class H3DataPreprocessor:
         if env_row_indices is not None:
             env_scaled = env_scaled[env_row_indices]
 
+        # --- Pure-ocean target guard ---
+        # A raw water_fraction cutoff cannot separate "coastal" from "open
+        # ocean": a coarse offshore hexagon overlapping a coastal city has
+        # water_fraction ~0.95 yet legitimately holds hundreds of terrestrial
+        # species.  Instead flag a cell as *pure ocean* only when it is
+        # high-water AND farther than ocean_buffer_km from the nearest land
+        # cell.  Propagation may then flow land->coastal freely, but
+        # terrestrial/coastal labels are never copied into a pure-ocean cell
+        # (open-ocean cells still seed one another, preserving marine species).
+        is_pure_ocean = None
+        if (ocean_buffer_km > 0 and water_threshold > 0
+                and 'water_fraction' in env_features.columns):
+            wf = env_features['water_fraction'].fillna(0.0).values.astype(np.float64)
+            if env_row_indices is not None:
+                wf = wf[env_row_indices]
+
+            # Collapse to unique cells — all weekly samples of a cell share
+            # coordinates and water_fraction — so the land KD-tree and the
+            # nearest-land query run over ~cells, not ~cells×48 samples.
+            coords = np.column_stack([lats.astype(np.float64),
+                                      lons.astype(np.float64)])
+            uniq_coords, inv = np.unique(coords, axis=0, return_inverse=True)
+            # numpy 2.0.0 returned a column vector here for axis-wise unique;
+            # flatten so the gather/scatter below stay 1-D on every version.
+            inv = np.asarray(inv).ravel()
+            uc_wf = np.empty(len(uniq_coords), dtype=np.float64)
+            uc_wf[inv] = wf  # constant within a cell, so assignment order is moot
+
+            uc_lat_r = np.radians(uniq_coords[:, 0])
+            uc_lon_r = np.radians(uniq_coords[:, 1])
+            uc_xyz = np.column_stack([
+                R * np.cos(uc_lat_r) * np.cos(uc_lon_r),
+                R * np.cos(uc_lat_r) * np.sin(uc_lon_r),
+                R * np.sin(uc_lat_r),
+            ])
+
+            is_land_u = uc_wf < water_threshold
+            high_water_u = ~is_land_u
+            if is_land_u.any() and high_water_u.any():
+                land_tree = cKDTree(uc_xyz[is_land_u])
+                chord, _ = land_tree.query(uc_xyz[high_water_u], k=1)
+                # Chord length -> great-circle distance to nearest land cell.
+                gc_km = 2.0 * R * np.arcsin(
+                    np.clip(chord / (2.0 * R), 0.0, 1.0))
+                pure_u = np.zeros(len(uniq_coords), dtype=bool)
+                pure_u[np.where(high_water_u)[0]] = gc_km > ocean_buffer_km
+                is_pure_ocean = pure_u[inv]
+
         # Pre-convert coords to radians for vectorized haversine
         lats_rad = np.radians(lats.astype(np.float64))
         lons_rad = np.radians(lons.astype(np.float64))
@@ -882,6 +961,15 @@ class H3DataPreprocessor:
             # standardized env-feature space
             if env_dist_max > 0:
                 valid &= (dists <= env_dist_max)
+
+            # Pure-ocean guard: never copy a non-ocean (land/coastal) label
+            # into a pure-ocean target cell.  sp_flat is the receiving cell,
+            # nb_flat the source; open-ocean cells may still seed each other so
+            # genuinely marine species keep propagating.
+            if is_pure_ocean is not None:
+                tgt_ocean = is_pure_ocean[sp_flat].reshape(n_sp_bucket, k_use)
+                src_ocean = is_pure_ocean[nb_flat].reshape(n_sp_bucket, k_use)
+                valid &= ~(tgt_ocean & ~src_ocean)
 
             # --- Vectorized species propagation via sparse matmul ---
             # Instead of a triple-nested Python loop over
@@ -967,6 +1055,9 @@ class H3DataPreprocessor:
             gates.append(f"env_dist_max={env_dist_max:.1f}")
         if range_cap_km > 0:
             gates.append(f"range_cap={range_cap_km:.0f}km")
+        if is_pure_ocean is not None:
+            gates.append(f"ocean_buffer={ocean_buffer_km:.0f}km"
+                         f"(land@{water_threshold:.2f})")
         gate_str = (', ' + ', '.join(gates)) if gates else ''
         print(f"   Env label propagation: added {total_propagated:,} pseudo-labels "
               f"to {cells_modified:,}/{n_sparse:,} sparse samples "

@@ -35,6 +35,7 @@ The training script handles the full pipeline automatically:
 |---|---|---|
 | `--data_path` | *(required)* | Combined parquet file |
 | `--taxonomy` | auto-detected | Taxonomy CSV for species name labels |
+| `--species_remap` | `species-data/species_remap.csv` | Code→code remap CSV that corrects recent taxonomic splits in an already-combined parquet at train time (pass `''` to disable) |
 
 ### Model
 
@@ -85,6 +86,8 @@ The training script handles the full pipeline automatically:
 | `--propagate_min_obs` | `10` | Samples with fewer species than this receive propagated labels |
 | `--propagate_env_dist_max` | `2.0` | Max env-space Euclidean distance (post-StandardScaler) for a neighbor to contribute labels (0 = disabled) |
 | `--propagate_range_cap` | `500` | Hard cap in km on per-species propagation distance from nearest observation (0 = disabled) |
+| `--propagate_water_threshold` | `0.5` | `water_fraction` at or above which a cell counts as "high water" for the pure-ocean guard (0 = disabled) |
+| `--propagate_ocean_buffer_km` | `100` | A cell is "pure ocean" only if high-water *and* farther than this from the nearest land cell; terrestrial/coastal labels never propagate into one (0 = disabled) |
 | `--smooth_gaps` | `0` | Fill bounded temporal gaps up to N missing weeks after propagation (0..48; 0 = disabled; try 2) |
 
 ### Learning Rate Schedule
@@ -640,9 +643,22 @@ species encoding, so propagated species participate fully in training.
    (default 500) is also applied. This prevents island endemics
    (e.g. Hawaii-specific birds) from leaking onto the mainland just
    because the environment matches.
-8. **Merge** the neighbor species into the sparse sample's list
+8. **Apply the pure-ocean guard** — flag a cell as *pure ocean* when its
+   `water_fraction` is at or above `--propagate_water_threshold`
+   (default 0.5) **and** it lies farther than
+   `--propagate_ocean_buffer_km` (default 100) from the nearest land
+   cell.  Terrestrial and coastal labels are never copied into a
+   pure-ocean cell, so ranges stop at the open ocean.  The distance test
+   is what makes this workable: a raw `water_fraction` cutoff cannot tell
+   "coastal" from "open ocean", since a coarse offshore hexagon
+   overlapping a coastal city has `water_fraction` ~0.95 yet legitimately
+   holds hundreds of terrestrial species.  Land→coastal propagation still
+   flows freely, and pure-ocean cells may still seed one another, so
+   genuinely marine species keep spreading.  The guard is skipped when
+   `water_fraction` is absent from the environmental features.
+9. **Merge** the neighbor species into the sparse sample's list
    (union, no duplicates).
-9. **Optionally smooth temporal gaps** — if `--smooth_gaps N` is greater
+10. **Optionally smooth temporal gaps** — if `--smooth_gaps N` is greater
   than zero, fill absent runs of up to `N` weeks in each per-cell,
   per-species 1..48 week series, but only when the run is bounded by
   positives on both sides. The week cycle is circular, so gaps across the
@@ -659,6 +675,8 @@ species encoding, so propagated species participate fully in training.
 | `--propagate_min_obs` | 10 | Sparsity threshold (species count) |
 | `--propagate_env_dist_max` | 2.0 | Max env-space distance for neighbor eligibility |
 | `--propagate_range_cap` | 500 | Hard km ceiling on per-species propagation distance |
+| `--propagate_water_threshold` | 0.5 | `water_fraction` at or above which a cell is "high water" for the pure-ocean guard |
+| `--propagate_ocean_buffer_km` | 100 | Distance from nearest land beyond which a high-water cell is "pure ocean" |
 | `--smooth_gaps` | 0 | Fill bounded temporal gaps up to N missing weeks after propagation (0..48) |
 
 !!! tip
@@ -796,10 +814,27 @@ python train.py --data_path data.parquet --autotune lr pos_lambda    # tune spec
 | `label_freq_weight_pct_lo` | 5.0 → 35.0 |
 | `label_freq_weight_pct_hi` | 70.0 → 95.0 |
 | `label_freq_weight_curve` | 1.0 → 5.0 |
+| `propagate_k` | 1 → 20 (integer) |
+| `propagate_max_radius` | 100 → 1500 km (log scale) |
+| `propagate_min_obs` | 1 → 20 (integer) |
+| `propagate_max_spread` | 0.5 → 3.0 |
+| `propagate_env_dist_max` | 0.5 → 5.0 |
+| `propagate_range_cap` | 200 → 2000 km |
+| `propagate_water_threshold` | 0.3 → 0.9 |
+| `propagate_ocean_buffer_km` | 25 → 400 km |
+| `smooth_gaps` | 0 → 4 (integer) |
 
-The dataset is built once before tuning starts.  Data-affecting parameters
-(`--max_obs_per_species`, `--min_obs_per_species`, `--no_yearly`) are set via
-the CLI and stay fixed across all trials.
+The dataset is normally built once before tuning starts.  Data-affecting
+parameters (`--max_obs_per_species`, `--min_obs_per_species`, `--no_yearly`)
+are set via the CLI and stay fixed across all trials.
+
+!!! warning "Propagation parameters rebuild the dataset every trial"
+    Tuning any `propagate_*` parameter (or `smooth_gaps`) makes each trial
+    re-run label propagation and rebuild its own train/val split from the raw
+    data, because propagation changes the species vocabulary.  This also
+    disables the preprocessed-data cache for the whole run.  Expect
+    substantially longer trials and higher peak memory than tuning
+    model/loss parameters alone.
 
 ### Autotune CLI
 
