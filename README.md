@@ -114,7 +114,7 @@ python scripts/plot_environmental.py --input data/global_350km_ee.parquet
 geomodel/
 ├── train.py                 # Training (Stage 4)
 ├── predict.py               # Inference (Stage 5)
-├── convert.py               # Export to ONNX / TFLite / TF SavedModel
+├── convert.py               # Export to ONNX / TFLite / TF SavedModel / TorchScript
 ├── model/
 │   ├── model.py             # Neural network architecture
 │   ├── loss.py              # Multi-task loss functions

@@ -11,7 +11,15 @@ Supported formats:
     tflite_fp16 TensorFlow Lite FP16
     tflite_int8 TensorFlow Lite INT8 (dynamic-range quantisation)
     tf          TensorFlow SavedModel
+    torchscript TorchScript (traced + frozen) — loadable via torch.jit.load
     all         All of the above
+
+TorchScript output activation:
+    Unlike the ONNX/TFLite exports (which bake in sigmoid and return
+    probabilities), the TorchScript export returns raw species *logits* by
+    default, leaving the activation to the downstream runtime (e.g. birdnet's
+    ``TorchBackend`` and its ``apply_sigmoid`` flag).  Pass
+    ``--torchscript_sigmoid`` to bake sigmoid into the traced graph instead.
 
 FP16 I/O behavior:
     By default, ONNX FP16 exports keep model inputs and outputs in FP32
@@ -53,21 +61,28 @@ from model.model import create_model
 
 
 class ExportWrapper(nn.Module):
-    """Thin wrapper that takes ``(batch, 3)`` and returns sigmoid probabilities.
+    """Thin wrapper that takes ``(batch, 3)`` and returns species predictions.
 
     Column order: ``[latitude_degrees, longitude_degrees, week_number]``.
+
+    When ``apply_sigmoid`` is ``True`` (default) the output is sigmoid
+    probabilities; when ``False`` the raw logits are returned so a downstream
+    runtime can apply its own activation.
     """
 
-    def __init__(self, model: nn.Module):
+    def __init__(self, model: nn.Module, apply_sigmoid: bool = True):
         super().__init__()
         self.model = model
+        self.apply_sigmoid = apply_sigmoid
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         lat = x[:, 0]
         lon = x[:, 1]
         week = x[:, 2]
         logits = self.model(lat, lon, week, return_env=False)["species_logits"]
-        return torch.sigmoid(logits)
+        if self.apply_sigmoid:
+            return torch.sigmoid(logits)
+        return logits
 
 
 # ---------------------------------------------------------------------------
@@ -253,6 +268,75 @@ def _export_onnx(
 
 
 # ---------------------------------------------------------------------------
+# TorchScript export
+# ---------------------------------------------------------------------------
+
+
+def _export_torchscript(
+    model: nn.Module,
+    ref_inputs: np.ndarray,
+    ref_outputs: np.ndarray,
+    outdir: Path,
+    tol: float,
+    device: torch.device,
+    apply_sigmoid: bool = False,
+) -> tuple[bool, float]:
+    """Export to a traced, frozen TorchScript module.
+
+    Produces ``geomodel.pt`` — a serialized ``ScriptModule`` that
+    ``torch.jit.load`` opens directly, unlike a raw training checkpoint
+    (which is a plain state-dict ``dict``).  The traced graph takes a single
+    ``(batch, 3)`` tensor with columns ``[latitude, longitude, week]`` and
+    returns ``(batch, n_species)``.
+
+    Args:
+        model: The loaded :class:`BirdNETGeoModel` (unwrapped).
+        ref_inputs: Reference input array ``(n, 3)`` for validation.
+        ref_outputs: Expected sigmoid probabilities from PyTorch.
+        outdir: Output directory.
+        tol: Numerical tolerance.  Tracing is the same FP32 computation as
+            the reference, so the difference should be within this.
+        device: Torch device.
+        apply_sigmoid: If ``True``, bake sigmoid into the traced graph so it
+            returns probabilities (matching the ONNX/TFLite exports).  If
+            ``False`` (default), return raw logits and leave the activation
+            to the downstream runtime.
+    """
+    path = outdir / "geomodel.pt"
+    print(f"\n[torchscript] Exporting to {path}")
+
+    ts_wrapper = ExportWrapper(model, apply_sigmoid=apply_sigmoid).to(device)
+    ts_wrapper.eval()
+
+    dummy = torch.randn(1, 3, device=device)
+    with torch.no_grad():
+        traced = torch.jit.trace(ts_wrapper, dummy)
+    # Freeze inlines parameters and drops training-only state (dropout,
+    # unused submodules), yielding a smaller, self-contained module.
+    frozen = torch.jit.freeze(traced)
+    torch.jit.save(frozen, str(path))
+
+    activation = "sigmoid probabilities" if apply_sigmoid else "raw logits"
+    print(f"  Output: {activation}")
+
+    # Validate by reloading in isolation and running the reference batch
+    reloaded = torch.jit.load(str(path), map_location=device)
+    with torch.no_grad():
+        x = torch.from_numpy(ref_inputs).to(device)
+        out = reloaded(x)
+        if not apply_sigmoid:
+            # Compare in probability space against the shared reference
+            out = torch.sigmoid(out)
+        exported = out.cpu().numpy().astype(np.float32)
+
+    passed, max_diff = _validate(ref_outputs, exported, tol)
+
+    size_mb = path.stat().st_size / (1024 * 1024)
+    print(f"  File size: {size_mb:.1f} MB")
+    return passed, max_diff
+
+
+# ---------------------------------------------------------------------------
 # TensorFlow / TFLite export
 # ---------------------------------------------------------------------------
 
@@ -404,7 +488,15 @@ def _export_tflite(
 # Main orchestration
 # ---------------------------------------------------------------------------
 
-ALL_FORMATS = ["onnx", "onnx_fp16", "tflite", "tflite_fp16", "tflite_int8", "tf"]
+ALL_FORMATS = [
+    "onnx",
+    "onnx_fp16",
+    "tflite",
+    "tflite_fp16",
+    "tflite_int8",
+    "tf",
+    "torchscript",
+]
 
 
 def convert(
@@ -414,6 +506,7 @@ def convert(
     tol: float = 1e-4,
     device: str = "auto",
     keep_io_fp32: bool = True,
+    torchscript_sigmoid: bool = False,
 ) -> dict[str, tuple[bool, float]]:
     """Convert a checkpoint to the requested formats.
 
@@ -426,6 +519,8 @@ def convert(
         keep_io_fp32: Keep model inputs/outputs in FP32 for FP16
             exports.  This preserves coordinate precision and reduces
             numerical divergence.  Default ``True``.
+        torchscript_sigmoid: Bake sigmoid into the TorchScript export so it
+            returns probabilities.  Default ``False`` (return raw logits).
 
     Returns:
         Dict mapping format name to a ``(passed, max_diff)`` tuple, where
@@ -530,6 +625,15 @@ def convert(
         "tf": lambda: _export_tf_saved_model(
             wrapper, ref_inputs, ref_outputs, outpath, tol=tol, device=dev
         ),
+        "torchscript": lambda: _export_torchscript(
+            model,
+            ref_inputs,
+            ref_outputs,
+            outpath,
+            tol=tol,
+            device=dev,
+            apply_sigmoid=torchscript_sigmoid,
+        ),
     }
 
     for fmt in formats:
@@ -613,6 +717,12 @@ def main():
         help="Convert model I/O to FP16 as well (default: keep "
         "inputs/outputs at FP32 for better precision)",
     )
+    parser.add_argument(
+        "--torchscript_sigmoid",
+        action="store_true",
+        help="Bake sigmoid into the TorchScript export so it returns "
+        "probabilities (default: return raw logits)",
+    )
     args = parser.parse_args()
 
     results = convert(
@@ -622,6 +732,7 @@ def main():
         tol=args.tol,
         device=args.device,
         keep_io_fp32=not args.fp16_io,
+        torchscript_sigmoid=args.torchscript_sigmoid,
     )
 
     # Exit with error code if any conversion failed

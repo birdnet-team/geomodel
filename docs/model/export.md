@@ -20,8 +20,16 @@ python convert.py --formats all                      # everything
 | TFLite FP16 | `tflite_fp16` | ~13 MB | TensorFlow Lite, half precision |
 | TFLite INT8 | `tflite_int8` | ~4 MB | TensorFlow Lite, dynamic-range quantization |
 | TF SavedModel | `tf` | ~14 MB | TensorFlow SavedModel directory |
+| TorchScript | `torchscript` | ~27 MB | Traced + frozen `ScriptModule`, loadable via `torch.jit.load` |
 
 Use `--formats all` to export everything at once.
+
+!!! note "TorchScript output activation"
+    Unlike the ONNX/TFLite exports (which bake in sigmoid and return
+    probabilities), the TorchScript export returns raw species **logits** by
+    default. This suits runtimes that apply their own activation — for
+    example, BirdNET's `pt` and its `apply_sigmoid` flag. Pass
+    `--torchscript_sigmoid` to bake sigmoid into the traced graph instead.
 
 ## CLI Reference
 
@@ -33,6 +41,7 @@ Use `--formats all` to export everything at once.
 | `--tol` | `1e-4` | Base tolerance for numerical validation |
 | `--device` | `auto` | Device for PyTorch reference model |
 | `--fp16_io` | off | Convert model I/O to FP16 as well (see below) |
+| `--torchscript_sigmoid` | off | Bake sigmoid into the TorchScript export (default: raw logits) |
 
 ## FP16 I/O Behavior
 
@@ -111,6 +120,7 @@ exports/
 ├── geomodel.tflite          # TFLite FP32
 ├── geomodel_fp16.tflite     # TFLite FP16
 ├── geomodel_int8.tflite     # TFLite INT8
+├── geomodel.pt              # TorchScript (traced + frozen)
 ├── saved_model/             # TF SavedModel
 ├── labels.txt               # Species vocabulary (copied from checkpoint dir)
 └── MODEL_LICENSE.txt        # Model weights license (CC BY-SA 4.0)
@@ -211,6 +221,35 @@ top_indices = np.argsort(probs[0])[::-1][:top_k]
 for i, idx in enumerate(top_indices):
     print(f"{i+1}. {labels[idx]['common']}: {probs[0][idx]:.3f}")
 ```
+
+### TorchScript
+
+The TorchScript export is self-contained — `torch.jit.load` opens it directly
+with no need to import the model class or reconstruct it from a config (unlike
+the raw training checkpoint in the *PyTorch (.pt)* section above).
+
+```python
+import numpy as np
+import torch
+
+model = torch.jit.load("exports/geomodel.pt", map_location="cpu")
+model.eval()
+
+inputs = torch.tensor([[52.5, 13.4, 22.0]], dtype=torch.float32)  # (batch, 3)
+with torch.no_grad():
+    logits = model(inputs)              # (batch, n_species) — raw logits by default
+    probs = torch.sigmoid(logits)       # apply activation yourself
+
+labels = load_labels()
+top = probs[0].topk(10)
+for i, idx in enumerate(top.indices):
+    print(f"{i+1}. {labels[idx]['common']}: {top.values[i]:.3f}")
+```
+
+!!! note "Logits, not probabilities"
+    The default export returns raw logits — apply `sigmoid` yourself (or let
+    your runtime do it). Re-export with `--torchscript_sigmoid` if you want the
+    graph to return probabilities directly, matching the ONNX/TFLite exports.
 
 !!! tip "Batch inference"
     All formats support batched inputs. Stack multiple `[lat, lon, week]` rows into a single `(N, 3)` array to predict many locations at once.
