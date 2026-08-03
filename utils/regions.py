@@ -6,6 +6,8 @@ a region name) into a (lon_min, lat_min, lon_max, lat_max) tuple.
 """
 from typing import Dict, List, Optional, Sequence, Tuple
 
+import numpy as np
+
 # Region bounding boxes (lon_min, lat_min, lon_max, lat_max)
 REGION_BOUNDS = {
     'world': (-180.0, -90.0, 180.0, 90.0),
@@ -74,6 +76,32 @@ HOLDOUT_REGIONS: Dict[str, Tuple[float, float, float, float]] = {
     'california':   (-124.5, 32.5, -114.1, 42.0),     # California
     'japan':        (129.5, 30.0, 145.8, 45.5),        # Japan
 }
+
+# Areas where aggregated bird observations are dense enough that callers may
+# choose to preserve raw Aves absences during pseudo-label generation.  The
+# North American presets deliberately leave the continental interior
+# (-114..-90 degrees longitude) unprotected.
+AVES_PROTECTION_REGIONS: Dict[str, List[Tuple[float, float, float, float]]] = {
+    'europe': [REGION_BOUNDS['europe']],
+    'na_west_coast': [(-170.0, 25.0, -114.0, 72.0)],
+    'na_east_coast': [(-90.0, 25.0, -50.0, 72.0)],
+}
+
+
+def build_region_mask(
+    lats: np.ndarray,
+    lons: np.ndarray,
+    region_names: Optional[Sequence[str]],
+) -> np.ndarray:
+    """Return a sample mask for named Aves-protection regions."""
+    mask = np.zeros(len(lats), dtype=bool)
+    for name in region_names or []:
+        for lon_min, lat_min, lon_max, lat_max in AVES_PROTECTION_REGIONS[name]:
+            mask |= (
+                (lats >= lat_min) & (lats <= lat_max)
+                & (lons >= lon_min) & (lons <= lon_max)
+            )
+    return mask
 
 
 def resolve_bounds_arg(b: Optional[Sequence[str]]) -> Optional[Tuple[float, float, float, float]]:

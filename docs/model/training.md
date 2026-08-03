@@ -89,6 +89,7 @@ The training script handles the full pipeline automatically:
 | `--propagate_water_threshold` | `0.5` | `water_fraction` at or above which a cell counts as "high water" for the pure-ocean guard (0 = disabled) |
 | `--propagate_ocean_buffer_km` | `100` | A cell is "pure ocean" only if high-water *and* farther than this from the nearest land cell; terrestrial/coastal labels never propagate into one (0 = disabled) |
 | `--smooth_gaps` | `0` | Fill bounded temporal gaps up to N missing weeks after propagation (0..48; 0 = disabled; try 2) |
+| `--protect_aves_regions` | off | Preserve raw Aves presence/absence labels during propagation and gap smoothing in `europe`, `na_west_coast`, and/or `na_east_coast` |
 
 ### Learning Rate Schedule
 
