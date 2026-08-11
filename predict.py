@@ -21,6 +21,7 @@ import numpy as np
 import torch
 
 from model.model import create_model
+from utils.ocean import apply_ocean_species_policy
 
 
 def load_labels(labels_path: str) -> Dict[int, Tuple[str, str, str]]:
@@ -106,6 +107,12 @@ def predict(
         with torch.no_grad():
             output = model(lat_t, lon_t, week_t, return_env=False)
             probs = torch.sigmoid(output['species_logits']).cpu().numpy()[0]
+
+    # Checkpoints trained with the consolidated ocean policy carry a
+    # data-derived marine allow-list. Apply it as a hard safety boundary: a
+    # terrestrial model logit can no longer bleed from an island into open
+    # ocean. Older checkpoints intentionally retain their historical output.
+    probs, _ = apply_ocean_species_policy(probs, lat, lon, species_vocab)
 
     # Load labels file (auto-detect from checkpoint dir)
     # Try: <checkpoint_stem>_labels.txt, then labels.txt

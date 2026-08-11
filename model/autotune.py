@@ -30,9 +30,7 @@ TUNABLE_PARAMS = [
     'label_freq_weight_curve',
     'propagate_k', 'propagate_max_radius',
     'propagate_min_obs', 'propagate_max_spread',
-    'propagate_env_dist_max', 'propagate_range_cap',
-    'propagate_water_threshold', 'propagate_ocean_buffer_km',
-    'smooth_gaps',
+    'propagate_env_dist_max', 'propagate_range_cap', 'smooth_gaps',
 ]
 
 
@@ -136,16 +134,6 @@ def _suggest_param(trial, name: str, args):
         return _suggest_float(trial, args, 'propagate_env_dist_max', 0.5, 5.0)
     if name == 'propagate_range_cap':
         return _suggest_float(trial, args, 'propagate_range_cap', 200.0, 2000.0)
-    if name == 'propagate_water_threshold':
-        # Bounded well inside (0, 1): 0 would disable the guard entirely and
-        # 1.0 would make every cell "land", so neither endpoint is a
-        # meaningful land/water split to sample.
-        return _suggest_float(trial, args, 'propagate_water_threshold', 0.3, 0.9)
-    if name == 'propagate_ocean_buffer_km':
-        # Lower bound ~ one res-4 hexagon edge, so the buffer always reaches
-        # past a cell's immediate neighbors; upper bound keeps large inland
-        # seas and archipelagos from being classified as open ocean.
-        return _suggest_float(trial, args, 'propagate_ocean_buffer_km', 25.0, 400.0)
     if name == 'smooth_gaps':
         return _suggest_int(trial, args, 'smooth_gaps', 0, 4)
     raise ValueError(f"Unknown tunable param: {name}")
@@ -179,8 +167,7 @@ def run_autotune(
     _PROPAGATION_PARAMS = {
         'propagate_k', 'propagate_max_radius', 'propagate_min_obs',
         'propagate_max_spread', 'propagate_env_dist_max',
-        'propagate_range_cap', 'propagate_water_threshold',
-        'propagate_ocean_buffer_km', 'smooth_gaps',
+        'propagate_range_cap', 'smooth_gaps',
     }
     _tune_propagation = bool(_PROPAGATION_PARAMS & set(tune_params))
 
@@ -302,8 +289,7 @@ def run_autotune(
                 max_spread_factor=args.propagate_max_spread,
                 env_dist_max=args.propagate_env_dist_max,
                 range_cap_km=args.propagate_range_cap,
-                water_threshold=args.propagate_water_threshold,
-                ocean_buffer_km=args.propagate_ocean_buffer_km,
+                ocean_buffer_km=args.ocean_buffer_km,
                 smooth_gaps=args.smooth_gaps,
                 sample_cell_indices=sample_cell_indices,
                 protected_target_mask=_protected_target_mask,
@@ -521,8 +507,7 @@ def run_autotune(
                 max_spread_factor=float(p['propagate_max_spread']),
                 env_dist_max=float(p.get('propagate_env_dist_max', args.propagate_env_dist_max)),
                 range_cap_km=float(p.get('propagate_range_cap', args.propagate_range_cap)),
-                water_threshold=float(p.get('propagate_water_threshold', args.propagate_water_threshold)),
-                ocean_buffer_km=float(p.get('propagate_ocean_buffer_km', args.propagate_ocean_buffer_km)),
+                ocean_buffer_km=args.ocean_buffer_km,
                 smooth_gaps=int(p.get('smooth_gaps', args.smooth_gaps)),
                 sample_cell_indices=sample_cell_indices,
                 protected_target_mask=_protected_target_mask,

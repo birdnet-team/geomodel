@@ -297,14 +297,8 @@ def main():
                         help='Max environmental distance for neighbor eligibility (default: 2.0)')
     parser.add_argument('--propagate_range_cap', type=float, default=500.0,
                         help='Hard km ceiling on per-species propagation distance (default: 500)')
-    parser.add_argument('--propagate_water_threshold', type=float, default=0.5,
-                        help='water_fraction below which a cell counts as land for the '
-                             'pure-ocean propagation guard. 0 disables the guard (default: 0.5)')
-    parser.add_argument('--propagate_ocean_buffer_km', type=float, default=100.0,
-                        help='A cell is "pure ocean" only if high-water AND farther than this '
-                             'many km from the nearest land cell; terrestrial/coastal labels are '
-                             'never propagated into pure-ocean cells, while land->coastal still '
-                             'flows freely. 0 disables the guard (default: 100)')
+    parser.add_argument('--ocean_buffer_km', type=float, default=25.0,
+                        help='Global land-mask exclusion radius in km (default: 25)')
     parser.add_argument('--smooth_gaps', type=int, default=0,
                         help='Fill bounded temporal gaps up to N missing weeks after propagation (0..48). 0 disables (try 2).')
     parser.add_argument('--no_yearly', action='store_true',
@@ -348,8 +342,7 @@ def main():
         max_spread_factor=args.propagate_max_spread,
         env_dist_max=args.propagate_env_dist_max,
         range_cap_km=args.propagate_range_cap,
-        water_threshold=args.propagate_water_threshold,
-        ocean_buffer_km=args.propagate_ocean_buffer_km,
+        ocean_buffer_km=args.ocean_buffer_km,
         smooth_gaps=args.smooth_gaps,
         sample_cell_indices=sample_cell_indices,
     )

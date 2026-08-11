@@ -16,7 +16,7 @@ def test_propagation_preserves_protected_species_only_in_protected_targets():
         lats, lons, weeks, labels, env,
         k=1, min_obs_threshold=2, max_radius_km=1000,
         max_spread_factor=0, env_dist_max=0,
-        water_threshold=0, ocean_buffer_km=0,
+        ocean_buffer_km=0,
         protected_target_mask=np.array([False, True, False]),
         protected_species={'bird'},
     )

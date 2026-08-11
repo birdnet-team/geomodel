@@ -5,6 +5,7 @@ geopandas
 pyarrow
 shapely
 h3
+global-land-mask
 scikit-learn
 tqdm
 

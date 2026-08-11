@@ -45,6 +45,7 @@ from utils.data import H3DataLoader, H3DataPreprocessor, create_dataloaders, loa
 from utils.regions import (AVES_PROTECTION_REGIONS, HOLDOUT_REGIONS, REGION_BOUNDS,
                            build_region_mask, resolve_holdout_regions)
 from utils.taxonomy import TaxonomyManager, find_taxonomy_csv
+from utils.ocean import ocean_specialists, pure_ocean_mask
 
 
 # ---------------------------------------------------------------------------
@@ -60,6 +61,7 @@ _DATA_CACHE_KEYS = [
     'propagate_labels', 'propagate_k', 'propagate_max_radius',
     'propagate_min_obs', 'propagate_max_spread',
     'propagate_env_dist_max', 'propagate_range_cap', 'smooth_gaps',
+    'ocean_buffer_km', 'ocean_specialist_min_obs',
     'protect_aves_regions',
     'max_obs_per_species', 'min_obs_per_species', 'max_species',
     'val_size', 'sample_fraction',
@@ -76,7 +78,7 @@ def _data_cache_key(args) -> str:
     h = hashlib.sha256()
 
     # Cache format version — bump when internal encoding changes
-    h.update(b"cache_version:2")
+    h.update(b"cache_version:3_ocean_mask")
 
     # File identity: use mtime + size as a cheap fingerprint
     p = Path(args.data_path)
@@ -734,7 +736,16 @@ class Trainer:
         self.best_geoscore = ckpt.get('best_geoscore', ckpt.get('best_val_map', 0.0))
         self.history = ckpt['history']
         self.model_config = ckpt.get('model_config', {})
+        # Vocabulary indices come from the resumed weights, while the ocean
+        # policy comes from this run's freshly processed data. This also lets
+        # an older checkpoint acquire the new safety metadata on its next save.
+        current_ocean_policy = {
+            key: self.species_vocab[key]
+            for key in ('ocean_species', 'ocean_buffer_km')
+            if key in self.species_vocab
+        }
         self.species_vocab = ckpt.get('species_vocab', {})
+        self.species_vocab.update(current_ocean_policy)
         if self.scheduler is not None and 'scheduler_state_dict' in ckpt:
             self.scheduler.load_state_dict(ckpt['scheduler_state_dict'])
         if self.use_amp and 'scaler_state_dict' in ckpt:
@@ -945,7 +956,11 @@ def main():
     parser.add_argument('--max_species', type=int, default=0,
                         help='Randomly subsample vocabulary to at most N species (default: 0, 0=all)')
     parser.add_argument('--ocean_sample_rate', type=float, default=1.0,
-                        help='Fraction of ocean cells (water_fraction > 0.9) to keep (default: 1.0, 1.0=keep all)')
+                        help='Fraction of pure-ocean cells to keep (default: 1.0; keep all for strong ocean negatives)')
+    parser.add_argument('--ocean_buffer_km', type=float, default=25.0,
+                        help='Global land-mask exclusion radius used consistently for sampling, training and inference (default: 25)')
+    parser.add_argument('--ocean_specialist_min_obs', type=int, default=5,
+                        help='Raw pure-ocean observations required for a species to remain eligible in ocean cells (default: 5)')
     parser.add_argument('--no_yearly', action='store_true',
                         help='Exclude week-0 (yearly) samples from training. '
                              'Year-round predictions are computed by averaging all 48 weeks at inference.')
@@ -1013,14 +1028,6 @@ def main():
     parser.add_argument('--propagate_range_cap', type=float, default=1500.0,
                         help='Hard cap in km on per-species propagation distance from '
                              'nearest observation. 0 = disabled (default: 1500).')
-    parser.add_argument('--propagate_water_threshold', type=float, default=0.5,
-                        help='water_fraction below which a cell counts as land for the '
-                             'pure-ocean propagation guard (default: 0.5). 0 = disable guard.')
-    parser.add_argument('--propagate_ocean_buffer_km', type=float, default=100.0,
-                        help='A cell is "pure ocean" only if high-water AND farther than '
-                             'this many km from the nearest land cell. Terrestrial/coastal '
-                             'labels are never propagated into pure-ocean cells; land->coastal '
-                             'still flows freely. 0 = disable guard (default: 100).')
     parser.add_argument('--smooth_gaps', type=int, default=0,
                         help='Fill bounded temporal gaps up to N missing weeks after '
                              'label propagation (0..48). 0 = disabled; try 2 for GIF-like '
@@ -1151,7 +1158,7 @@ def main():
     if args.min_obs_per_species > 0:
         print(f"  Min obs:    {args.min_obs_per_species} per species")
     if args.ocean_sample_rate < 1.0:
-        print(f"  Ocean:      keep {args.ocean_sample_rate:.0%} of high-water cells")
+        print(f"  Ocean:      keep {args.ocean_sample_rate:.0%} of pure-ocean cells")
     if args.jitter:
         print(f"  Jitter:     enabled (Gaussian noise within H3 cells)")
     if args.label_freq_weight:
@@ -1181,6 +1188,7 @@ def main():
         holdout_in  = cached['holdout_in']
         holdout_tgt = cached['holdout_tgt']
         preprocessor = cached['preprocessor']
+        ocean_species = set(cached['ocean_species'])
         freq_weights = cached['freq_weights']
         jitter_std   = cached['jitter_std']
         n_species    = cached['n_species']
@@ -1196,6 +1204,7 @@ def main():
         print("2. Flattening to samples...")
         lats, lons, weeks, species_lists, env_features = loader.flatten_to_samples(
             ocean_sample_rate=args.ocean_sample_rate,
+            ocean_buffer_km=args.ocean_buffer_km,
             include_yearly=not args.no_yearly,
         )
 
@@ -1212,6 +1221,23 @@ def main():
                 pairs = ', '.join(f'{k}->{v}' for k, v in _remapper.code_remap.items())
                 print(f"   Species-code remap ({pairs}): "
                       f"updated {_changed:,} samples")
+
+        # Derive the marine allow-list from raw (but taxonomy-normalized)
+        # observations, then remove every other positive label in pure-ocean
+        # cells. The cells stay in training as strong terrestrial negatives.
+        pure_ocean = pure_ocean_mask(lats, lons, buffer_km=args.ocean_buffer_km)
+        ocean_species = ocean_specialists(
+            species_lists, pure_ocean,
+            min_ocean_observations=args.ocean_specialist_min_obs,
+        )
+        removed_ocean_labels = 0
+        for i in np.where(pure_ocean)[0]:
+            cleaned = [s for s in species_lists[i] if s in ocean_species]
+            removed_ocean_labels += len(species_lists[i]) - len(cleaned)
+            species_lists[i] = cleaned
+        print(f"   Ocean mask: {pure_ocean.sum():,}/{len(pure_ocean):,} samples; "
+              f"{len(ocean_species):,} specialists retained; "
+              f"{removed_ocean_labels:,} terrestrial labels removed")
 
         # Coordinate jitter
         jitter_std = 0.0
@@ -1261,8 +1287,7 @@ def main():
                 max_spread_factor=args.propagate_max_spread,
                 env_dist_max=args.propagate_env_dist_max,
                 range_cap_km=args.propagate_range_cap,
-                water_threshold=args.propagate_water_threshold,
-                ocean_buffer_km=args.propagate_ocean_buffer_km,
+                ocean_buffer_km=args.ocean_buffer_km,
                 smooth_gaps=args.smooth_gaps,
                 sample_cell_indices=sample_cell_indices,
                 protected_target_mask=protected_target_mask,
@@ -1362,6 +1387,7 @@ def main():
             'freq_weights': freq_weights,
             'jitter_std': jitter_std,
             'n_species': n_species, 'n_env': n_env,
+            'ocean_species': sorted(ocean_species),
         })
 
     # Verify watchlist species survived subsampling / splitting
@@ -1446,6 +1472,11 @@ def main():
     species_vocab = {
         'species_to_idx': preprocessor.species_to_idx,
         'idx_to_species': preprocessor.idx_to_species,
+        'ocean_species': sorted(
+            species for species in ocean_species
+            if species in preprocessor.species_to_idx
+        ),
+        'ocean_buffer_km': args.ocean_buffer_km,
     }
 
     checkpoint_dir = Path(args.checkpoint_dir)

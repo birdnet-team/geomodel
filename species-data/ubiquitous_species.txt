@@ -34,17 +34,17 @@
 #     B. impatiens together cover only Europe + E North America.
 
 # --- Humans ---
-43584     0.50    # Homo sapiens — Human
+43584     0.75    # Homo sapiens — Human
 
 # --- Domestic carnivores ---
-47144     0.50    # Canis familiaris — Domestic Dog
-118552    0.50    # Felis catus — Domestic Cat
+47144     0.75    # Canis familiaris — Domestic Dog
+118552    0.75    # Felis catus — Domestic Cat
 
 # --- Livestock ---
-74113     0.30    # Bos taurus — Domestic Cattle
-121578    0.30    # Ovis aries — Domestic Sheep
-123070    0.30    # Capra hircus — Domestic Goat
-209233    0.30    # Equus caballus — Domestic Horse
+74113     0.50    # Bos taurus — Domestic Cattle
+121578    0.50    # Ovis aries — Domestic Sheep
+123070    0.50    # Capra hircus — Domestic Goat
+209233    0.50    # Equus caballus — Domestic Horse
 
 # --- Commensal rodents ---
 44576     0.30    # Rattus norvegicus — Brown Rat
