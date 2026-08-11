@@ -20,6 +20,8 @@ from sklearn.preprocessing import StandardScaler
 from torch.utils.data import Dataset, DataLoader
 from typing import Any, Dict, List, Optional, Set, Tuple
 
+from utils.ocean import pure_ocean_mask
+
 
 # ---------------------------------------------------------------------------
 # Data loading
@@ -103,7 +105,7 @@ class H3DataLoader:
     def flatten_to_samples(
         self,
         ocean_sample_rate: float = 1.0,
-        water_threshold: float = 0.9,
+        ocean_buffer_km: float = 25.0,
         include_yearly: bool = True,
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, List[List[str]], pd.DataFrame]:
         """
@@ -113,11 +115,10 @@ class H3DataLoader:
         one yearly sample (week 0) whose species list is the union of all weeks.
 
         Args:
-            ocean_sample_rate: Fraction of high-water cells to keep (0–1).
-                Cells whose ``water_fraction`` exceeds *water_threshold* are
-                randomly kept at this rate.  Default 1.0 (keep all).
-            water_threshold: ``water_fraction`` above which a cell is
-                considered ocean.  Default 0.9.
+            ocean_sample_rate: Fraction of pure-ocean cells to keep (0–1).
+                Default 1.0 (keep all, recommended for ocean negatives).
+            ocean_buffer_km: Land exclusion radius used by the authoritative
+                global land mask. Default 25 km.
             include_yearly: If True (default), include a week-0 yearly sample
                 per cell.  Set to False to train on weekly data only.
 
@@ -132,15 +133,15 @@ class H3DataLoader:
         n_cells = len(self.gdf)
 
         # --- Optional ocean downsampling ---
-        if ocean_sample_rate < 1.0 and 'water_fraction' in self.gdf.columns:
+        if ocean_sample_rate < 1.0:
             rng = np.random.default_rng(42)
-            wf = self.gdf['water_fraction'].fillna(0.0).values
-            is_ocean = wf > water_threshold
+            is_ocean = pure_ocean_mask(
+                cell_lats, cell_lons, buffer_km=ocean_buffer_km)
             keep = ~is_ocean | (rng.random(n_cells) < ocean_sample_rate)
             n_dropped = (~keep).sum()
             if n_dropped > 0:
                 print(f"   Ocean downsampling: keeping {keep.sum():,}/{n_cells:,} cells "
-                      f"(dropped {n_dropped:,} with water_fraction > {water_threshold})")
+                      f"(dropped {n_dropped:,} pure-ocean cells)")
                 cell_lats = cell_lats[keep]
                 cell_lons = cell_lons[keep]
                 env_data = env_data.iloc[keep.nonzero()[0]].reset_index(drop=True)
@@ -623,7 +624,6 @@ class H3DataPreprocessor:
         max_spread_factor: float = 2.0,
         env_dist_max: float = 2.0,
         range_cap_km: float = 500.0,
-        water_threshold: float = 0.5,
         ocean_buffer_km: float = 100.0,
         candidate_species: Optional[Set[str]] = None,
         env_row_indices: Optional[np.ndarray] = None,
@@ -670,23 +670,12 @@ class H3DataPreprocessor:
                 species' bounding-box range would allow propagation farther,
                 it is clamped to at most *range_cap_km*.  Set to 0 to disable
                 (default 500).
-            water_threshold: ``water_fraction`` below which a cell counts as
-                *land* for the pure-ocean guard (default 0.5).  Cells at or
-                above it are "high water" and are candidates for the pure-ocean
-                classification described under *ocean_buffer_km*.  Requires a
-                ``water_fraction`` column in *env_features*; when absent, the
-                guard is skipped.  Set to 0 to disable.
-            ocean_buffer_km: A cell is treated as *pure ocean* only when it is
-                high-water (see *water_threshold*) AND farther than this many
-                km from the nearest land cell.  Terrestrial/coastal labels are
+            ocean_buffer_km: A cell is treated as *pure ocean* when the global
+                land mask finds no land within this many km. Terrestrial labels are
                 never propagated into a pure-ocean cell, while land→coastal
                 propagation flows freely and pure-ocean cells may still seed
                 one another (preserving genuinely marine species).  This
-                distance test is used instead of a raw water_fraction cutoff
-                because coarse coastal hexagons (e.g. an offshore cell over a
-                coastal city) have water_fraction ~0.95 yet hold hundreds of
-                terrestrial species.  Set to 0 to disable the guard (default
-                100).
+                Set to 0 to use a centre-point-only mask (default 100).
             candidate_species: Optional species-code subset to propagate.
                 When provided, observed/sparse cell selection still uses the
                 full species lists, but only these species are copied. Default
@@ -884,53 +873,11 @@ class H3DataPreprocessor:
         if env_row_indices is not None:
             env_scaled = env_scaled[env_row_indices]
 
-        # --- Pure-ocean target guard ---
-        # A raw water_fraction cutoff cannot separate "coastal" from "open
-        # ocean": a coarse offshore hexagon overlapping a coastal city has
-        # water_fraction ~0.95 yet legitimately holds hundreds of terrestrial
-        # species.  Instead flag a cell as *pure ocean* only when it is
-        # high-water AND farther than ocean_buffer_km from the nearest land
-        # cell.  Propagation may then flow land->coastal freely, but
-        # terrestrial/coastal labels are never copied into a pure-ocean cell
-        # (open-ocean cells still seed one another, preserving marine species).
+        # --- Pure-ocean target guard (shared with sampling and inference) ---
         is_pure_ocean = None
-        if (ocean_buffer_km > 0 and water_threshold > 0
-                and 'water_fraction' in env_features.columns):
-            wf = env_features['water_fraction'].fillna(0.0).values.astype(np.float64)
-            if env_row_indices is not None:
-                wf = wf[env_row_indices]
-
-            # Collapse to unique cells — all weekly samples of a cell share
-            # coordinates and water_fraction — so the land KD-tree and the
-            # nearest-land query run over ~cells, not ~cells×48 samples.
-            coords = np.column_stack([lats.astype(np.float64),
-                                      lons.astype(np.float64)])
-            uniq_coords, inv = np.unique(coords, axis=0, return_inverse=True)
-            # numpy 2.0.0 returned a column vector here for axis-wise unique;
-            # flatten so the gather/scatter below stay 1-D on every version.
-            inv = np.asarray(inv).ravel()
-            uc_wf = np.empty(len(uniq_coords), dtype=np.float64)
-            uc_wf[inv] = wf  # constant within a cell, so assignment order is moot
-
-            uc_lat_r = np.radians(uniq_coords[:, 0])
-            uc_lon_r = np.radians(uniq_coords[:, 1])
-            uc_xyz = np.column_stack([
-                R * np.cos(uc_lat_r) * np.cos(uc_lon_r),
-                R * np.cos(uc_lat_r) * np.sin(uc_lon_r),
-                R * np.sin(uc_lat_r),
-            ])
-
-            is_land_u = uc_wf < water_threshold
-            high_water_u = ~is_land_u
-            if is_land_u.any() and high_water_u.any():
-                land_tree = cKDTree(uc_xyz[is_land_u])
-                chord, _ = land_tree.query(uc_xyz[high_water_u], k=1)
-                # Chord length -> great-circle distance to nearest land cell.
-                gc_km = 2.0 * R * np.arcsin(
-                    np.clip(chord / (2.0 * R), 0.0, 1.0))
-                pure_u = np.zeros(len(uniq_coords), dtype=bool)
-                pure_u[np.where(high_water_u)[0]] = gc_km > ocean_buffer_km
-                is_pure_ocean = pure_u[inv]
+        if ocean_buffer_km > 0:
+            is_pure_ocean = pure_ocean_mask(
+                lats, lons, buffer_km=ocean_buffer_km)
 
         # Pre-convert coords to radians for vectorized haversine
         lats_rad = np.radians(lats.astype(np.float64))
@@ -1099,8 +1046,7 @@ class H3DataPreprocessor:
         if range_cap_km > 0:
             gates.append(f"range_cap={range_cap_km:.0f}km")
         if is_pure_ocean is not None:
-            gates.append(f"ocean_buffer={ocean_buffer_km:.0f}km"
-                         f"(land@{water_threshold:.2f})")
+            gates.append(f"ocean_buffer={ocean_buffer_km:.0f}km")
         gate_str = (', ' + ', '.join(gates)) if gates else ''
         print(f"   Env label propagation: added {total_propagated:,} pseudo-labels "
               f"to {cells_modified:,}/{n_sparse:,} sparse samples "

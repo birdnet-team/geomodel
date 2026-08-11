@@ -335,7 +335,6 @@ def _propagated_overlays_all_weeks(
     max_spread_factor: float,
     env_dist_max: float,
     range_cap_km: float,
-    water_threshold: float,
     ocean_buffer_km: float,
     smooth_gaps: int,
 ) -> Dict[int, np.ndarray]:
@@ -376,7 +375,6 @@ def _propagated_overlays_all_weeks(
         max_spread_factor=max_spread_factor,
         env_dist_max=env_dist_max,
         range_cap_km=range_cap_km,
-        water_threshold=water_threshold,
         ocean_buffer_km=ocean_buffer_km,
         candidate_species=set(species_codes),
         env_row_indices=env_row_indices,
@@ -583,8 +581,7 @@ def generate_demo_gif(
     propagate_max_spread: float = 1.0,
     propagate_env_dist_max: float = 5.0,
     propagate_range_cap: float = 1500.0,
-    propagate_water_threshold: float = 0.5,
-    propagate_ocean_buffer_km: float = 100.0,
+    ocean_buffer_km: float = 25.0,
     smooth_gaps: int = 0,
 ):
     if species_names is None:
@@ -649,8 +646,7 @@ def generate_demo_gif(
                 propagate_max_spread,
                 propagate_env_dist_max,
                 propagate_range_cap,
-                propagate_water_threshold,
-                propagate_ocean_buffer_km,
+                ocean_buffer_km,
                 smooth_gaps,
             )
             total_propagated = sum(int(overlay.sum()) for overlay in overlay_by_week.values())
@@ -818,14 +814,8 @@ def main():
         help="Hard km cap on propagation distance from nearest observation. 0 disables (default: 1500).",
     )
     parser.add_argument(
-        "--propagate_water_threshold", type=float, default=0.5,
-        help="water_fraction below which a cell counts as land for the pure-ocean propagation guard. 0 disables the guard (default: 0.5).",
-    )
-    parser.add_argument(
-        "--propagate_ocean_buffer_km", type=float, default=100.0,
-        help="A cell is 'pure ocean' only if high-water AND farther than this many km from the "
-             "nearest land cell; terrestrial/coastal labels never propagate into pure-ocean cells, "
-             "while land->coastal still flows freely. 0 disables the guard (default: 100).",
+        "--ocean_buffer_km", type=float, default=25.0,
+        help="Global land-mask exclusion radius in km (default: 25).",
     )
     parser.add_argument(
         "--smooth_gaps", type=int, default=0,
@@ -856,8 +846,7 @@ def main():
         propagate_max_spread=args.propagate_max_spread,
         propagate_env_dist_max=args.propagate_env_dist_max,
         propagate_range_cap=args.propagate_range_cap,
-        propagate_water_threshold=args.propagate_water_threshold,
-        propagate_ocean_buffer_km=args.propagate_ocean_buffer_km,
+        ocean_buffer_km=args.ocean_buffer_km,
         smooth_gaps=args.smooth_gaps,
     )
 

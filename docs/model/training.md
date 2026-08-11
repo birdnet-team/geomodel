@@ -68,7 +68,9 @@ The training script handles the full pipeline automatically:
 | `--label_smoothing` | `0.05` | Smooth binary targets to prevent overconfidence (0 = off) |
 | `--max_obs_per_species` | `0` | Cap observations per species (0 = no cap) |
 | `--min_obs_per_species` | `50` | Exclude species with fewer than N observations (0 = keep all) |
-| `--ocean_sample_rate` | `1.0` | Fraction of ocean cells (water > 90%) to keep (1.0 = keep all) |
+| `--ocean_sample_rate` | `1.0` | Fraction of pure-ocean cells to keep. Keep at 1.0 for strong terrestrial negatives. |
+| `--ocean_buffer_km` | `25` | Land exclusion radius for the shared 1-km global land mask used by sampling, propagation, training-label cleanup, and inference. |
+| `--ocean_specialist_min_obs` | `5` | Raw pure-ocean observations required to retain a taxon as an ocean specialist. |
 | `--no_yearly` | off | Exclude week-0 (yearly) samples from training |
 | `--no_cache` | off | Disable data preprocessing cache (force reprocessing) |
 | `--jitter` | off | Jitter training coordinates within H3 cells each epoch |
@@ -86,8 +88,6 @@ The training script handles the full pipeline automatically:
 | `--propagate_min_obs` | `10` | Samples with fewer species than this receive propagated labels |
 | `--propagate_env_dist_max` | `2.0` | Max env-space Euclidean distance (post-StandardScaler) for a neighbor to contribute labels (0 = disabled) |
 | `--propagate_range_cap` | `500` | Hard cap in km on per-species propagation distance from nearest observation (0 = disabled) |
-| `--propagate_water_threshold` | `0.5` | `water_fraction` at or above which a cell counts as "high water" for the pure-ocean guard (0 = disabled) |
-| `--propagate_ocean_buffer_km` | `100` | A cell is "pure ocean" only if high-water *and* farther than this from the nearest land cell; terrestrial/coastal labels never propagate into one (0 = disabled) |
 | `--smooth_gaps` | `0` | Fill bounded temporal gaps up to N missing weeks after propagation (0..48; 0 = disabled; try 2) |
 | `--protect_aves_regions` | off | Preserve raw Aves presence/absence labels during propagation and gap smoothing in `europe`, `na_west_coast`, and/or `na_east_coast` |
 
@@ -644,19 +644,15 @@ species encoding, so propagated species participate fully in training.
    (default 500) is also applied. This prevents island endemics
    (e.g. Hawaii-specific birds) from leaking onto the mainland just
    because the environment matches.
-8. **Apply the pure-ocean guard** — flag a cell as *pure ocean* when its
-   `water_fraction` is at or above `--propagate_water_threshold`
-   (default 0.5) **and** it lies farther than
-   `--propagate_ocean_buffer_km` (default 100) from the nearest land
-   cell.  Terrestrial and coastal labels are never copied into a
-   pure-ocean cell, so ranges stop at the open ocean.  The distance test
-   is what makes this workable: a raw `water_fraction` cutoff cannot tell
-   "coastal" from "open ocean", since a coarse offshore hexagon
-   overlapping a coastal city has `water_fraction` ~0.95 yet legitimately
-   holds hundreds of terrestrial species.  Land→coastal propagation still
-   flows freely, and pure-ocean cells may still seed one another, so
-   genuinely marine species keep spreading.  The guard is skipped when
-   `water_fraction` is absent from the environmental features.
+8. **Apply the pure-ocean guard** — query the packaged 1-km global land
+   mask at the cell centre and on a ring `--ocean_buffer_km` away. A cell is
+   pure ocean only when every query is water. Terrestrial labels are never
+   copied into such cells. Before propagation, raw ocean observations also
+   derive a marine-specialist allow-list; all other ocean positives are
+   removed so those samples become strong negatives during training. The
+   same allow-list and land query are stored with the checkpoint and enforced
+   by `predict.py`. JRC `water_fraction` is deliberately not used because
+   that inland-water product reports masked ocean pixels as missing data.
 9. **Merge** the neighbor species into the sparse sample's list
    (union, no duplicates).
 10. **Optionally smooth temporal gaps** — if `--smooth_gaps N` is greater
@@ -676,8 +672,6 @@ species encoding, so propagated species participate fully in training.
 | `--propagate_min_obs` | 10 | Sparsity threshold (species count) |
 | `--propagate_env_dist_max` | 2.0 | Max env-space distance for neighbor eligibility |
 | `--propagate_range_cap` | 500 | Hard km ceiling on per-species propagation distance |
-| `--propagate_water_threshold` | 0.5 | `water_fraction` at or above which a cell is "high water" for the pure-ocean guard |
-| `--propagate_ocean_buffer_km` | 100 | Distance from nearest land beyond which a high-water cell is "pure ocean" |
 | `--smooth_gaps` | 0 | Fill bounded temporal gaps up to N missing weeks after propagation (0..48) |
 
 !!! tip
@@ -821,8 +815,6 @@ python train.py --data_path data.parquet --autotune lr pos_lambda    # tune spec
 | `propagate_max_spread` | 0.5 → 3.0 |
 | `propagate_env_dist_max` | 0.5 → 5.0 |
 | `propagate_range_cap` | 200 → 2000 km |
-| `propagate_water_threshold` | 0.3 → 0.9 |
-| `propagate_ocean_buffer_km` | 25 → 400 km |
 | `smooth_gaps` | 0 → 4 (integer) |
 
 The dataset is normally built once before tuning starts.  Data-affecting
