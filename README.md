@@ -9,7 +9,8 @@
   <a href="https://www.python.org/"><img src="https://img.shields.io/badge/python-3.10+-blue.svg" alt="Python 3.10+"></a>
   <a href="https://pytorch.org/"><img src="https://img.shields.io/badge/PyTorch-2.0+-ee4c2c.svg" alt="PyTorch"></a>
   <a href="https://birdnet-team.github.io/geomodel/"><img src="https://img.shields.io/badge/docs-mkdocs-blue.svg" alt="Documentation"></a>
-  <img src="https://img.shields.io/badge/species-12%2C313-brightgreen" alt="12,313 species">
+  <a href="https://github.com/birdnet-team/geomodel/releases/tag/v3.0.4"><img src="https://img.shields.io/badge/version-3.0.4-blue.svg" alt="Version 3.0.4"></a>
+  <img src="https://img.shields.io/badge/species-14%2C082-brightgreen" alt="14,082 species">
 </p>
 
 <p align="center">
@@ -82,7 +83,7 @@ A multi-task neural network that learns spatial-temporal patterns from coordinat
 - **Auxiliary task:** Environmental feature regression (training only, acts as regularizer)
 - **Habitat head** (optional, `--habitat_head`): predicted env features → species logits, combined with direct head via learned gate — makes environment→species relationships explicit
 - **Scalable:** ~1.8M (scale=0.5) to ~36M (scale=2.0) parameters with ~12K species (default scale=0.75 ≈ 3.8M)
-- **Tiny footprint:** Under 15 MB (≈ 13 MB at FP16) — replaces hundreds of MB of raw eBird/iNat observation data while interpolating into survey gaps and smoothing geographic biases
+- **Tiny footprint:** Under 15 MB (≈ 7.5 MB for the FP16 ONNX model) — replaces hundreds of MB of raw eBird/iNat observation data while interpolating into survey gaps and smoothing geographic biases
 
 ## Visualization
 

@@ -19,6 +19,7 @@ report/
 
 # Exclude export outputs
 exports/
+release/
 
 # Exclude plots
 outputs/plots/
