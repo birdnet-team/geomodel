@@ -13,7 +13,7 @@ GeoScore is a weighted composite of seven validation metrics, each transformed t
 
 \begin{table}[H]
 \centering
-\caption{GeoScore components, their weights, and the transformation applied to each raw metric. The weighting reflects the priorities of Section~\ref{sec:4-1-geoscore}: ranking quality and spatial equity dominate, while calibration and rare-species performance act as guards against degenerate solutions.}
+\caption{GeoScore components, their weights, and the transformation applied to each raw metric. The weighting reflects the priorities of Section~\ref{sec:geoscore}: ranking quality and spatial equity dominate, while calibration and rare-species performance act as guards against degenerate solutions.}
 \label{tab:geoscore-components}
 \small
 \begin{tabularx}{\linewidth}{lrLLL}
@@ -69,6 +69,7 @@ A4 (aggr) & AN & $\lambda$=16, neg=2048 & 0.350 & 0.536 & 0.260 & 24.76 & 0.689 
 }
 \end{table}
 
+\Needspace*{18\baselineskip}
 \subsection{Stage B --- Model Size $\times$ Habitat/Env Transfer (9 runs)}
 \label{sec:B-2-stage-b-model-size-habitat-env-transfer-}
 
@@ -117,9 +118,9 @@ C (env=0, off) & 0.0 & off & 0.427 & 0.547 & 0.514 & 6.38 & 0.724 & 0.281 & 0.85
 \textbf{C (env=0, on)} & \textbf{0.0} & \textbf{on} & \textbf{0.564} & \textbf{0.694} & \textbf{0.499} & \textbf{4.72} & \textbf{0.638} & \textbf{0.872} & \textbf{0.719} & \textbf{1.212} & \textbf{0.831} \\
 C (env=.01, off) & 0.01 & off & 0.430 & 0.554 & 0.524 & 6.05 & 0.676 & 0.293 & 0.852 & 0.344 & 0.794 \\
 C (env=.01, on) & 0.01 & on & 0.564 & 0.696 & 0.504 & 4.60 & 0.615 & 0.875 & 0.720 & 1.215 & 0.831 \\
-C (env=.1, off) & 0.1 & off & 0.427 & 0.550 & 0.516 & 6.38 & 0.702 & 0.285 & 0.850 & 0.336 & 0.793 \\
+C (env=.1, off) & 0.1 & off & 0.427 & 0.550 & 0.516 & 6.38 & 0.702 & 0.285 & 0.850 & 0.335 & 0.793 \\
 C (env=.1, on) & 0.1 & on & 0.561 & 0.689 & 0.502 & 4.62 & 0.604 & 0.868 & 0.717 & 1.210 & 0.833 \\
-C (env=.5, off) & 0.5 & off & 0.427 & 0.552 & 0.516 & 6.39 & 0.694 & 0.288 & 0.851 & 0.339 & 0.793 \\
+C (env=.5, off) & 0.5 & off & 0.427 & 0.552 & 0.516 & 6.39 & 0.694 & 0.288 & 0.851 & 0.338 & 0.793 \\
 C (env=.5, on) & 0.5 & on & 0.562 & 0.690 & 0.502 & 4.61 & 0.614 & 0.869 & 0.719 & 1.209 & 0.830 \\
 \bottomrule
 \end{tabular}
@@ -133,7 +134,7 @@ Inherited: BCE default, scale 2.0, coordinate-only, no env task, propagation on.
 
 \begin{table}[H]
 \centering
-\caption{Stage D, harmonics sweep (6 runs). Encoding resolution barely matters: GeoScore varies by 0.004 across all six spatial/weekly harmonic combinations, so the smallest setting is retained.}
+\caption{Stage D, harmonics sweep (6 runs). Encoding resolution barely matters: GeoScore varies by 0.004 across all six spatial/weekly harmonic combinations, and the largest setting (eight harmonics each) wins narrowly.}
 \label{tab:stage-d}
 \small
 \resizebox{\linewidth}{!}{%
@@ -152,6 +153,7 @@ D (ch8, wh4) & 8 & 4 & 0.565 & 0.690 & 0.504 & 4.51 & 0.637 & 0.870 & 0.714 & 1.
 }
 \end{table}
 
+\Needspace*{16\baselineskip}
 \subsection{Stage E --- Augmentation and Yearly Encoding (4 runs)}
 \label{sec:B-5-stage-e-augmentation-and-yearly-encoding}
 
@@ -168,8 +170,8 @@ Inherited: full Stage D winner configuration.
 Run & Jitter & Yearly & GeoScore & mAP & F1@10\% & LR@10\% & Watchlist AP & mAP (sparse) & mAP (dense) & Density Ratio & pred--density r \\
 \midrule
 E1 (base) & off & off & 0.565 & 0.698 & 0.508 & 4.47 & 0.614 & 0.877 & 0.720 & 1.218 & 0.827 \\
-\textbf{E2 (jitter)} & \textbf{on} & \textbf{off} & \textbf{0.566} & \textbf{0.697} & \textbf{0.505} & \textbf{4.55} & \textbf{0.634} & \textbf{0.876} & \textbf{0.719} & \textbf{1.218} & \textbf{0.830} \\
-E3 (yearly) & off & on & 0.565 & 0.695 & 0.504 & 4.61 & 0.632 & 0.874 & 0.719 & 1.215 & 0.827 \\
+\textbf{E2 (jitter)} & \textbf{on} & \textbf{off} & \textbf{0.566} & \textbf{0.697} & \textbf{0.505} & \textbf{4.55} & \textbf{0.635} & \textbf{0.876} & \textbf{0.719} & \textbf{1.218} & \textbf{0.830} \\
+E3 (yearly) & off & on & 0.565 & 0.694 & 0.504 & 4.61 & 0.632 & 0.874 & 0.719 & 1.215 & 0.827 \\
 E4 (both) & on & on & 0.565 & 0.695 & 0.507 & 4.55 & 0.615 & 0.873 & 0.718 & 1.215 & 0.826 \\
 \bottomrule
 \end{tabular}
@@ -183,7 +185,7 @@ Inherited: full Stage E winner configuration. Baseline is the E winner (no cap).
 
 \begin{table}[H]
 \centering
-\caption{Stage F, observation cap sweep (3 runs plus baseline). Capping observations per cell is destructive: at cap 500 the model collapses entirely (mAP 0.002), and even cap 50{,}000 loses a third of the uncapped GeoScore. Frequency-based weighting handles the imbalance better than truncation.}
+\caption{Stage F, observation cap sweep (3 runs plus baseline). Capping observations per cell is destructive: at cap 500 the model collapses entirely (mAP 0.002), and even cap 50{,}000 loses a fifth of the uncapped GeoScore and a quarter of its mAP. Frequency-based weighting handles the imbalance better than truncation.}
 \label{tab:stage-f}
 \small
 \resizebox{\linewidth}{!}{%
@@ -209,7 +211,7 @@ Inherited: full Stage F winner configuration. Baseline is the F winner (full voc
 
 \begin{table}[H]
 \centering
-\caption{Stage G, species vocabulary scaling (4 runs plus baseline). Absolute scores fall as the vocabulary grows, which is expected --- the task gets harder --- but the density ratio improves, indicating the gains are not concentrated in well-surveyed regions.}
+\caption{Stage G, species vocabulary scaling (4 runs plus baseline). Absolute scores fall as the vocabulary grows, which is expected --- the task gets harder. The density ratio moves further above 1.0 at the same time, so the sparse quartile is not what the larger vocabularies lose on; all of these runs inherit the Stage F cap, which over-corrects spatial balance in the first place.}
 \label{tab:stage-g}
 \small
 \resizebox{\linewidth}{!}{%
@@ -232,13 +234,14 @@ G (5000 spp) & 5000 & 0.434 & 0.262 & 0.187 & 1.45 & 0.532 & 0.388 & 0.240 & 1.6
 
 Six propagation parameters tuned via TPE sampling with median pruning. Base: Stage E winner. Ecological constraints --- an environmental distance gate and a per-species range cap --- prevent ecologically implausible parameter choices.
 
-The optimization proceeded in two phases. An initial exploratory search (40 trials) used a centroid-based per-species range check: each candidate cell was tested against the distance to the species' geographic centroid. This identified the importance of tight ecological constraints but was found to penalize migratory species whose breeding and wintering grounds lie far from any centroid. A refined search (20 trials) corrected the distance metric to measure proximity to the nearest original observation of the species, providing a more ecologically appropriate criterion.
+The optimization proceeded in two phases. An initial exploratory search of 40 trials ran in three parts: 15 trials over the four unconstrained parameters, which produced the runaway radii discussed in Section~\ref{sec:res-ablation}, followed by 25 trials that added the environmental-distance gate and the per-species range cap. Those 25 used a centroid-based range check, testing each candidate cell against the distance to the species' geographic centroid. This established the importance of tight ecological constraints but was found to penalize migratory species whose breeding and wintering grounds lie far from any centroid. A refined search (20 trials) corrected the distance metric to measure proximity to the nearest original observation of the species, providing a more ecologically appropriate criterion.
 
-\textbf{Phase 1 --- Exploratory search (40 trials).} Top 10 trials by GeoScore:
+\Needspace*{20\baselineskip}
+\textbf{Phase 1 --- Exploratory search (40 trials).} Top 10 trials by GeoScore among the 25 that carried the full ecological constraint set; the 15 unconstrained trials are excluded because their GeoScore was computed over a reduced component set and is not comparable:
 
 \begin{table}[H]
 \centering
-\caption{Stage H, exploratory propagation search: the ten best of 40 TPE trials. The sparsity threshold and range cap dominate; $k$ and the environmental distance gate are comparatively free parameters.}
+\caption{Stage H, exploratory propagation search: the ten best of the 25 ecologically constrained TPE trials. The sparsity threshold and range cap dominate; $k$ and the environmental distance gate are comparatively free parameters.}
 \label{tab:stage-h1}
 \small
 \begin{tabular}{rrrrrrrr}
@@ -265,7 +268,7 @@ The exploratory search established that the sparsity threshold and range cap are
 
 \begin{table}[H]
 \centering
-\caption{Stage H, refined propagation search with the corrected distance metric (20 trials). The top three configurations converge on a range cap near 1{,}100\,km and a sparsity threshold of 15--16, which is the configuration used in production.}
+\caption{Stage H, refined propagation search with the corrected distance metric: the ten best of 20 TPE trials. With propagation measured from the nearest original observation the optimum moves to a larger range cap (1{,}260--1{,}471\,km across the top three) and a lower sparsity threshold (8--12) than the exploratory search found. Trial 15 is the configuration used in production.}
 \label{tab:stage-h2}
 \small
 \begin{tabular}{rrrrrrrr}
@@ -290,35 +293,26 @@ Trial & GeoScore & $k$ & Radius (km) & Sparsity thresh. & Range spread & Env. di
 \section{Watchlist Species}
 \label{sec:C-watchlist-species}
 
-The watchlist comprises 18 endemic or restricted-range species selected to probe model behavior on geographically constrained distributions. Mean AP is computed per species and averaged across the watchlist to produce the Watchlist AP metric.
+The watchlist comprises 18 endemic or restricted-range species that probe model behavior on geographically constrained distributions. Mean AP is computed per species and averaged to produce the Watchlist AP metric.
 
 \begin{table}[H]
 \centering
-\caption{The 18 watchlist species: endemic and restricted-range taxa from three island archipelagos, plus a small set of otherwise restricted-range or critically endangered taxa. Mean AP across this set forms the watchlist component of GeoScore.}
+\caption{The 18 watchlist species: island endemics from three archipelagos plus a few restricted-range taxa.}
 \label{tab:watchlist}
 \small
-\begin{tabular}{lll}
+\begin{tabular}{lll@{\qquad}lll}
 \toprule
-Code & Common Name & Region \\
+Code & Common Name & Region & Code & Common Name & Region \\
 \midrule
-hawgoo & Hawaiian Goose & Hawaii \\
-hawhaw & Hawaiian Hawk & Hawaii \\
-elepai & Hawaii Elepaio & Hawaii \\
-apapan & Apapane & Hawaii \\
-iiwi & Iiwi & Hawaii \\
-hawama & Hawaii Amakihi & Hawaii \\
-kea1 & Kea & New Zealand \\
-nibkiw1 & North Island Brown Kiwi & New Zealand \\
-takahe3 & South Island Takahe & New Zealand \\
-riflem1 & Rifleman & New Zealand \\
-tui1 & Tui & New Zealand \\
-kokako3 & North Island Kokako & New Zealand \\
-galhaw1 & Galápagos Hawk & Galápagos \\
-galrai1 & Galápagos Rail & Galápagos \\
-galpet & Galápagos Petrel & Galápagos \\
-kagu1 & Kagu & New Caledonia \\
-calcon & California Condor & California \\
-whocra & Whooping Crane & North America \\
+hawgoo & Hawaiian Goose & Hawaii & riflem1 & Rifleman & New Zealand \\
+hawhaw & Hawaiian Hawk & Hawaii & tui1 & Tui & New Zealand \\
+elepai & Hawaii Elepaio & Hawaii & kokako3 & North Island Kokako & New Zealand \\
+apapan & Apapane & Hawaii & galhaw1 & Galápagos Hawk & Galápagos \\
+iiwi & Iiwi & Hawaii & galrai1 & Galápagos Rail & Galápagos \\
+hawama & Hawaii Amakihi & Hawaii & galpet & Galápagos Petrel & Galápagos \\
+kea1 & Kea & New Zealand & kagu1 & Kagu & New Caledonia \\
+nibkiw1 & North Island Brown Kiwi & New Zealand & calcon & California Condor & California \\
+takahe3 & South Island Takahe & New Zealand & whocra & Whooping Crane & North America \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -331,7 +325,7 @@ The Bayesian search framework supports 23 tunable parameters. Stage H tunes the 
 
 \begin{table}[H]
 \centering
-\caption{Hyperparameter search space for the Bayesian optimization framework. Stage H tunes only the six propagation parameters; the remaining entries are available for general hyperparameter optimization.}
+\caption{Hyperparameter search space for the Bayesian optimization framework.}
 \label{tab:search-space}
 \small
 \begin{tabular}{llll}
@@ -366,16 +360,29 @@ propagate\_range\_cap & float & [200, 2000] & linear \\
 \end{table}
 
 
-%% TODO: this appendix is empty in the source draft (format-specific tolerances and
-%% validation methodology were never written). Commented out so the PDF does not show
-%% a bare heading; restore the two lines below once the content exists.
-%\section{Export Validation Tolerances}
-%\label{sec:E-export-validation-tolerances}
+\section{Refuted Design Choices: The Habitat Head}
+\label{sec:E-refuted-design-choices}
+
+Hypothesis H3 held that routing predicted environmental features through a secondary species classifier would improve transfer to under-observed regions, by giving the model an explicit habitat pathway rather than relying on coordinates alone. It does not, at any model scale, and the head is absent from the production model. We record its definition and results here because the negative result is informative: it is the strongest evidence that the encoder already internalizes environmental structure from species co-occurrence.
+
+\textbf{Definition.} When enabled, the predicted environmental features are routed through a secondary species head whose logits are combined with those of the direct species head via a learned per-species gate:
+
+\begin{equation*}
+g_s = \sigma(W_g \cdot \mathbf{e} + b_g), \qquad
+\hat{y}_s = g_s \cdot \hat{y}_s^\text{direct} + (1 - g_s) \cdot \hat{y}_s^\text{habitat}
+\end{equation*}
+
+where $\mathbf{e}$ is the encoder embedding and $g_s \in (0, 1)$ is a per-species gate. The gate bias is initialized positive so that the direct head dominates early in training and the habitat pathway contributes only once the environmental predictions become reliable. Environmental features are detached before the habitat head to prevent species-loss gradients from interfering with the regression objective.
+
+The same species loss is applied directly to the habitat head's logits before gating, which gives the habitat pathway an independent learning signal. Without it the head would receive gradients only through a gate initialized to favor the direct head, and the two would deadlock: no gradient to learn from, and no reason for the gate to open.
+
+\textbf{Result.} Across the three scales tested in Stage B (Table~\ref{tab:stage-b}), the habitat configuration never wins: 0.410 versus 0.408 (coordinate-only) at scale 0.5, 0.419 versus 0.420 at scale 1.0, and 0.424 versus 0.431 at scale 2.0. The gap widens with scale, which is consistent with larger models having less need for an explicit habitat pathway. The head adds parameters, a third loss term, and a gating schedule for no measurable return.
+
 
 \section{Post-Filter Study: Selection and Sampling}
 \label{sec:F-post-filter-study-selection-and-sampling}
 
-Supporting detail for Section~\ref{sec:7-post-filter-study-on-birdnet-app-submiss}
+Supporting detail for the post-filter study of Sections~\ref{sec:protocols} and~\ref{sec:res-filter}.
 
 \subsection{Selection criteria}
 \label{sec:F-1-selection-criteria}
@@ -442,7 +449,14 @@ Other & 0.0\% & 0.7\% \\
 \end{tabular}
 \end{table}
 
-Europe still leads because H3 cells are equal-area units and Europe simply occupies more of them than Oceania does, but its share falls by a factor of 2.1 while the four under-represented regions gain five- to thirteen-fold.
+Europe still leads because H3 cells are equal-area units and Europe simply occupies more of them than Oceania does, but its share falls by a factor of 2.1 while the four under-represented regions gain roughly five- to fourteen-fold.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\linewidth]{figures/filter_study_sample_map.pdf}
+\caption{The study set: 100,032 BirdNET app submissions from 2025, drawn with an equal quota per occupied H3 resolution-2 cell. What remains visible is the residual density within regions, since the quota equalises cells rather than area.}
+\label{fig:sample-map}
+\end{figure}
 
 \subsection{Classification}
 \label{sec:F-3-classification}
@@ -452,7 +466,7 @@ Each recording's centered 3 s window is decoded to mono and resampled to 32 kHz,
 
 \begin{table}[H]
 \centering
-\caption{Rejection rate by region at $t = 0.15$ (see Section~\ref{sec:7-4-caveats}).}
+\caption{Rejection rate by region at $t = 0.15$ (see Sections~\ref{sec:res-filter} and~\ref{sec:disc-practice}).}
 \label{tab:f-3}
 \small
 \begin{tabular}{lrrr}
@@ -469,4 +483,138 @@ Other & 651 & 1,930 & 55.6\% \\
 \bottomrule
 \end{tabular}
 \end{table}
+
+
+\Needspace*{34\baselineskip}
+\section{Data Pipeline}
+\label{sec:G-data-pipeline-diagram}
+
+Figure~\ref{fig:pipeline} summarizes the sequence described in Section~\ref{sec:data}.
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[
+  font=\small,
+  node distance=7mm and 10mm,
+  box/.style={draw, rounded corners=2pt, align=center, inner sep=3pt,
+              minimum height=7mm, fill=gray!5},
+  src/.style={box, fill=blue!8},
+  data/.style={box, fill=orange!12},
+  outbox/.style={box, fill=green!10},
+  ->, >=latex, thick,
+]
+% --- sources ---
+\node[src] (gbif) {GBIF Darwin Core Archive\\(eBird, iNaturalist, observation.org)};
+\node[src, right=of gbif] (gee) {Google Earth Engine};
+
+% --- per-source processing ---
+\node[box, below=of gbif] (filter) {Filter and clean\\(taxonomy, coordinates, dates)};
+\node[box, below=of gee] (h3env) {H3 grid +\\environmental sampling};
+
+\node[box, below=of $(filter)!0.5!(h3env)$] (combine) {Merge into H3 cells};
+\node[data, below=of combine] (parquet) {Parquet dataset:\\H3 cells $\times$ 48 weeks\\$\times$ species lists + env.\ features};
+\node[box, below=of parquet] (flatten) {Flatten to samples\\(lat, lon, week, species, env.)};
+\node[box, below=of flatten] (prop) {Label propagation\\(env.-space $k$-NN)};
+\node[box, below=of prop] (pre) {Normalize, encode,\\location-based split};
+
+% --- outputs ---
+\node[outbox, below left=9mm and 8mm of pre] (train) {Training set};
+\node[outbox, below=9mm of pre] (val) {Validation set};
+\node[outbox, below right=9mm and 8mm of pre] (hold) {Holdout regions\\(optional)};
+
+\draw (gbif) -- (filter);
+\draw (gee) -- (h3env);
+\draw (filter) -- (combine);
+\draw (h3env) -- (combine);
+\draw (combine) -- (parquet);
+\draw (parquet) -- (flatten);
+\draw (flatten) -- (prop);
+\draw (prop) -- (pre);
+\draw (pre) -- (train);
+\draw (pre) -- (val);
+\draw (pre) -- (hold);
+\end{tikzpicture}
+\caption{Data pipeline. Occurrence records from the GBIF Darwin Core Archive and
+environmental layers from Google Earth Engine are merged into H3 cells, expanded to
+weekly samples, and augmented by label propagation in environmental space before the
+location-based train/validation/holdout split.}
+\label{fig:pipeline}
+\end{figure}
+
+
+\Needspace*{24\baselineskip}
+\section{eBird Status and Trends: Full Results}
+\label{sec:H-ebirdst-full-results}
+
+Per-species metrics and additional range overlap maps supporting Section~\ref{sec:res-ebirdst}.
+
+\begin{table}[H]
+\centering
+\caption{Range overlap with eBird Status and Trends on a 0.5\textdegree{} grid at threshold 0.15 (production model, scale 0.75). Recall exceeds precision in 15 of 20 comparisons, which is the model over-predicting at range margins rather than missing core range. AUC, which needs no threshold, stays above 0.94 everywhere except Northern Wheatear in July.}
+\label{tab:ebirdst}
+\footnotesize
+\begin{tabular}{l rrrrr rrrrr}
+\toprule
+& \multicolumn{5}{c}{Week 1 (January)} & \multicolumn{5}{c}{Week 26 (July)} \\
+\cmidrule(lr){2-6}\cmidrule(l){7-11}
+Species & Jacc. & Prec. & Rec. & F1 & AUC & Jacc. & Prec. & Rec. & F1 & AUC \\
+\midrule
+Amur Falcon & 0.709 & 0.727 & 0.966 & 0.830 & 0.994 & 0.648 & 0.870 & 0.718 & 0.787 & 0.992 \\
+Blue-and-yellow Macaw & 0.690 & 0.705 & 0.970 & 0.817 & 0.974 & 0.720 & 0.741 & 0.963 & 0.837 & 0.974 \\
+Bobolink & 0.767 & 0.885 & 0.852 & 0.868 & 1.000 & 0.591 & 0.619 & 0.928 & 0.743 & 0.972 \\
+Common Swift & 0.764 & 0.930 & 0.811 & 0.866 & 0.993 & 0.767 & 0.783 & 0.975 & 0.868 & 0.943 \\
+European Bee-eater & 0.795 & 0.908 & 0.865 & 0.886 & 0.988 & 0.772 & 0.804 & 0.951 & 0.871 & 0.981 \\
+Northern Cardinal & 0.590 & 0.596 & 0.983 & 0.742 & 0.974 & 0.684 & 0.696 & 0.976 & 0.812 & 0.989 \\
+Northern Wheatear & 0.483 & 0.667 & 0.636 & 0.651 & 0.979 & 0.657 & 0.685 & 0.942 & 0.793 & 0.880 \\
+Ruby-throated Hummingbird & 0.407 & 0.414 & 0.959 & 0.578 & 0.988 & 0.651 & 0.654 & 0.993 & 0.789 & 0.983 \\
+Rufous Hummingbird & 0.199 & 0.210 & 0.787 & 0.331 & 0.964 & 0.570 & 0.571 & 0.998 & 0.726 & 0.979 \\
+Wilson's Warbler & 0.522 & 0.538 & 0.944 & 0.686 & 0.989 & 0.651 & 0.659 & 0.982 & 0.789 & 0.968 \\
+\midrule
+\textbf{Mean (20 pairs)} & \multicolumn{10}{c}{Jaccard \textbf{0.632} \quad Precision \textbf{0.683} \quad Recall \textbf{0.910} \quad F1 \textbf{0.764} \quad AUC \textbf{0.975}} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Figure~\ref{fig:rangemaps} in Section~\ref{sec:res-ebirdst} shows three long-distance migrants; Figure~\ref{fig:rangemaps-residents} below shows two residents and one medium-distance migrant at the same two weeks. The remaining four comparison species follow the same patterns and are omitted for space. Colors are as in Figure~\ref{fig:rangemaps}: purple marks cells the geomodel predicts but S\&T does not, green marks cells S\&T reports but the geomodel misses, yellow marks agreement.
+
+\begin{figure}[H]
+\centering
+\begin{subfigure}[t]{0.30\linewidth}
+  \includegraphics[width=\linewidth]{figures/ebirdst_baymac_week1.png}
+  \caption{Blue-and-yellow Macaw, week 1}
+\end{subfigure}
+\hfill
+\begin{subfigure}[t]{0.30\linewidth}
+  \includegraphics[width=\linewidth]{figures/ebirdst_norcar_week1.png}
+  \caption{Northern Cardinal, week 1}
+\end{subfigure}
+\hfill
+\begin{subfigure}[t]{0.30\linewidth}
+  \includegraphics[width=\linewidth]{figures/ebirdst_rthhum_week1.png}
+  \caption{Ruby-throated Hummingbird, week 1}
+\end{subfigure}
+
+\vspace{6pt}
+
+\begin{subfigure}[t]{0.30\linewidth}
+  \includegraphics[width=\linewidth]{figures/ebirdst_baymac_week26.png}
+  \caption{Blue-and-yellow Macaw, week 26}
+\end{subfigure}
+\hfill
+\begin{subfigure}[t]{0.30\linewidth}
+  \includegraphics[width=\linewidth]{figures/ebirdst_norcar_week26.png}
+  \caption{Northern Cardinal, week 26}
+\end{subfigure}
+\hfill
+\begin{subfigure}[t]{0.30\linewidth}
+  \includegraphics[width=\linewidth]{figures/ebirdst_rthhum_week26.png}
+  \caption{Ruby-throated Hummingbird, week 26}
+\end{subfigure}
+\caption{Range overlap for two residents and one medium-distance migrant, January (top) and July
+(bottom). The residents are nearly identical across seasons (Jaccard 0.690 versus 0.720 and 0.590
+versus 0.684), so weekly conditioning invents no spurious seasonality. Ruby-throated Hummingbird
+shows the study's typical winter failure mode: the January panel over-predicts across Central
+America, where S\&T concentrates the species into a narrower wintering band.}
+\label{fig:rangemaps-residents}
+\end{figure}
 
