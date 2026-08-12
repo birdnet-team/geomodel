@@ -115,5 +115,6 @@ nav:
   - Community:
       - Contributing: community/contributing.md
       - Code of Conduct: community/code-of-conduct.md
+      - Acceptable Use: community/acceptable-use.md
       - Security: community/security.md
       - Citation: community/citation.md

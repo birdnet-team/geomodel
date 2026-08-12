@@ -589,13 +589,16 @@ def convert(
         shutil.copy2(labels_src, outpath / "labels.txt")
         print(f"Copied {labels_src.name} → {outpath / 'labels.txt'}")
 
-    # Copy MODEL_LICENSE.txt alongside exports
-    license_src = Path(__file__).resolve().parent / "MODEL_LICENSE.txt"
-    if license_src.exists():
+    # Copy the model license and acceptable-use guidance alongside exports
+    project_root = Path(__file__).resolve().parent
+    for document_name in ("LICENSE-MODELS.md", "ACCEPTABLE_USE.md"):
+        document_src = project_root / document_name
+        if not document_src.exists():
+            continue
         import shutil
 
-        shutil.copy2(license_src, outpath / "MODEL_LICENSE.txt")
-        print(f"Copied MODEL_LICENSE.txt → {outpath / 'MODEL_LICENSE.txt'}")
+        shutil.copy2(document_src, outpath / document_name)
+        print(f"Copied {document_name} → {outpath / document_name}")
 
     # Run conversions
     results: dict[str, tuple[bool, float]] = {}

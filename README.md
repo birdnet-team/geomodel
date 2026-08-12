@@ -5,7 +5,8 @@
 <h1 align="center">BirdNET Geomodel</h1>
 
 <p align="center">
-  <a href="https://github.com/birdnet-team/geomodel/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/Code-MIT-green.svg" alt="Code license: MIT"></a>
+  <a href="LICENSE-MODELS.md"><img src="https://img.shields.io/badge/Models-Apache--2.0-green.svg" alt="Model license: Apache 2.0"></a>
   <a href="https://www.python.org/"><img src="https://img.shields.io/badge/python-3.10+-blue.svg" alt="Python 3.10+"></a>
   <a href="https://pytorch.org/"><img src="https://img.shields.io/badge/PyTorch-2.0+-ee4c2c.svg" alt="PyTorch"></a>
   <a href="https://birdnet-team.github.io/geomodel/"><img src="https://img.shields.io/badge/docs-mkdocs-blue.svg" alt="Documentation"></a>
@@ -177,9 +178,13 @@ Then open <http://localhost:8000/demo/> in your browser.
 
 ## License
 
-The source code is licensed under the MIT License — see the [LICENSE](LICENSE) file for details.
+The source code is licensed under the [MIT License](LICENSE).
 
-Trained model weights are licensed under [Creative Commons Attribution-ShareAlike 4.0 International (CC BY-SA 4.0)](https://creativecommons.org/licenses/by-sa/4.0/). See [TERMS_OF_USE.md](TERMS_OF_USE.md) for full terms.
+Model artifacts—including checkpoints, converted models, and labels—are licensed under the [Apache License 2.0](LICENSE-MODELS.md).
+
+## Acceptable Use
+
+BirdNET is built to support biodiversity research and conservation. See the [BirdNET Acceptable Use Policy](ACCEPTABLE_USE.md) for responsible-use guidance, uses we consider unacceptable, and branding guidance. The policy is guidance and does not add conditions to the Apache 2.0 model license.
 
 ## Funding
 

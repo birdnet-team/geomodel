@@ -65,5 +65,8 @@ graph LR
 
 The source code is licensed under the [MIT License](https://github.com/birdnet-team/geomodel/blob/main/LICENSE).
 
-Trained model weights are licensed under [Creative Commons Attribution-ShareAlike 4.0 International (CC BY-SA 4.0)](https://creativecommons.org/licenses/by-sa/4.0/).
-See the [Terms of Use](https://github.com/birdnet-team/geomodel/blob/main/TERMS_OF_USE.md) for full terms.
+Model artifacts—including checkpoints, converted models, and labels—are licensed under the [Apache License 2.0](https://github.com/birdnet-team/geomodel/blob/main/LICENSE-MODELS.md).
+
+## Acceptable Use
+
+BirdNET is built to support biodiversity research and conservation. See the [BirdNET Acceptable Use Policy](community/acceptable-use.md) for responsible-use guidance, uses we consider unacceptable, and branding guidance. The policy is guidance and does not add conditions to the Apache 2.0 model license.

@@ -123,7 +123,8 @@ exports/
 ├── geomodel.pt              # TorchScript (traced + frozen)
 ├── saved_model/             # TF SavedModel
 ├── labels.txt               # Species vocabulary (copied from checkpoint dir)
-└── MODEL_LICENSE.txt        # Model weights license (CC BY-SA 4.0)
+├── LICENSE-MODELS.md        # Apache 2.0 license for model artifacts
+└── ACCEPTABLE_USE.md        # Responsible-use guidance
 ```
 
 ## Running Exported Models
