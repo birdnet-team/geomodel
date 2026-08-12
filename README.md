@@ -5,11 +5,13 @@
 <h1 align="center">BirdNET Geomodel</h1>
 
 <p align="center">
-  <a href="https://github.com/birdnet-team/geomodel/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/Code-MIT-green.svg" alt="Code license: MIT"></a>
+  <a href="LICENSE-MODELS.md"><img src="https://img.shields.io/badge/Models-Apache--2.0-green.svg" alt="Model license: Apache 2.0"></a>
   <a href="https://www.python.org/"><img src="https://img.shields.io/badge/python-3.10+-blue.svg" alt="Python 3.10+"></a>
   <a href="https://pytorch.org/"><img src="https://img.shields.io/badge/PyTorch-2.0+-ee4c2c.svg" alt="PyTorch"></a>
   <a href="https://birdnet-team.github.io/geomodel/"><img src="https://img.shields.io/badge/docs-mkdocs-blue.svg" alt="Documentation"></a>
-  <img src="https://img.shields.io/badge/species-12%2C313-brightgreen" alt="12,313 species">
+  <a href="https://github.com/birdnet-team/geomodel/releases/tag/v3.0.4"><img src="https://img.shields.io/badge/version-3.0.4-blue.svg" alt="Version 3.0.4"></a>
+  <img src="https://img.shields.io/badge/species-14%2C082-brightgreen" alt="14,082 species">
 </p>
 
 <p align="center">
@@ -82,7 +84,7 @@ A multi-task neural network that learns spatial-temporal patterns from coordinat
 - **Auxiliary task:** Environmental feature regression (training only, acts as regularizer)
 - **Habitat head** (optional, `--habitat_head`): predicted env features → species logits, combined with direct head via learned gate — makes environment→species relationships explicit
 - **Scalable:** ~1.8M (scale=0.5) to ~36M (scale=2.0) parameters with ~12K species (default scale=0.75 ≈ 3.8M)
-- **Tiny footprint:** Under 15 MB (≈ 13 MB at FP16) — replaces hundreds of MB of raw eBird/iNat observation data while interpolating into survey gaps and smoothing geographic biases
+- **Tiny footprint:** Under 15 MB (≈ 7.5 MB for the FP16 ONNX model) — replaces hundreds of MB of raw eBird/iNat observation data while interpolating into survey gaps and smoothing geographic biases
 
 ## Visualization
 
@@ -176,9 +178,13 @@ Then open <http://localhost:8000/demo/> in your browser.
 
 ## License
 
-The source code is licensed under the MIT License — see the [LICENSE](LICENSE) file for details.
+The source code is licensed under the [MIT License](LICENSE).
 
-Trained model weights are licensed under [Creative Commons Attribution-ShareAlike 4.0 International (CC BY-SA 4.0)](https://creativecommons.org/licenses/by-sa/4.0/). See [TERMS_OF_USE.md](TERMS_OF_USE.md) for full terms.
+Model artifacts—including checkpoints, converted models, and labels—are licensed under the [Apache License 2.0](LICENSE-MODELS.md).
+
+## Acceptable Use
+
+BirdNET is built to support biodiversity research and conservation. See the [BirdNET Acceptable Use Policy](ACCEPTABLE_USE.md) for responsible-use guidance, uses we consider unacceptable, and branding guidance. The policy is guidance and does not add conditions to the Apache 2.0 model license.
 
 ## Funding
 

@@ -35,6 +35,8 @@
 \usepackage{caption}
 \usepackage{subcaption}
 \usepackage{float}
+% Keeps a short lead-in sentence on the same page as the table it introduces.
+\usepackage{needspace}
 % Do not stretch short pages to full height; the alternative leaves large gaps
 % around figures. Appendix tables are pinned with [H] instead of relying on
 % float barriers, which forced half-empty pages before section breaks.
@@ -108,26 +110,28 @@
 
 \begin{abstract}
 Species distribution models are essential tools for biodiversity monitoring and
-conservation planning, yet most require environmental covariates at inference time and
-model one species at a time, which makes them impractical as a component of a real-time
-acoustic classification pipeline. We present BirdNET Geomodel, a multi-task neural
-network that predicts weekly occurrence probabilities for over 10,000 species ---
-birds as well as non-avian taxa --- from latitude, longitude, and week of year alone.
-A shared encoder with multi-harmonic coordinate encoding and FiLM-based temporal
-conditioning feeds a species head and an auxiliary environmental head; the resulting
-model occupies roughly 7\,MB in FP16 and runs on mobile and embedded devices. A staged
-ablation identifies label propagation in environmental space as the dominant design
-choice, tripling mean average precision in sparsely observed regions, and shows that the
-loss function governs probability calibration far more than species ranking. Compared
-against eBird Status and Trends, the model reproduces range geometry and seasonal
-migration without environmental inputs, reaching a mean AUC of 0.975 across ten species
-at two contrasting times of year. Applied as a post-filter to a globally balanced sample
-of BirdNET app submissions, it rejects roughly a quarter of the classifier's second- and
-third-ranked candidates but under 5\% of top-1 predictions, and only 2\% of those the
-classifier is confident about. The model is therefore best understood not as a range map
-but as a plausibility filter: over-inclusive by design, inexpensive enough to run
-everywhere, and accurate enough to remove implausible identifications without
-contradicting confident ones.
+conservation planning. Almost all of them share three properties that make them
+impractical inside a real-time acoustic classification pipeline: they model one species
+at a time, they produce a single static range surface with no temporal dimension, and
+they require environmental covariates at inference. We present BirdNET Geomodel, a
+multi-task neural network that predicts occurrence probability jointly for over 10,000
+species (birds and non-avian taxa) and for each of 48 weeks of the year, from latitude,
+longitude, and week alone. One set of weights therefore yields 48 occurrence surfaces per
+species, capturing migration, breeding phenology, and seasonal range contraction without
+fitting a separate model per species or per time slice. A shared encoder with
+multi-harmonic coordinate encoding and FiLM-based temporal conditioning feeds a species
+head and an auxiliary environmental head; the resulting model occupies roughly 7\,MB in
+FP16 and runs on mobile and embedded devices. A staged ablation identifies ecologically
+constrained label propagation as the dominant design choice, tripling mean average
+precision in sparsely observed regions, and shows that the loss function governs
+probability calibration far more than species ranking. Against eBird Status and Trends,
+the model reproduces range geometry and seasonal migration without environmental inputs,
+reaching a mean AUC of 0.975 across ten species at two contrasting times of year. We then
+apply it as a post-filter to the top-3 predictions of the BirdNET classifier on 100,032
+globally balanced app submissions: it removes about a quarter of the classifier's second-
+and third-ranked alternatives, but leaves 95\% of its primary identifications and 98\% of
+its high-confidence predictions untouched. The filter acts on the uncertain tail of the
+candidate list and rarely contradicts a confident prediction.
 \end{abstract}
 
 \keywords{species distribution modeling \and deep learning \and implicit neural

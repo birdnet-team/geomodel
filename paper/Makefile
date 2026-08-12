@@ -13,7 +13,7 @@ LATEXMK := latexmk -pdf -interaction=nonstopmode -file-line-error
 
 all: $(MAIN).pdf
 
-$(MAIN).pdf: $(MAIN).tex body.tex references.bib arxiv.sty $(wildcard figures/*)
+$(MAIN).pdf: $(MAIN).tex body.tex appendix.tex references.bib arxiv.sty $(wildcard figures/*)
 	$(LATEXMK) $(MAIN).tex
 
 watch:
