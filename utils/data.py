@@ -1527,12 +1527,27 @@ class H3DataPreprocessor:
         targets: Dict[str, Any],
         val_size: float = 0.1,
         random_state: int = 42,
-        split_by_location: bool = True,
+        split_mode: str = 'location',
+        block_h3_res: int = 3,
+        split_by_location: Optional[bool] = None,
         **kwargs,
     ) -> Tuple:
-        """Split into train/val (optionally grouped by location to prevent leakage).
+        """Split into train/val, grouping to control spatial leakage.
 
-        Handles both dense ndarray and sparse list-of-arrays species targets.
+        ``split_mode``:
+          - ``'random'``: independent per-sample split (leaks via spatial
+            autocorrelation; inflates validation scores).
+          - ``'location'``: group by exact coordinate so an identical point
+            cannot straddle the split (default; still leaks between nearby
+            distinct points).
+          - ``'block'``: group by a coarse H3 cell (``block_h3_res``) so whole
+            geographic blocks go to either train or val and no validation block
+            touches a training block. Honest spatial-generalisation estimate.
+
+        ``split_by_location`` is the legacy boolean; when given it maps to
+        ``'location'`` (True) / ``'random'`` (False) and overrides ``split_mode``.
+
+        Handles both dense ndarray and sparse packed species targets.
 
         Returns:
             (train_inputs, val_inputs, train_targets, val_targets)
@@ -1540,24 +1555,41 @@ class H3DataPreprocessor:
         # Accept (and ignore) legacy test_size kwarg for backward compat
         _ = kwargs.pop('test_size', None)
 
+        # Legacy boolean takes precedence so existing callers keep their behaviour.
+        if split_by_location is not None:
+            split_mode = 'location' if split_by_location else 'random'
+
         n_samples = len(inputs['lat'])
         indices = np.arange(n_samples)
 
-        if split_by_location:
-            coord_tuples = list(zip(inputs['lat'].tolist(), inputs['lon'].tolist()))
-            unique_map: Dict[tuple, int] = {}
-            loc_ids = np.array([unique_map.setdefault(c, len(unique_map)) for c in coord_tuples])
-            unique_locs = np.unique(loc_ids)
+        if split_mode in ('location', 'block'):
+            if split_mode == 'block':
+                lats = inputs['lat'].tolist()
+                lons = inputs['lon'].tolist()
+                group_keys = [h3.latlng_to_cell(float(la), float(lo), block_h3_res)
+                              for la, lo in zip(lats, lons)]
+            else:  # 'location'
+                group_keys = list(zip(inputs['lat'].tolist(), inputs['lon'].tolist()))
 
-            locs_train, locs_val = train_test_split(
-                unique_locs, test_size=val_size, random_state=random_state
+            # Map each distinct group key to a small integer id for fast np.isin.
+            unique_map: Dict[Any, int] = {}
+            group_ids = np.array([unique_map.setdefault(k, len(unique_map))
+                                  for k in group_keys])
+            unique_groups = np.unique(group_ids)
+
+            groups_train, groups_val = train_test_split(
+                unique_groups, test_size=val_size, random_state=random_state
             )
-            train_mask = np.isin(loc_ids, locs_train)
-            val_mask = np.isin(loc_ids, locs_val)
-        else:
+            train_mask = np.isin(group_ids, groups_train)
+            val_mask = np.isin(group_ids, groups_val)
+        elif split_mode == 'random':
             idx_train, idx_val = train_test_split(indices, test_size=val_size, random_state=random_state)
             train_mask = np.isin(indices, idx_train)
             val_mask = np.isin(indices, idx_val)
+        else:
+            raise ValueError(
+                f"unknown split_mode {split_mode!r}; expected "
+                "'random', 'location', or 'block'")
 
         def _split_dict(d: Dict[str, Any], mask: np.ndarray) -> Dict[str, Any]:
             out = {}
