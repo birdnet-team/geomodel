@@ -949,6 +949,11 @@ def main():
                         help='Number of negative species to sample per example for AN loss (default: 1024, 0=all)')
     parser.add_argument('--label_smoothing', type=float, default=0.05,
                         help='Smooth binary targets to prevent overconfident predictions (default: 0.05, 0=off)')
+    parser.add_argument('--class_loss_weight', type=str, default=None,
+                        help='Per-CLASS loss multiplier(s) at the LOSS level, e.g. '
+                             '"mammalia=6.0" or "mammalia=6,amphibia=2". Up-weights those '
+                             'classes in the species loss (not the target value). Counters '
+                             'a bird-dominated loss for under-represented taxa. Default off.')
     parser.add_argument('--max_obs_per_species', type=int, default=0,
                         help='Cap observations per species to reduce common-species dominance (default: 0, 0=no cap)')
     parser.add_argument('--min_obs_per_species', type=int, default=50,
@@ -1485,6 +1490,7 @@ def main():
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
     labels_path = checkpoint_dir / 'labels.txt'
     name_map: Dict[str, tuple] = {}  # primaryId → (sciName, comName)
+    class_map: Dict[str, str] = {}   # primaryId → class_name (lowercase)
 
     taxonomy_path = args.taxonomy
     if taxonomy_path is None:
@@ -1509,8 +1515,11 @@ def main():
                 pid = row.get('species_code') or row.get('primaryId')
                 sci = row.get('sci_name') or row.get('scientificName')
                 com = row.get('com_name') or row.get('commonName', sci)
+                cls = (row.get('class_name') or '').strip().lower()
                 if pid and sci:
                     name_map[pid] = (sci, com)
+                if pid and cls:
+                    class_map[pid] = cls
     else:
         print("\n7. No taxonomy file found — labels will use primaryId only")
 
@@ -1521,6 +1530,28 @@ def main():
             f.write(f"{pid}\t{sci}\t{com}\n")
     named = sum(1 for idx in range(n_species) if preprocessor.idx_to_species[idx] in name_map)
     print(f"   Saved {n_species} labels ({named} with names) to {labels_path}")
+
+    # -- Per-class loss multiplier (loss level, NOT target value) --
+    class_loss_weight_vec = None
+    if args.class_loss_weight:
+        cw = {}
+        for part in args.class_loss_weight.split(','):
+            k, _, v = part.partition('=')
+            if k.strip():
+                cw[k.strip().lower()] = float(v)
+        w = torch.ones(n_species, dtype=torch.float32)
+        n_boost = 0
+        for idx in range(n_species):
+            cls = class_map.get(preprocessor.idx_to_species[idx])
+            if cls in cw:
+                w[idx] = cw[cls]
+                n_boost += 1
+        class_loss_weight_vec = w
+        print(f"   Class loss weights {cw}: boosted {n_boost}/{n_species} species "
+              f"(loss-level multiplier)")
+        if n_boost == 0:
+            print("   WARNING: no species matched the requested classes — "
+                  "check class_name in the taxonomy file")
 
     # -- Criterion, optimizer, scheduler --
     criterion = MultiTaskLoss(
@@ -1533,7 +1564,10 @@ def main():
         asl_gamma_pos=args.asl_gamma_pos,
         asl_gamma_neg=args.asl_gamma_neg,
         asl_clip=args.asl_clip,
+        class_loss_weight=class_loss_weight_vec,
     )
+    # Move criterion to device so its weight/pos_weight buffers live on the GPU.
+    criterion = criterion.to(device)
     optimizer = torch.optim.AdamW(
         model.parameters(), lr=args.lr, weight_decay=args.weight_decay,
     )

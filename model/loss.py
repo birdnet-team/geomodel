@@ -40,6 +40,7 @@ def focal_loss(
     alpha: float = 0.25,
     gamma: float = 2.0,
     reduction: str = 'mean',
+    weight: Optional[torch.Tensor] = None,
 ) -> torch.Tensor:
     """
     Focal loss for multi-label classification.
@@ -48,12 +49,18 @@ def focal_loss(
     critical for species occurrence data where >99% of labels are 0.
 
     Reference: Lin et al., "Focal Loss for Dense Object Detection" (2017)
+
+    ``weight`` (optional, shape ``(n_species,)``) is a per-species multiplier
+    applied before reduction, e.g. to up-weight an under-represented class at
+    the loss level. Broadcasts over the batch dimension.
     """
     probs = torch.sigmoid(logits)
     bce = F.binary_cross_entropy_with_logits(logits, targets, reduction='none')
     p_t = probs * targets + (1 - probs) * (1 - targets)
     alpha_t = alpha * targets + (1 - alpha) * (1 - targets)
     loss = alpha_t * ((1 - p_t) ** gamma) * bce
+    if weight is not None:
+        loss = loss * weight  # (n_species,) broadcasts over (batch, n_species)
 
     if reduction == 'mean':
         return loss.mean()
@@ -69,6 +76,7 @@ def asymmetric_loss(
     gamma_neg: float = 2.0,
     clip: float = 0.05,
     reduction: str = 'mean',
+    weight: Optional[torch.Tensor] = None,
 ) -> torch.Tensor:
     """Asymmetric Loss for multi-label classification.
 
@@ -124,6 +132,8 @@ def asymmetric_loss(
         neg_term = -(1 - targets) * log_neg
 
     loss = pos_term + neg_term
+    if weight is not None:
+        loss = loss * weight  # (n_species,) broadcasts over (batch, n_species)
 
     if reduction == 'mean':
         return loss.mean()
@@ -164,11 +174,15 @@ class AssumeNegativeLoss(nn.Module):
         pos_lambda: float = 4.0,
         neg_samples: int = 1024,
         label_smoothing: float = 0.0,
+        class_loss_weight: Optional[torch.Tensor] = None,
     ):
         super().__init__()
         self.pos_lambda = pos_lambda
         self.neg_samples = neg_samples
         self.label_smoothing = label_smoothing
+        # Optional per-species (n_species,) loss multiplier; registered as a
+        # buffer so it moves with .to(device) and is saved/loaded with state.
+        self.register_buffer('class_loss_weight', class_loss_weight)
 
     def forward(
         self,
@@ -208,6 +222,8 @@ class AssumeNegativeLoss(nn.Module):
 
         # Per-element BCE (unreduced)
         bce = F.binary_cross_entropy_with_logits(logits, targets, reduction='none')
+        if self.class_loss_weight is not None:
+            bce = bce * self.class_loss_weight  # per-species multiplier (pos + neg)
 
         # --- Positive term: sum of BCE on positive species per sample ---
         pos_bce = bce * pos_mask.float()
@@ -294,6 +310,7 @@ class MultiTaskLoss(nn.Module):
         asl_gamma_neg: float = 2.0,
         asl_clip: float = 0.05,
         reduction: str = 'mean',
+        class_loss_weight: Optional[torch.Tensor] = None,
     ):
         """
         Args:
@@ -327,15 +344,20 @@ class MultiTaskLoss(nn.Module):
         self.asl_gamma_pos = asl_gamma_pos
         self.asl_gamma_neg = asl_gamma_neg
         self.asl_clip = asl_clip
+        # Optional per-species (n_species,) loss multiplier, applied at the loss
+        # level (NOT the target value). Registered as a buffer so it follows
+        # .to(device). Used by focal/asl in forward; baked into bce/an below.
+        self.register_buffer('class_loss_weight', class_loss_weight)
 
         if species_loss == 'bce':
             self.species_criterion = nn.BCEWithLogitsLoss(
-                pos_weight=pos_weight, reduction=reduction,
+                weight=class_loss_weight, pos_weight=pos_weight, reduction=reduction,
             )
         elif species_loss == 'an':
             self.species_criterion = AssumeNegativeLoss(
                 pos_lambda=pos_lambda, neg_samples=neg_samples,
                 label_smoothing=label_smoothing,
+                class_loss_weight=class_loss_weight,
             )
 
     def forward(
@@ -361,7 +383,7 @@ class MultiTaskLoss(nn.Module):
             species_loss = focal_loss(
                 logits, species_t,
                 alpha=self.focal_alpha, gamma=self.focal_gamma,
-                reduction=self.reduction,
+                reduction=self.reduction, weight=self.class_loss_weight,
             )
         elif self.species_loss_type == 'asl':
             species_loss = asymmetric_loss(
@@ -369,7 +391,7 @@ class MultiTaskLoss(nn.Module):
                 gamma_pos=self.asl_gamma_pos,
                 gamma_neg=self.asl_gamma_neg,
                 clip=self.asl_clip,
-                reduction=self.reduction,
+                reduction=self.reduction, weight=self.class_loss_weight,
             )
         elif self.species_loss_type == 'an':
             species_loss = self.species_criterion(logits, species_t)
@@ -393,7 +415,7 @@ class MultiTaskLoss(nn.Module):
                 habitat_loss = focal_loss(
                     h_logits, species_t,
                     alpha=self.focal_alpha, gamma=self.focal_gamma,
-                    reduction=self.reduction,
+                    reduction=self.reduction, weight=self.class_loss_weight,
                 )
             elif self.species_loss_type == 'asl':
                 habitat_loss = asymmetric_loss(
@@ -401,7 +423,7 @@ class MultiTaskLoss(nn.Module):
                     gamma_pos=self.asl_gamma_pos,
                     gamma_neg=self.asl_gamma_neg,
                     clip=self.asl_clip,
-                    reduction=self.reduction,
+                    reduction=self.reduction, weight=self.class_loss_weight,
                 )
             elif self.species_loss_type == 'an':
                 habitat_loss = self.species_criterion(h_logits, species_t)
