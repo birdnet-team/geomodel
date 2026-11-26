@@ -16,7 +16,7 @@ Usage:
 
     # Ground-truth observations from an H3 weekly parquet instead of predictions
     python scripts/plot_demo_gif.py \
-        --ground_truth /pelican/GeoModel/GBIF/animalia_all/gbif_processed_with_ee.parquet
+        --ground_truth path/to/gbif_processed_with_ee.parquet
 
     # Keep prediction and ground-truth GIFs side-by-side
     python scripts/plot_demo_gif.py --ground_truth data.parquet --output demo_migrants_gt.gif

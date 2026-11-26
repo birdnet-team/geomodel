@@ -169,6 +169,40 @@ def _torch_onnx_export(wrapper: nn.Module, dummy: torch.Tensor, path: Path) -> N
             dynamic_axes={"input": {0: "batch"}, "probabilities": {0: "batch"}},
             opset_version=18,
         )
+    _strip_onnx_debug_metadata(path)
+
+
+def _strip_onnx_debug_metadata(path: Path) -> None:
+    """Remove exporter debug metadata that embeds local file paths.
+
+    The dynamo-based exporter stores a Python stack trace on every node
+    (``pkg.torch.onnx.stack_trace``), which contains absolute paths of the
+    machine that ran the export.  It has no effect on inference, so it is
+    dropped before the model is published.
+    """
+    import onnx
+
+    model = onnx.load(str(path), load_external_data=False)
+
+    def _clean(graph) -> None:
+        for node in graph.node:
+            kept = [p for p in node.metadata_props if p.key != "pkg.torch.onnx.stack_trace"]
+            del node.metadata_props[:]
+            node.metadata_props.extend(kept)
+            node.doc_string = ""
+            for attr in node.attribute:
+                if attr.HasField("g"):
+                    _clean(attr.g)
+                for sub in attr.graphs:
+                    _clean(sub)
+
+    _clean(model.graph)
+    for fn in model.functions:
+        for node in fn.node:
+            kept = [p for p in node.metadata_props if p.key != "pkg.torch.onnx.stack_trace"]
+            del node.metadata_props[:]
+            node.metadata_props.extend(kept)
+    onnx.save(model, str(path))
 
 
 # ---------------------------------------------------------------------------
