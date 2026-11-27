@@ -76,6 +76,9 @@ class ExportWrapper(nn.Module):
         if score_curve is not None:
             self.curve_gain, offset = curve_terms(score_curve)
             if np.ndim(offset):  # one anchor per species
+                n_out = model.species_head.head[-1].out_features
+                if len(offset) != n_out:
+                    raise ValueError(f"score_curve has {len(offset)} anchors for {n_out} outputs")
                 self.register_buffer("curve_offset", torch.as_tensor(offset, dtype=torch.float32))
             else:
                 self.curve_offset = offset
@@ -726,7 +729,10 @@ def convert(
         print(f"Score floor on {int((score_floor > 0).sum())} species")
     score_curve = ckpt.get("score_curve")
     if score_curve is not None:
-        print(f"Score curve: {score_curve}")
+        shown = {k: v for k, v in score_curve.items() if k != "f0_species"}
+        if score_curve.get("f0_species") is not None:
+            shown["f0_species"] = f"{len(set(score_curve['f0_species']))} distinct values"
+        print(f"Score curve: {shown}")
     score_cap = ckpt.get("score_cap")
     if score_cap is not None:
         score_cap = torch.as_tensor(score_cap, dtype=torch.float32)

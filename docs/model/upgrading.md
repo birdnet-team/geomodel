@@ -36,6 +36,7 @@ where many people record: on the eBird benchmark, at 0.1, the V4.0 candidate pas
 205-227 bird species per cell and week in well-observed cells against 295-304 for
 V3.0.4, and 210 against 239 in thinly observed ones, while keeping 96-97 % of the
 regular species. Rare visitors in well-observed cells pass about half as often.
+(Numbers for the V4.0 candidate; they will be updated for the final release.)
 
 **Threshold.** V3 apps used lines around 0.1-0.15 on V3 outputs. For V4, 0.1 is the
 recommended line: a species reported on about 0.3 % of checklists. On the 2025 app
@@ -49,12 +50,14 @@ detection can rely on it anywhere, including at sea.
 **INT8.** The INT8 file is ONNX (`…_INT8.onnx`): weights are stored in 8 bits, all
 arithmetic is float32, and scores stay within about 0.2 of the FP32 model. The old
 TFLite INT8 file also rounded activations, which moved some scores far from the data
-by a lot. FP32 and FP16 files are still provided in ONNX, TFLite and TorchScript.
+by a lot. FP32 files are provided in ONNX, TFLite and TorchScript, FP16 files in ONNX
+and TFLite.
 
 ## Checking an integration
 
 Run the same place and week through your integration and through `predict.py`; the
-scores should match to about 1e-4 for FP32 files, 0.01 for FP16 and 0.2 for INT8:
+scores should match to about 1e-4 for FP32 files, 0.01 for ONNX FP16 (somewhat more
+for TFLite FP16) and 0.2 for INT8:
 
 ```bash
 python predict.py BirdNET+_Geomodel_V4.0_Global_17K.pt --lat 50.83 --lon 12.92 --week 22 --top-k 20

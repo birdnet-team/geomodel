@@ -52,7 +52,7 @@ def curve_terms(curve: dict, per_species: bool = True):
     gain = float(curve['steepness']) / math.log(10.0)
     f0 = np.asarray(curve['f0_species'], np.float64) if per_species and curve.get('f0_species') is not None else curve['f0']
     offset = math.log(curve['anchor'] / (1 - curve['anchor'])) - float(curve['steepness']) * np.log10(f0)
-    return gain, (float(offset) if np.ndim(offset) == 0 else offset)
+    return gain, (float(offset) if np.ndim(offset) == 0 else offset.astype(np.float32))
 
 
 def rate_to_score(rate: np.ndarray, curve: dict = DEFAULT_CURVE) -> np.ndarray:
@@ -184,7 +184,10 @@ def load(path: str, data_file: str | None = None) -> Predictor:
         idx_to_species = vocab.get('idx_to_species') or {}
         species = [str(idx_to_species[i]) for i in sorted(idx_to_species, key=int)]
         as_array = lambda key: np.asarray(ckpt[key], np.float32) if ckpt.get(key) is not None else None
-        return Predictor('release', model.eval(), species, curve=ckpt.get('score_curve'),
+        curve = ckpt.get('score_curve')
+        if curve and curve.get('f0_species') is not None and len(curve['f0_species']) != len(species):
+            raise ValueError(f"score_curve has {len(curve['f0_species'])} anchors for {len(species)} outputs")
+        return Predictor('release', model.eval(), species, curve=curve,
                          floor=as_array('score_floor'), cap=as_array('score_cap'), extra=ckpt)
 
     args = ckpt['args']
