@@ -1,6 +1,6 @@
 # Contributing to BirdNET Geomodel
 
-Thank you for your interest in contributing! This document provides guidelines and information to make the contribution process smooth.
+Contributions are welcome. This page covers how to report bugs, suggest features and open pull requests.
 
 ## Code of Conduct
 
@@ -31,11 +31,11 @@ This project adheres to the [Contributor Covenant Code of Conduct](https://githu
 
 ### AI-Assisted Contributions
 
-We welcome contributions that use AI coding assistants (Copilot, Cursor, etc.), but please keep PRs **focused on a single, isolated change** — one bug fix, one feature, or one refactor. Large PRs that touch many unrelated parts of the codebase are difficult to review and will be asked to be split up. In particular:
+Contributions made with AI coding assistants (Copilot, Cursor, etc.) are welcome. Keep each PR to a single, isolated change: one bug fix, one feature or one refactor. Large PRs that touch many unrelated parts of the codebase are hard to review and will be asked to be split up. In particular:
 
-- **Do not** submit PRs that bundle AI-generated reformatting, renaming, or stylistic changes alongside functional work.
-- **Do** verify that AI-generated code is correct, well-tested, and that you understand what it does.
-- **Do** mention in the PR description if AI tools were used.
+- Do not bundle AI-generated reformatting, renaming or stylistic changes with functional work.
+- Check that AI-generated code is correct and tested, and that you understand what it does.
+- Mention in the PR description if AI tools were used.
 
 ## Development Setup
 

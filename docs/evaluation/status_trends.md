@@ -9,8 +9,8 @@ python -m evaluation.status_trends score CHECKPOINT data/st_2023_0p5.npz --taxon
 relative abundance of a species from eBird checklists with its own covariates and
 effort correction, and gives one map per week. It is an independent reference for a
 species' range and its timing, also in places with few observers. Maps exist for a
-few thousand species; the cache holds whichever species you downloaded (we use 11
-migrants and residents).
+few thousand species; the cache holds whichever species you downloaded (the
+reference values below use 11 migrants and residents).
 
 `cache` reads the median-abundance downloads (`{code}_abundance_median_2023.zip`, 52
 weekly rasters at 3 km) and averages them onto a regular grid (0.5° by default).

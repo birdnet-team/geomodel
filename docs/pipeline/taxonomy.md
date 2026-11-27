@@ -6,9 +6,8 @@ python -m pipeline.taxonomy taxonomy.csv data/species.csv --cache data/gbif_keys
 
 The model's species are the species of the BirdNET taxonomy, the same list the
 audio models use. Every output carries a BirdNET id (`BN…`), so apps can join the
-geomodel with any BirdNET audio model without name matching. Sound classes
-(record type other than `species`) have no geography
-and are skipped.
+geomodel with any BirdNET audio model without name matching. Sound classes (record
+type other than `species`) have no geography and are skipped.
 
 The taxonomy is published as `BirdNET+_Taxonomy_v0.5-Nov2026.csv` in the
 [BirdNET model converter](https://github.com/birdnet-team/model-converter) repository

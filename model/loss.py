@@ -9,7 +9,7 @@ counts fully, a row backed by one observer-day little, and a cell with 50,000
 checklists does not outweigh a thousand cells with 50. Species of other groups
 are masked out (a mammal survey says nothing about birds).
 
-The release recipe uses plain BCE. The other options are kept for ablations:
+The release model uses plain BCE. The other options are kept for ablations:
 
 * ``link='cloglog'``: rate = 1 - exp(-exp(z)), the link of a Poisson abundance model.
 * ``pos_weight``: scales the loss of entries with a positive rate.

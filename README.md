@@ -29,17 +29,17 @@
 
 ## What it does
 
-The geomodel answers one question: which species can be expected at this place in
-this week of the year? It takes latitude, longitude and week (1-48, four per month)
-and returns a score per species. BirdNET apps use it to filter and rank what the
-audio model detects: a detection of a species that does not occur there scores low
-and is hidden or flagged.
+The geomodel predicts which species can be expected at a place in a given week of
+the year. It takes latitude, longitude and week (1-48, four per month) and returns a
+score per species. BirdNET apps use it to filter and rank what the audio model
+detects: a detection of a species that does not occur there scores low and is
+hidden or flagged.
 
 The score follows how often a species is encountered. Common species score high,
-scarce ones low, and the course of the score over the year follows migration. A
-score of 0.1 corresponds to a species reported on about 0.3 % of checklists in the
-area. Humans always pass (the apps use the class to detect speech), and domestic
-animals sit in the middle range everywhere.
+scarce ones low, and the score's course over the year follows migration. A score of
+0.1 corresponds to a species reported on about 0.3 % of checklists in the area.
+Humans always pass (the apps use the class to detect speech), and domestic animals
+sit in the middle range everywhere. See [Scores](https://birdnet-team.github.io/geomodel/model/scores/).
 
 Version 4 covers 16,960 species of the BirdNET taxonomy (birds, mammals, amphibians,
 insects, reptiles, fish and a few others), each with a BirdNET id.
@@ -55,10 +55,10 @@ pip install -r requirements.txt
 
 ## Use a released model
 
-Release files are on the [releases page](https://github.com/birdnet-team/geomodel/releases):
-a PyTorch checkpoint with its label file, and ONNX, TFLite and TorchScript exports.
-V4.0 is not released yet; until it is, the latest release is V3.0.4, and the same
-commands work with its checkpoint (`..._V3.0.4_Global_14K_FP32.pt` next to its label file).
+The [releases page](https://github.com/birdnet-team/geomodel/releases) has a PyTorch
+checkpoint with its label file, and ONNX, TFLite and TorchScript exports. V4.0 is
+not released yet. Until it is, the latest release is V3.0.4, and the same commands
+work with its checkpoint (`..._V3.0.4_Global_14K_FP32.pt` next to its label file).
 
 ```bash
 python predict.py BirdNET+_Geomodel_V4.0_Global_17K.pt --lat 50.83 --lon 12.92 --week 22
@@ -66,9 +66,9 @@ python predict.py BirdNET+_Geomodel_V4.0_Global_17K.pt --lat 50.83 --lon 12.92 -
 ```
 
 The exports take one float32 tensor `[batch, 3]` (latitude, longitude, week) and
-return `[batch, n_species]` scores in label order. The INT8 ONNX file (weights stored
-as int8, computed in float32) is the one the apps ship; its scores are within about
-0.2 of the FP32 model, usually much closer.
+return `[batch, n_species]` scores in label order. The apps ship the INT8 ONNX file
+(weights stored as int8, computed in float32). Its scores are within about 0.2 of
+the FP32 model, usually much closer.
 
 ## How the model is built
 
@@ -84,31 +84,31 @@ Earth Engine ─────► 4 earthengine (habitat, population) ────
 eBird frequencies ► 6 ebird ─► evaluation/ (benchmark, GeoScore v2)
 ```
 
-1. **Records** (`pipeline/gbif_map.py`): one pass over the GBIF download keeps place,
+1. Records (`pipeline/gbif_map.py`): one pass over the GBIF download keeps place,
    date, species, dataset and a hash of the observer for every record.
-2. **Species** (`pipeline/taxonomy.py`): every taxonomy species is matched to the GBIF
+2. Species (`pipeline/taxonomy.py`): every taxonomy species is matched to the GBIF
    key its records are filed under. Species without a key have no data and are not
    in the model.
-3. **Encounter rates** (`pipeline/gbif_targets.py`): per H3 cell (~250 km²) and week,
+3. Encounter rates (`pipeline/gbif_targets.py`): per H3 cell (~250 km²) and week,
    the share of observer-days that recorded the species. Recent years weigh more.
-4. **Habitat** (`pipeline/earthengine.py`): climate, land cover, elevation, surface
+4. Habitat (`pipeline/earthengine.py`): climate, land cover, elevation, surface
    water and population per cell, as area means.
-5. **Training file** (`pipeline/dataset.py`): rates, effort and habitat in one file,
+5. Training file (`pipeline/dataset.py`): rates, effort and habitat in one file,
    split into spatially separate blocks.
-6. **Benchmark** (`pipeline/ebird.py`): eBird frequencies for evaluation only. eBird
-   data cannot be redistributed; to build the benchmark you need your own eBird API
-   access. The file format is described in the module.
+6. Benchmark (`pipeline/ebird.py`): eBird frequencies, used for evaluation only.
+   eBird data cannot be redistributed, so building the benchmark requires your own
+   eBird API access. The module describes the file format.
 
-The **teacher** (`train_teacher.py`) learns encounter rates from coordinates, week and
-habitat, which lets it carry what it learns from well-observed places to similar,
-poorly observed ones. The **student** (`distill.py`) is the released model: it only
-knows coordinates and week and learns the teacher's predictions everywhere on land,
-limited to a few hundred kilometers around each species' records. `package.py` adds
-the score curve (with a separate anchor for non-birds) and the rules for humans and
-domestic animals; `convert.py` exports.
+The teacher (`train_teacher.py`) learns encounter rates from coordinates, week and
+habitat. Habitat lets it carry what it learns from well-observed places to similar,
+poorly observed ones. The student (`distill.py`) is the released model. It sees only
+coordinates and week and learns the teacher's predictions everywhere on land, limited
+to a few hundred kilometers around each species' records. `package.py` adds the
+score curve (with a separate anchor for non-birds) and the rules for humans and
+domestic animals. `convert.py` writes the exports.
 
-The full set of commands, the file formats and the reasoning behind each step are in
-the [documentation](https://birdnet-team.github.io/geomodel/).
+The [documentation](https://birdnet-team.github.io/geomodel/) has the full set of
+commands, the file formats and the reasons behind each step.
 
 ## Evaluate
 
@@ -124,7 +124,7 @@ python -m pytest tests                                                          
 ```
 
 The benchmark, Status & Trends maps and app recordings are not distributed with the
-repository; the [documentation](https://birdnet-team.github.io/geomodel/) describes
+repository. The [documentation](https://birdnet-team.github.io/geomodel/) describes
 their formats.
 
 ## Repository
@@ -150,7 +150,7 @@ paper/           LaTeX source of the V3 paper
 
 `docs/demo/` runs the FP16 ONNX model in the browser with
 [ONNX Runtime Web](https://onnxruntime.ai/docs/tutorials/web/): range maps, species
-richness, species lists and weekly bar charts for any place. Start it with
+richness, species lists and weekly bar charts for any place. Start it locally with
 `pip install -r requirements-docs.txt && mkdocs serve` and open
 <http://localhost:8000/demo/>.
 
@@ -169,7 +169,7 @@ richness, species lists and weekly bar charts for any place. Start it with
 
 The source code is licensed under the [MIT License](LICENSE).
 
-Model artifacts—including checkpoints, converted models, and labels—are licensed under the [Apache License 2.0](LICENSE-MODELS.md).
+Model artifacts (checkpoints, converted models and labels) are licensed under the [Apache License 2.0](LICENSE-MODELS.md).
 
 ## Acceptable Use
 

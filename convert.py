@@ -45,18 +45,17 @@ from model.io import curve_terms, find_labels, model_from_config
 
 
 # ---------------------------------------------------------------------------
-# Export wrapper — flattens (lat, lon, week) interface into a single tensor
+# Export wrapper: (lat, lon, week) in a single tensor
 # ---------------------------------------------------------------------------
 
 
 class ExportWrapper(nn.Module):
-    """Thin wrapper that takes ``(batch, 3)`` and returns species predictions.
+    """Takes a ``(batch, 3)`` tensor and returns one score per species.
 
     Column order: ``[latitude_degrees, longitude_degrees, week_number]``.
 
-    When ``apply_sigmoid`` is ``True`` (default) the output is sigmoid
-    probabilities; when ``False`` the raw logits are returned so a downstream
-    runtime can apply its own activation.
+    With ``apply_sigmoid=True`` (default) the output is scores; with ``False``
+    it is logits, so a downstream runtime can apply its own activation.
     """
 
     def __init__(
@@ -87,7 +86,7 @@ class ExportWrapper(nn.Module):
             self.curve_gain = None
         # Optional per-species minimum score (e.g. humans and domestic animals,
         # which occur almost everywhere). Applied in logit space so that it holds
-        # for probability and logit outputs alike; 0 means no floor.
+        # for score and logit outputs alike; 0 means no floor.
         if score_floor is not None:
             floor = score_floor.float().clamp(0.0, 0.999)
             floor_logit = torch.where(
@@ -130,10 +129,10 @@ class ExportWrapper(nn.Module):
 
 
 def _make_reference_inputs(n: int = 200) -> np.ndarray:
-    """Create a fixed set of reference inputs covering diverse locations/weeks.
+    """Fixed random places and weeks for validation.
 
     Returns:
-        ``(n, 3)`` float32 array — columns are lat, lon, week.
+        ``(n, 3)`` float32 array with the columns lat, lon, week.
     """
     rng = np.random.RandomState(42)
     lats = rng.uniform(-90, 90, size=n).astype(np.float32)
@@ -145,7 +144,7 @@ def _make_reference_inputs(n: int = 200) -> np.ndarray:
 def _pytorch_reference(
     wrapper: ExportWrapper, inputs: np.ndarray, device: torch.device
 ) -> np.ndarray:
-    """Run the PyTorch wrapper and return probabilities as numpy."""
+    """Run the PyTorch wrapper and return its scores as numpy."""
     wrapper.eval()
     with torch.no_grad():
         x = torch.from_numpy(inputs).to(device)
@@ -180,17 +179,15 @@ def _validate(
 
 
 def _torch_onnx_export(wrapper: nn.Module, dummy: torch.Tensor, path: Path) -> None:
-    """Run ``torch.onnx.export`` with suppression of known benign warnings.
+    """Run ``torch.onnx.export`` with two harmless warnings suppressed.
 
-    Suppressed warnings:
-
-    * *dynamic_axes + dynamo* — PyTorch >= 2.6 defaults to the dynamo-based
-      exporter which emits a ``UserWarning`` when ``dynamic_axes`` is used.
-      The traditional exporter handles ``dynamic_axes`` correctly; the
-      warning is harmless for our model.
-    * *LeafSpec deprecation* — ``FutureWarning`` from ``copyreg`` triggered
-      during dynamo decomposition.  A PyTorch internal issue that does not
-      affect the exported model.
+    * *dynamic_axes + dynamo*: PyTorch >= 2.6 defaults to the dynamo-based
+      exporter, which emits a ``UserWarning`` when ``dynamic_axes`` is used.
+      The traditional exporter handles ``dynamic_axes`` correctly, and the
+      warning does not apply to this model.
+    * *LeafSpec deprecation*: a ``FutureWarning`` from ``copyreg`` during
+      dynamo decomposition. It is internal to PyTorch and does not affect the
+      exported model.
     """
     with warnings.catch_warnings():
         warnings.filterwarnings(
@@ -261,7 +258,7 @@ def _export_onnx(
     Args:
         wrapper: Export-ready model wrapper.
         ref_inputs: Reference input array ``(n, 3)`` for validation.
-        ref_outputs: Expected output probabilities from PyTorch.
+        ref_outputs: Expected scores from PyTorch.
         outdir: Output directory.
         fp16: If ``True``, store the weight matrices as float16.
         tol: Base numerical tolerance for FP32 validation.
@@ -296,7 +293,6 @@ def _export_onnx(
         onnx.save(model_proto, str(path))
         print(f"  {n} weight matrices stored as float16 (computed in float32)")
 
-    # Validate with ONNX Runtime
     sess = ort.InferenceSession(str(path), providers=["CPUExecutionProvider"])
     exported = sess.run(None, {"input": ref_inputs.astype(np.float32)})[0]
     effective_tol = max(tol, 0.01) if fp16 else tol
@@ -448,24 +444,23 @@ def _export_torchscript(
 ) -> tuple[bool, float]:
     """Export to a traced, frozen TorchScript module.
 
-    Produces ``geomodel.pt`` — a serialized ``ScriptModule`` that
-    ``torch.jit.load`` opens directly, unlike a raw training checkpoint
-    (which is a plain state-dict ``dict``).  The traced graph takes a single
-    ``(batch, 3)`` tensor with columns ``[latitude, longitude, week]`` and
-    returns ``(batch, n_species)``.
+    Writes ``geomodel.pt``, a serialized ``ScriptModule`` that ``torch.jit.load``
+    opens directly (a training checkpoint is a plain ``dict``). The traced graph
+    takes a single ``(batch, 3)`` tensor with columns ``[latitude, longitude, week]``
+    and returns ``(batch, n_species)``.
 
     Args:
         model: The loaded :class:`BirdNETGeoModel` (unwrapped).
         ref_inputs: Reference input array ``(n, 3)`` for validation.
-        ref_outputs: Expected sigmoid probabilities from PyTorch.
+        ref_outputs: Expected scores from PyTorch.
         outdir: Output directory.
         tol: Numerical tolerance.  Tracing is the same FP32 computation as
             the reference, so the difference should be within this.
         device: Torch device.
-        apply_sigmoid: If ``True``, bake sigmoid into the traced graph so it
-            returns probabilities (matching the ONNX/TFLite exports).  If
-            ``False`` (default), return raw logits and leave the activation
-            to the downstream runtime.
+        apply_sigmoid: If ``True``, bake the sigmoid into the traced graph so it
+            returns scores, like the ONNX and TFLite exports. If ``False``
+            (default), return logits and leave the activation to the
+            downstream runtime.
     """
     path = outdir / "geomodel.pt"
     print(f"\n[torchscript] Exporting to {path}")
@@ -482,21 +477,21 @@ def _export_torchscript(
     dummy = torch.randn(1, 3, device=device)
     with torch.no_grad():
         traced = torch.jit.trace(ts_wrapper, dummy)
-    # Freeze inlines parameters and drops training-only state (dropout,
-    # unused submodules), yielding a smaller, self-contained module.
+    # Freezing inlines the parameters and drops training-only state (dropout,
+    # unused submodules): a smaller, self-contained module.
     frozen = torch.jit.freeze(traced)
     torch.jit.save(frozen, str(path))
 
     activation = "sigmoid probabilities" if apply_sigmoid else "raw logits"
     print(f"  Output: {activation}")
 
-    # Validate by reloading in isolation and running the reference batch
+    # Reload the saved file and run the reference batch
     reloaded = torch.jit.load(str(path), map_location=device)
     with torch.no_grad():
         x = torch.from_numpy(ref_inputs).to(device)
         out = reloaded(x)
         if not apply_sigmoid:
-            # Compare in probability space against the shared reference
+            # compare as scores, like the other formats
             out = torch.sigmoid(out)
         exported = out.cpu().numpy().astype(np.float32)
 
@@ -545,14 +540,14 @@ def _export_tf_saved_model(
         output_folder_path=str(sm_path),
         non_verbose=True,
     )
-    onnx_path.unlink(missing_ok=True)  # clean up intermediate
+    onnx_path.unlink(missing_ok=True)
 
-    # Validate on CPU to avoid CUDA handle issues with the TF runtime
+    # Validate on CPU to avoid CUDA handle problems in the TF runtime
     with tf.device("/CPU:0"):
         loaded = tf.saved_model.load(str(sm_path))
         infer = loaded.signatures["serving_default"]
         out = infer(tf.constant(ref_inputs))
-        # output key varies — take first tensor
+        # the output key varies, so take the first tensor
         exported = list(out.values())[0].numpy()
     passed, max_diff = _validate(ref_outputs, exported, tol)
 
@@ -606,8 +601,8 @@ def _export_tflite(
     # Step 3: TF SavedModel → TFLite
     converter = tf.lite.TFLiteConverter.from_saved_model(str(sm_path))
 
-    # GELU uses tf.Erf which is not a built-in TFLite op — enable
-    # TF Select ops (Flex delegate) so the model can still convert.
+    # GELU uses tf.Erf, which is not a built-in TFLite op; TF Select ops
+    # (Flex delegate) let the model convert anyway.
     converter.target_spec.supported_ops = [
         tf.lite.OpsSet.TFLITE_BUILTINS,
         tf.lite.OpsSet.SELECT_TF_OPS,
@@ -619,7 +614,7 @@ def _export_tflite(
         converter.target_spec.supported_types = [tf.float16]
     elif mode == "int8":
         converter.optimizations = [tf.lite.Optimize.DEFAULT]
-        # Dynamic range quantization — no calibration dataset needed
+        # dynamic-range quantization needs no calibration data
 
     tflite_model = converter.convert()
     path.write_bytes(tflite_model)
@@ -629,13 +624,12 @@ def _export_tflite(
 
     shutil.rmtree(sm_path, ignore_errors=True)
 
-    # Validate with TFLite interpreter
     interp = tf.lite.Interpreter(model_path=str(path))
     interp.allocate_tensors()
     input_details = interp.get_input_details()
     output_details = interp.get_output_details()
 
-    # TFLite doesn't support dynamic batch — run sample by sample
+    # TFLite does not support a dynamic batch, so run one sample at a time
     exported_list = []
     for i in range(len(ref_inputs)):
         interp.resize_tensor_input(input_details[0]["index"], [1, 3])
@@ -688,7 +682,7 @@ def convert(
         tol: Base tolerance for numerical validation.
         device: ``'auto'``, ``'cuda'``, or ``'cpu'``.
         torchscript_sigmoid: Bake sigmoid into the TorchScript export so it
-            returns probabilities.  Default ``False`` (return raw logits).
+            returns scores. Default ``False`` (return logits).
 
     Returns:
         Dict mapping format name to a ``(passed, max_diff)`` tuple, where
@@ -707,7 +701,6 @@ def convert(
         else torch.device(device)
     )
 
-    # Load checkpoint
     print(f"Loading checkpoint: {checkpoint_path}")
     ckpt = torch.load(checkpoint_path, map_location=dev, weights_only=False)
     model_config = ckpt["model_config"]
@@ -746,7 +739,7 @@ def convert(
     outpath = Path(outdir)
     outpath.mkdir(parents=True, exist_ok=True)
 
-    # Generate reference data on CPU for validation
+    # Reference inputs and PyTorch scores for validating every export
     ref_inputs = _make_reference_inputs()
     ref_outputs = _pytorch_reference(wrapper, ref_inputs, dev)
     print(
@@ -778,7 +771,6 @@ def convert(
         shutil.copy2(document_src, outpath / document_name)
         print(f"Copied {document_name} → {outpath / document_name}")
 
-    # Run conversions
     results: dict[str, tuple[bool, float]] = {}
     dispatch = {
         "onnx": lambda: _export_onnx(
@@ -833,7 +825,6 @@ def convert(
             print(f"  ERROR during {fmt} export: {e}")
             results[fmt] = False, math.nan
 
-    # Summary
     print("\n" + "=" * 60)
     print("  Conversion Summary")
     print("=" * 60)
@@ -916,7 +907,6 @@ def main():
         torchscript_sigmoid=args.torchscript_sigmoid,
     )
 
-    # Exit with error code if any conversion failed
     sys.exit(0 if all(ok for ok, _ in results.values()) else 1)
 
 

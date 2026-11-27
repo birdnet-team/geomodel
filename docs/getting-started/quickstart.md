@@ -13,11 +13,11 @@ It prints the species scoring at least 0.1 there, highest first, with score,
 BirdNET id, common and scientific name.
 
 !!! note
-    V4.0 is not released yet; until it is, the latest release is V3.0.4. `predict.py`
+    V4.0 is not released yet. Until it is, the latest release is V3.0.4. `predict.py`
     loads its checkpoint as well (`BirdNET+_Geomodel_V3.0.4_Global_14K_FP32.pt` next to its
-    label file); its outputs and ids are those of V3 ([Upgrading from V3](../model/upgrading.md)).
+    label file), with V3 outputs and ids ([Upgrading from V3](../model/upgrading.md)).
 
-Weeks run from 1 to 48, four per month; `--week -1` gives the whole year.
+Weeks run from 1 to 48, four per month. `--week -1` gives the whole year.
 `--threshold` and `--top-k` change how much is shown.
 
 ## In your own code
@@ -35,7 +35,7 @@ scores = session.run(None, {'input': np.array([[50.83, 12.92, 22]], np.float32)}
 
 `scores[i]` belongs to `labels[i]` (BirdNET id, scientific name, common name). A
 score of 0.1 corresponds to a species reported on about 0.3 % of checklists in the
-area; see [Scores](../model/scores.md).
+area ([Scores](../model/scores.md)).
 
 ## Training your own model
 

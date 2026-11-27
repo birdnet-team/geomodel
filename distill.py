@@ -14,7 +14,7 @@ table plus every cell of the training file, sea included) with random weeks, ask
 the teacher for all species there, and fits the student to those rates with BCE.
 No raw records are used in this step.
 
-Three things are added to the teacher's targets:
+Three options change the teacher's targets:
 
 * ``--envelope R``: a species' target is set to 0 more than R degrees (1° bins)
   from any of its records, so the teacher's habitat matching cannot put a species

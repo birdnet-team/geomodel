@@ -6,9 +6,8 @@ with known effort, it is independent of how the training targets are built, and 
 has real zeros (a species missing from a thousand checklists is absent or rare).
 
 eBird data cannot be redistributed, so the repository contains no frequencies. To
-build the benchmark you need your own access to the eBird API and permission to use
-the frequency data. Store what you fetch as gzipped JSON lines, one location per
-line, in a directory:
+build the benchmark you need your own eBird frequency data and permission to use it.
+The parser reads a directory of gzipped JSON lines files, one location per line:
 
 ```json
 {"lat": 50.83, "lng": 12.92,
@@ -35,7 +34,7 @@ through `species.csv`; codes without a match are counted and dropped.
 Only positive frequencies are stored. A species absent from a cell-week with
 checklists is an observed zero.
 
-## The cells we use
+## Reference cells
 
 The reference benchmark has 2,325 cells of about 20 km, sampled across continents
 and across effort levels (from a few checklists per week to thousands), so it tests

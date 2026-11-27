@@ -18,21 +18,21 @@ python convert.py --checkpoint release/BirdNET+_Geomodel_V4.0_Global_17K.pt --ou
 | `tf` | `saved_model/` | TensorFlow SavedModel |
 | `torchscript` | `geomodel.pt` | traced TorchScript; returns logits unless `--torchscript-sigmoid` |
 
-The apps ship the INT8 ONNX file. Its weights take one byte each, but nothing else
-is rounded: ONNX Runtime's own dynamic quantization, and TFLite's dynamic-range INT8,
-also round the activations to 8 bits, which pushes some scores far up at places far
-from any data (a house spider at 0.9 in the middle of the Pacific in our tests).
-Storing int8 weights and computing in float32 avoids that at the same file size.
+The apps ship the INT8 ONNX file. Its weights take one byte each, and nothing else
+is rounded. ONNX Runtime's own dynamic quantization and TFLite's dynamic-range INT8
+also round the activations to 8 bits. That pushes some scores far up at places far
+from any data (in tests, a house spider scored 0.9 in the middle of the Pacific).
+Storing int8 weights and computing in float32 avoids this at the same file size.
 
-Each export is run on a fixed set of places and weeks and compared with PyTorch; it
+Each export is run on a fixed set of places and weeks and compared with PyTorch. It
 fails if the largest score difference exceeds the format's tolerance (1e-4 for
 float32, 0.01 for float16 weights, 0.25 for int8 weights). The label file next to the
 checkpoint and the model license are copied to the output folder.
 
 The release files on GitHub are made with the
-[BirdNET model converter](https://github.com/birdnet-team/model-converter), which uses
-the same model definition and adds LiteRT files with built-in operators only and
-Core ML packages.
+[BirdNET model converter](https://github.com/birdnet-team/model-converter). It uses
+the same model definition and also produces Core ML packages and LiteRT files that
+use built-in operators only.
 
 ## What the exports compute
 
@@ -41,8 +41,8 @@ All formats take one float32 tensor of shape `(batch, 3)` with the columns latit
 scores in the order of the label file. The score curve, the floors for humans and
 domestic animals and the cap for domestic animals are part of the graph
 ([Scores](scores.md)), so an export returns exactly what `predict.py` prints. For a
-whole-year list, run all 48 weeks and take the maximum per species; week 0 or -1
-given to a file is read as week 48 or 47.
+whole-year list, run all 48 weeks and take the maximum per species. A file reads
+week 0 or -1 as week 48 or 47 ([Upgrading from V3](upgrading.md#what-stays)).
 
 The label file has one line per output: BirdNET id, scientific name and common
 name, tab-separated.
@@ -68,7 +68,7 @@ with torch.no_grad():
     scores = torch.sigmoid(model(torch.tensor([[50.83, 12.92, 22.0]])))
 ```
 
-In Python with the repository, `model.io.load` opens any checkpoint (release,
+In Python, from a clone of the repository, `model.io.load` opens any checkpoint (release,
 student, teacher, or a V3 release) and returns an object with `.species`,
 `.scores(lat, lng, week)` and, for models that predict encounter rates,
 `.rates(...)`:
@@ -89,6 +89,6 @@ python predict.py ... --common-species 5000 --taxonomy taxonomy.csv --output com
 ```
 
 `--week -1` gives the whole year. `--common-species N` builds a list of N species
-that covers the world evenly: mean scores over a 5° grid and four weeks for 20
-regions, then, round by round, the next four birds and one other species from each
-region's ranking.
+that covers the world evenly. It averages scores over a 5° grid and four weeks for
+each of 20 regions, then takes, round by round, the next four birds and one other
+species from each region's ranking.

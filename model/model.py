@@ -9,7 +9,7 @@ score curve that releases apply on top).
 
 Two optional heads are kept for ablations: an environment head that predicts
 habitat features from the embedding (auxiliary task) and a habitat-species head
-with a learned gate. The release recipe uses neither; habitat reaches the released
+with a learned gate. The release model uses neither; habitat reaches the released
 model through the teacher (``train_teacher.py``, ``distill.py``).
 """
 
@@ -53,26 +53,25 @@ def _to_radians(value: torch.Tensor, half_turn: float) -> torch.Tensor:
 # ---------------------------------------------------------------------------
 
 class CircularEncoding(nn.Module):
-    """Multi-harmonic circular encoding for periodic/angular values.
+    """Circular encoding of an angle with several harmonics.
 
-    Given a scalar angle θ (in radians), produces:
-        [sin(θ), cos(θ), sin(2θ), cos(2θ), …, sin(nθ), cos(nθ)]
+    For an angle θ in radians it returns
+        [sin(θ), sin(2θ), …, sin(nθ), cos(θ), cos(2θ), …, cos(nθ)]
 
-    Output dimension = 2 * n_harmonics per input scalar.
+    that is, 2 * n_harmonics values per input.
 
     Reference: Tancik et al., "Fourier Features Let Networks Learn High
     Frequency Functions in Low Dimensional Domains" (NeurIPS 2020).
     """
 
     def __init__(self, n_harmonics: int = 1):
-        """Initialize circular encoding.
-
+        """
         Args:
-            n_harmonics: Number of harmonic frequencies to use.
+            n_harmonics: Number of harmonics.
         """
         super().__init__()
         self.n_harmonics = n_harmonics
-        # Register harmonic indices [1, 2, ..., n] as a buffer (not a parameter)
+        # harmonic indices 1..n, a buffer rather than a parameter
         self.register_buffer(
             'harmonics',
             torch.arange(1, n_harmonics + 1, dtype=torch.float32),
@@ -85,22 +84,20 @@ class CircularEncoding(nn.Module):
     def forward(self, angles: torch.Tensor) -> torch.Tensor:
         """
         Parameters:
-            angles: (batch,) or (batch, 1) — angles in radians
+            angles: (batch,) or (batch, 1), in radians
 
         Returns:
-            (batch, 2 * n_harmonics) — [sin(θ), cos(θ), sin(2θ), cos(2θ), …]
+            (batch, 2 * n_harmonics): all sines, then all cosines
         """
         if angles.dim() == 1:
             angles = angles.unsqueeze(1)  # (batch, 1)
-        # (batch, 1) * (n_harmonics,) → (batch, n_harmonics)
-        scaled = angles * self.harmonics  # broadcasting
+        scaled = angles * self.harmonics  # (batch, n_harmonics)
         return torch.cat([torch.sin(scaled), torch.cos(scaled)], dim=1)
 
 
-#: LayerNorm epsilon — set above the FP16 minimum normal value (~6e-5)
-#: so that the epsilon remains representable with full precision after
-#: FP16 quantization.  The PyTorch default (1e-5) falls in the FP16
-#: subnormal range where precision degrades.
+#: LayerNorm epsilon, above the smallest normal FP16 value (~6e-5) so that it
+#: keeps full precision in FP16 exports. The PyTorch default (1e-5) is an FP16
+#: subnormal and loses precision.
 LAYERNORM_EPS: float = 1e-4
 
 
@@ -108,8 +105,7 @@ class ResidualBlock(nn.Module):
     """Pre-norm residual block: LayerNorm → GELU → Linear → LayerNorm → GELU → Dropout → Linear."""
 
     def __init__(self, dim: int, dropout: float = 0.1):
-        """Initialize a residual block.
-
+        """
         Args:
             dim: Hidden dimension (input and output are both *dim*).
             dropout: Dropout probability.
@@ -136,15 +132,14 @@ class ResidualBlock(nn.Module):
 
 class SpatioTemporalEncoder(nn.Module):
     """
-    Shared encoder that maps raw (lat, lon, week) to an embedding via
-    multi-harmonic circular encoding and FiLM temporal conditioning.
+    Shared encoder: raw (lat, lon, week) -> embedding, using circular encodings
+    and FiLM conditioning on the week.
 
-    **Spatial** features (lat, lon) are projected into *embed_dim* and
-    processed by residual blocks.  **Temporal** features (week) are
-    encoded separately and used to generate per-block FiLM (Feature-wise
-    Linear Modulation) scale and shift parameters that modulate the
-    spatial representation.  This forces the network to actively use
-    temporal information rather than relying on a weak concatenated signal.
+    The circular encodings of lat and lon are projected to *embed_dim* and pass
+    through residual blocks. The week is encoded separately; per block, a FiLM
+    (Feature-wise Linear Modulation) generator turns it into a scale and a shift
+    for the spatial features. The week thus acts on every block instead of
+    entering once as a concatenated input.
 
     Reference: Perez et al., "FiLM: Visual Reasoning with a General
     Conditioning Layer" (AAAI 2018).
@@ -154,7 +149,7 @@ class SpatioTemporalEncoder(nn.Module):
         lon  : float in [-180, 180]
         week : int in {1, …, 48}
 
-    Internal encoding produces:
+    Encoding inside the network:
         lat  → CircularEncoding(lat_rad)  → 2 * coord_harmonics features
         lon  → CircularEncoding(lon_rad)  → 2 * coord_harmonics features
         week → CircularEncoding(week_rad) → 2 * week_harmonics features
@@ -171,8 +166,7 @@ class SpatioTemporalEncoder(nn.Module):
         n_weeks: int = 48,
         film_dim: int | None = None,
     ):
-        """Initialize the spatio-temporal encoder.
-
+        """
         Args:
             coord_harmonics: Harmonics for lat/lon circular encoding.
             week_harmonics: Harmonics for week circular encoding.
@@ -181,7 +175,7 @@ class SpatioTemporalEncoder(nn.Module):
             dropout: Dropout probability.
             n_weeks: Total weeks in the annual cycle.
             film_dim: Hidden width of each FiLM generator (default:
-                embed_dim).  The week encoding has only a few dozen
+                embed_dim). The week encoding has only a few dozen
                 dimensions, so a much narrower generator loses nothing.
         """
         super().__init__()
@@ -201,7 +195,7 @@ class SpatioTemporalEncoder(nn.Module):
         self.blocks = nn.ModuleList(
             [ResidualBlock(embed_dim, dropout) for _ in range(n_blocks)]
         )
-        # FiLM: one (γ, β) pair per residual block, generated from week encoding
+        # one FiLM (γ, β) pair per residual block, from the week encoding
         self.film_generators = nn.ModuleList([
             nn.Sequential(
                 nn.Linear(week_dim, film_dim or embed_dim),
@@ -209,9 +203,9 @@ class SpatioTemporalEncoder(nn.Module):
                 nn.Linear(film_dim or embed_dim, 2 * embed_dim),  # (γ, β)
             ) for _ in range(n_blocks)
         ])
-        # Zero-init the FiLM output layers so γ starts at identity (tanh(0)=0
-        # → γ=1) and β starts at zero.  The modulation is gradually learned
-        # from data rather than producing random scale/shift at init.
+        # Zero-initialized FiLM output layers: γ starts at 1 (tanh(0) = 0) and β
+        # at 0, so training starts without modulation instead of a random
+        # scale and shift.
         for fg in self.film_generators:
             nn.init.zeros_(fg[2].weight)
             nn.init.zeros_(fg[2].bias)
@@ -225,18 +219,16 @@ class SpatioTemporalEncoder(nn.Module):
             lon:  (batch,) raw longitude in degrees [-180, 180]
             week: (batch,) week number (1–48)
         """
-        # Convert degrees → radians
         lat_rad = _to_radians(lat, 180.0)
         lon_rad = _to_radians(lon, 180.0)
 
-        # Convert week → radians (2π-periodic over n_weeks)
+        # week -> radians, one full turn per n_weeks
         week_rad = _to_radians(week - 1.0, self.n_weeks / 2.0)
 
         lat_features = self.lat_enc(lat_rad)    # (batch, 2*coord_harmonics)
         lon_features = self.lon_enc(lon_rad)    # (batch, 2*coord_harmonics)
         week_features = self.week_enc(week_rad) # (batch, 2*week_harmonics)
 
-        # Spatial projection
         x = torch.cat([lat_features, lon_features], dim=1)
         x = self.input_proj(x)
 
@@ -244,16 +236,14 @@ class SpatioTemporalEncoder(nn.Module):
         for block, film_gen in zip(self.blocks, self.film_generators):
             film = film_gen(week_features)        # (batch, 2*embed_dim)
             raw_gamma, beta = film.chunk(2, dim=1) # each (batch, embed_dim)
-            # Bounded modulation: tanh keeps gamma in (0, 2), centered at
-            # 1 (identity).  This prevents compound FP16 overflow through
-            # deep residual stacks — with 8 blocks at model_scale=2.0,
-            # worst-case compound amplification is 2^8 = 256, safely
-            # within FP16 range (max 65504).  Unlike a hard clamp, tanh
-            # is smooth everywhere so gradients flow cleanly.
+            # tanh keeps gamma in (0, 2) around 1 (identity), which bounds the
+            # amplification through the stack: with 8 blocks (model_scale=2.0)
+            # at most 2^8 = 256, far inside the FP16 range (max 65504). Unlike
+            # a hard clamp, tanh is smooth and keeps a gradient everywhere.
             gamma = 1.0 + torch.tanh(raw_gamma)
             x_out = block(x)
-            # FiLM modulation in float32 for numerical stability under
-            # AMP, then cast back to the autocast dtype.
+            # modulate in float32 for stability under AMP, then cast back to
+            # the autocast dtype
             x = (x_out.float() * gamma.float() + beta.float()).to(x_out.dtype)
 
         return self.norm(x)
@@ -264,14 +254,13 @@ class SpatioTemporalEncoder(nn.Module):
 # ---------------------------------------------------------------------------
 
 class SpeciesPredictionHead(nn.Module):
-    """Multi-label classification head with residual blocks and low-rank output.
+    """Multi-label species head: residual blocks and a low-rank output layer.
 
-    The final projection uses a low-rank factorization:
+    The final projection is factorized as
         hidden_dim → bottleneck → n_species
-    instead of a single Linear(hidden_dim, n_species).  This reduces
-    parameters dramatically when n_species is large (10K+) while learning
-    a compact species-embedding space whose dimensions can be interpreted
-    as latent ecological niches.
+    instead of a single Linear(hidden_dim, n_species). With 10,000+ species this
+    saves most of the head's parameters, and each species is described by a
+    short embedding of size ``bottleneck``.
     """
 
     def __init__(
@@ -283,8 +272,7 @@ class SpeciesPredictionHead(nn.Module):
         dropout: float = 0.2,
         bottleneck: int = 128,
     ):
-        """Initialize the species prediction head.
-
+        """
         Args:
             input_dim: Dimension of the encoder output.
             n_species: Number of target species (output logits).
@@ -331,8 +319,7 @@ class EnvironmentalPredictionHead(nn.Module):
         n_blocks: int = 1,
         dropout: float = 0.1,
     ):
-        """Initialize the environmental prediction head.
-
+        """
         Args:
             input_dim: Dimension of the encoder output.
             n_env_features: Number of environmental features to predict.
@@ -366,22 +353,14 @@ class EnvironmentalPredictionHead(nn.Module):
 
 
 class HabitatSpeciesHead(nn.Module):
-    """Predict species from predicted environmental features.
+    """Species logits from the predicted environmental features (ablation).
 
-    Creates an explicit pathway from environmental conditions to species
-    occurrence, making the habitat→species relationship directly learnable
-    rather than implicit in the shared encoder.  Combined with the direct
-    :class:`SpeciesPredictionHead` via a learned per-species gate, the
-    model can leverage both spatial-embedding patterns and environmental
-    feature associations.
-
-    Architecture mirrors :class:`SpeciesPredictionHead` (residual blocks +
-    low-rank bottleneck) but takes predicted environmental features as
-    input instead of the encoder embedding.
-
-    During training, gradients flow back through the environmental head,
-    reinforcing it to produce representations that are useful for both
-    regression accuracy *and* species prediction.
+    A separate path from habitat to species, next to the direct
+    :class:`SpeciesPredictionHead`; a learned per-species gate mixes the two.
+    Same layout as :class:`SpeciesPredictionHead` (residual blocks and a low-rank
+    output layer), but the input is the environmental head's prediction instead
+    of the encoder embedding. ``BirdNETGeoModel.forward`` detaches that input, so
+    the species loss does not train the environmental head.
     """
 
     def __init__(
@@ -393,8 +372,7 @@ class HabitatSpeciesHead(nn.Module):
         dropout: float = 0.1,
         bottleneck: int = 128,
     ):
-        """Initialize the habitat-species head.
-
+        """
         Args:
             n_env_features: Number of input environmental features
                 (output dim of the environmental head).
@@ -437,12 +415,12 @@ class HabitatSpeciesHead(nn.Module):
 
 class BirdNETGeoModel(nn.Module):
     """
-    Multi-task model for bird species occurrence prediction.
+    The full geomodel: encoder, species head and optional auxiliary heads.
 
-    Accepts raw (lat, lon, week) inputs — encoding is handled internally.
+    Takes raw (lat, lon, week); the encoding happens inside the network.
 
-    Training:  (lat, lon, week) → encoder → species logits + env predictions
-    Inference: (lat, lon, week) → encoder → species logits only
+    With ``return_env``: (lat, lon, week) → encoder → species logits + env predictions
+    Without:             (lat, lon, week) → encoder → species logits
     """
 
     def __init__(
@@ -467,8 +445,7 @@ class BirdNETGeoModel(nn.Module):
         habitat_bottleneck: int = 128,
         film_dim: int | None = None,
     ):
-        """Initialize the full multi-task model.
-
+        """
         Args:
             n_species: Number of target species.
             n_env_features: Number of environmental features (auxiliary task).
@@ -484,10 +461,9 @@ class BirdNETGeoModel(nn.Module):
             dropout: Encoder dropout.
             species_dropout: Species head dropout.
             env_dropout: Environmental head dropout.
-            habitat_head: Enable habitat-species association head. When
-                True, predicted environmental features are fed through a
-                secondary species head whose logits are combined with the
-                direct species head via a learned per-species gate.
+            habitat_head: Add the habitat-species head: the predicted
+                environmental features feed a second species head, mixed with
+                the direct one by a learned per-species gate.
             habitat_head_dim: Hidden dim for habitat-species head.
             habitat_head_blocks: Residual blocks in habitat-species head.
             habitat_bottleneck: Low-rank bottleneck for habitat-species head.
@@ -514,20 +490,16 @@ class BirdNETGeoModel(nn.Module):
             dropout=env_dropout,
         )
 
-        # Optional habitat-species association head
         if habitat_head:
             self.habitat_species_head = HabitatSpeciesHead(
                 n_env_features=n_env_features, n_species=n_species,
                 hidden_dim=habitat_head_dim, n_blocks=habitat_head_blocks,
                 dropout=species_dropout, bottleneck=habitat_bottleneck,
             )
-            # Learned per-species gate conditioned on the encoder embedding.
-            # gate = σ(W·embedding + b) ∈ (0, 1) per species.
-            # Combined logits = gate * direct + (1 - gate) * habitat.
-            # Bias initialized to +3 → σ(3) ≈ 0.95, so the direct head
-            # strongly dominates at the start.  The habitat contribution
-            # only fades in once the env head and habitat head have learned
-            # useful representations.
+            # Per-species gate from the encoder embedding, gate = σ(W·embedding + b);
+            # logits = gate * direct + (1 - gate) * habitat. The bias starts at 3
+            # (σ(3) ≈ 0.95), so the direct head dominates until the env and
+            # habitat heads have learned something useful.
             self.species_gate = nn.Linear(embed_dim, n_species)
             nn.init.zeros_(self.species_gate.weight)
             nn.init.constant_(self.species_gate.bias, 3.0)
@@ -542,12 +514,11 @@ class BirdNETGeoModel(nn.Module):
         week: torch.Tensor,
         return_env: bool = True,
     ) -> Dict[str, torch.Tensor]:
-        """Run the full model forward pass.
+        """Species logits, and optionally the environmental predictions.
 
-        When the habitat-species head is enabled, the environmental head
-        always runs (even during inference) and its output feeds into the
-        habitat head.  The final species logits are a learned gate-weighted
-        combination of the direct and habitat predictions.
+        With the habitat-species head, the environmental head always runs
+        (also at inference) and feeds it; the species logits are the gated
+        mix of the direct and habitat predictions.
 
         Args:
             lat: Raw latitude in degrees, shape ``(batch,)``.
@@ -562,13 +533,10 @@ class BirdNETGeoModel(nn.Module):
         direct_logits = self.species_head(encoded)
 
         if self.habitat_species_head is not None:
-            # Habitat path: env head → habitat-species head → gated combination.
-            # env_pred is detached before the habitat head so species-loss
-            # gradients don't flow back into the env head (prevents
-            # gradient conflict with the MSE regression objective).
-            # The env head thus learns clean environmental representations
-            # from MSE alone, while the habitat head learns env→species
-            # associations from those stable features.
+            # env head → habitat-species head → gate. env_pred is detached so that
+            # the species loss does not pull on the env head against its MSE
+            # objective: the env head learns from MSE alone, the habitat head
+            # learns env → species from its output.
             env_pred = self.env_head(encoded)
             habitat_logits = self.habitat_species_head(env_pred.detach())
             gate = torch.sigmoid(self.species_gate(encoded))
@@ -576,9 +544,8 @@ class BirdNETGeoModel(nn.Module):
             output: Dict[str, torch.Tensor] = {'species_logits': species_logits}
             if return_env:
                 output['env_pred'] = env_pred
-                # Return habitat logits separately so the loss function can
-                # apply an auxiliary species loss directly on the habitat
-                # head (independent of the gate scaling).
+                # habitat logits on their own, so a loss can train the habitat
+                # head directly, independent of the gate
                 output['habitat_logits'] = habitat_logits
             return output
 
@@ -602,18 +569,17 @@ def create_model(
     species_bottleneck: int | None = None,
     film_dim: int | None = None,
 ) -> BirdNETGeoModel:
-    """Create model with a continuous size scaling factor.
+    """Build a model whose size follows one continuous factor, ``model_scale``.
 
-    ``model_scale=1.0`` matches the former *medium* preset
-    (embed_dim=512, 4 encoder blocks, ~7 M params with 12 K species).
-    Dimensions scale linearly; block counts are rounded to the nearest
-    integer (minimum 1).
+    ``model_scale=1.0`` gives embed_dim=512 and 4 encoder blocks, about 7 M
+    parameters with 12 K species. Widths scale
+    linearly; block counts are rounded to the nearest integer (minimum 1).
 
-    Rough parameter-count landmarks (with 12 K species):
+    Approximate parameter counts with 12 K species:
 
-    * 0.5  → ~1.5 M  (≈ former *small*)
-    * 1.0  → ~7.2 M  (≈ former *medium*)
-    * 2.0  → ~47 M   (≈ former *large*)
+    * 0.5  → ~1.5 M
+    * 1.0  → ~7.2 M
+    * 2.0  → ~47 M
 
     Args:
         n_species: Number of target species.
@@ -621,15 +587,14 @@ def create_model(
         model_scale: Continuous scaling factor (default 1.0).
         coord_harmonics: Harmonics for lat/lon encoding.
         week_harmonics: Harmonics for week encoding.
-        habitat_head: Enable habitat-species association head.
+        habitat_head: Add the habitat-species head.
         species_bottleneck: Override the low-rank bottleneck before the
-            output layer (default: 128 scaled by ``model_scale``).  The
+            output layer (default: 128 scaled by ``model_scale``). The
             output layer is n_species x bottleneck, so this is the finest
-            knob for hitting a size budget.
+            control for a size budget.
         film_dim: Override the hidden width of the FiLM (week) generators
             (default: embed_dim).
     """
-    # Reference dimensions at scale=1.0 (former "medium")
     embed_dim = max(64, round(512 * model_scale / 64) * 64)
     species_head_dim = embed_dim
     if species_bottleneck is None:
@@ -640,13 +605,13 @@ def create_model(
     species_head_blocks = max(1, round(2 * model_scale))
     env_head_blocks = max(1, round(1 * model_scale))
 
-    # Dropout scales mildly with size
+    # dropout grows slightly with size
     base_dropout = 0.1 + 0.025 * (model_scale - 1.0)
     dropout = max(0.0, min(base_dropout, 0.3))
     species_dropout = max(0.0, min(base_dropout + 0.1, 0.4))
     env_dropout = max(0.0, min(base_dropout, 0.3))
 
-    # Habitat-species head dimensions (matches env head width, species bottleneck)
+    # habitat-species head: env head width, species bottleneck
     habitat_head_dim = env_head_dim
     habitat_head_blocks = max(1, round(1 * model_scale))
     habitat_bottleneck = species_bottleneck

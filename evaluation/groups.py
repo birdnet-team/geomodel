@@ -9,9 +9,9 @@ observer-days scores like the most common bird. This check makes that visible.
 
 At a sample of benchmark places (``--places``, default 400) and four weeks, per
 taxon group: the mean number of species scoring at least 0.1 (the recommended
-filter line), 0.5 and 0.9, the mean
-score of the group's top five, and the share of the top 20 of the whole list that
-the group takes. A few named places are listed in full (``--show``).
+filter line), 0.5 and 0.9, the mean score of the group's top five, and the share
+of the top 20 of the whole list that the group takes. A few named places are
+listed in full (``--show``).
 """
 
 from __future__ import annotations

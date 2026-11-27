@@ -1,7 +1,8 @@
 # Habitat and population
 
 The teacher model uses the habitat of each place to carry what it learns from
-well-observed places to similar ones with few records. The habitat comes from
+well-observed places to similar ones with few records
+([Training](../model/training.md#why-two-models)). The habitat comes from
 [Google Earth Engine](https://earthengine.google.com): an account, a Google Cloud
 project registered for Earth Engine, and once per machine `earthengine authenticate`
 and `earthengine set_project PROJECT` (or `--project PROJECT` on the `habitat` and
@@ -25,7 +26,7 @@ resolution-5 cells. About 690,000 cells.
 
 ## Habitat features
 
-Every value is an **area mean over the hexagon** at about 1 km, not a sample at its
+Every value is an area mean over the hexagon at about 1 km, not a sample at its
 center: a cell on a coast is part sea, part land, and its features should say so.
 
 | columns | layer |
