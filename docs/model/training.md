@@ -141,5 +141,8 @@ Options that the release recipe does not use stay available for comparisons:
 ## Reproducibility
 
 `--seed` fixes the batch order and initialization. Two teachers trained with
-different seeds differ by about half a GeoScore point on the benchmark, so
-differences smaller than that between runs are noise.
+different seeds differed by 0.9 GeoScore points on the benchmark (77.5 and 76.6;
+early stopping picked epoch 3 in one run and epoch 2 in the other), while two
+students distilled from the same teacher with different seeds differed by 0.02.
+Differences between teachers smaller than about a point are noise; compare
+recipes on more than one teacher seed.
