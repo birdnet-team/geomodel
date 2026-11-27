@@ -56,7 +56,13 @@ Binary cross-entropy against a rate is the binomial log-likelihood per observer-
 so the sigmoid of the output learns the rate itself. The weight saturates: a row
 backed by one observer-day counts a little, a row with fifty almost fully, and a cell
 with fifty thousand checklists does not outweigh a thousand cells with fifty
-(`--c 5`). Species of the other group are masked out.
+(`--c 40`: a row has half weight at 40 observer-days). Species of the other group
+are masked out.
+
+The value was chosen on the benchmark with two teacher seeds each: mean GeoScore
+77.0 at c = 5, 77.2 at c = 15, 78.2 at c = 40 and 77.8 at c = 100 (one seed).
+Students gain less: 76.0 from c = 5 teachers, 76.7 from c = 15 and from c = 40.
+Off-season leak and false rejections in the filter study did not change.
 
 ### Optimization
 
@@ -130,7 +136,7 @@ Options that the release recipe does not use stay available for comparisons:
 | | `--pos-weight` | scales the loss of entries with a positive rate |
 | | `--gamma-pos`, `--gamma-neg` | focal down-weighting of easy entries (asymmetric loss) |
 | | `--rank-weight` | adds a list-wise term that rewards putting common species on top |
-| | `--c` | effort at which a row has half weight |
+| | `--c` | effort at which a row has half weight (release: 40; 5 and 15 were compared) |
 | | `--no-coords` | habitat and week only |
 | | without `--habitat` | coordinates and week only (no distillation needed) |
 | | `--week-harmonics`, `--coord-harmonics`, `--scale` | network shape |
