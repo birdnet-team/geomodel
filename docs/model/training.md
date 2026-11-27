@@ -54,16 +54,21 @@ $$
 
 Binary cross-entropy against a rate is the binomial log-likelihood per observer-day,
 so the sigmoid of the output learns the rate itself. The weight saturates: a row
-backed by one observer-day counts little, a row with 40 observer-days half, one with
-400 nine tenths, and a cell with fifty thousand checklists does not outweigh a
-thousand cells with a few hundred (`--c 40`). Species of the other group
+backed by one observer-day counts little, a row with 15 observer-days half, one with
+135 nine tenths, and a cell with fifty thousand checklists does not outweigh a
+thousand cells with a few hundred (`--c 15`). Species of the other group
 are masked out.
 
-c = 40 scored best on the benchmark. Mean teacher GeoScore over two seeds is 77.0
-at c = 5, 77.2 at c = 15 and 78.2 at c = 40; one seed at c = 100 gives 77.8.
-Students gain less: 76.0 from c = 5 teachers, 76.7 from c = 15 and from c = 40.
-Off-season leak and false rejections in the
-[App filter study](../evaluation/filter_study.md) did not change with c.
+A larger c favors well-observed places. Mean teacher GeoScore over two seeds is 77.0
+at c = 5, 77.2 at c = 15 and 78.2 at c = 40 (one seed at c = 100: 77.8), but the
+students gain the same from c = 15 and c = 40: 76.7, against 76.0 from c = 5
+teachers. In [held-out years](../evaluation/held_out_years.md), a larger c ranks
+species slightly better in well-observed rows and slightly worse in sparse ones:
+bird top-10 capture in rows with one to three observer-days is 0.373, 0.366 and
+0.360 at c = 5, 15 and 40, while recall of regular species does not change. c = 15
+keeps the student's gain at half the cost in sparse places. Off-season leak and
+false rejections in the [App filter study](../evaluation/filter_study.md) did not
+change with c.
 
 ### Optimization
 
