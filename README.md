@@ -102,7 +102,8 @@ habitat, which lets it carry what it learns from well-observed places to similar
 poorly observed ones. The **student** (`distill.py`) is the released model: it only
 knows coordinates and week and learns the teacher's predictions everywhere on land,
 limited to a few hundred kilometers around each species' records. `package.py` adds
-the score curve and the rules for humans and domestic animals; `convert.py` exports.
+the score curve (with a separate anchor for non-birds) and the rules for humans and
+domestic animals; `convert.py` exports.
 
 The full set of commands, the file formats and the reasoning behind each step are in
 the [documentation](https://birdnet-team.github.io/geomodel/).

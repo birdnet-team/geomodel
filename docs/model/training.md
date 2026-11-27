@@ -14,8 +14,13 @@ python distill.py data/train.npz runs/teacher/teacher.pt data/ee/habitat_res5.pa
     --benchmark data/benchmark/bench_20k --int8-check
 
 python package.py runs/student/student.pt taxonomy.csv data/ubiquitous.csv release \
-    --name BirdNET+_Geomodel_V4.0_Global_17K
+    --name BirdNET+_Geomodel_V4.0_Global_17K --nonbird-f0 0.001
 ```
+
+The training file is built with naturalist effort (`pipeline.gbif_targets --effort
+naturalist`, [GBIF records](../pipeline/gbif.md#effort)); `--ocean` and the separate
+non-bird anchor (`--nonbird-f0 0.001`, [Scores](scores.md#a-separate-anchor-for-non-birds))
+are part of the release recipe.
 
 On one RTX 4090 the teacher takes about 25 minutes and the student about 35; the
 benchmark evaluation at the end of each adds about ten minutes on the CPU. The

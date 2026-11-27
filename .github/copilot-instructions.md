@@ -35,7 +35,7 @@ domestic animals stay mid-range. Every output is a BirdNET id.
 7. `train_teacher.py`: coordinates + week + habitat -> rates (masked, effort-weighted BCE; `model/loss.py`).
 8. `distill.py`: coordinates + week only, fitted to the teacher on every land cell; range envelope,
    human/domestic floors, ocean rule.
-9. `package.py`: release checkpoint with score curve, floors, caps; `convert.py`: exports
+9. `package.py`: release checkpoint with score curve (non-bird anchor `--nonbird-f0 0.001` in the release), floors, caps; `convert.py`: exports
    (INT8 = int8 weights, float32 arithmetic); `predict.py`: species lists.
 10. `evaluation/`: eBird benchmark + GeoScore v2, seasonality, Status & Trends, app filter study, range maps.
 

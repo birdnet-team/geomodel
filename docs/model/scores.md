@@ -47,9 +47,14 @@ often than photographed (many frogs and insects) end up with low rates.
 `package.py --nonbird-f0 0.001` gives non-birds their own anchor: a non-bird reported
 on 0.1 % of naturalist observer-days then scores 0.1. Humans and domestic animals
 keep the common anchor, because their floors were trained on it. The curve stores
-one anchor per output (`f0_species`); `convert.py` and `model.io` apply it (the
-model converter needs the same support before it can export such a release).
-Without the option all species share the same anchor.
+one anchor per output (`f0_species`); `convert.py`, `model.io` and the
+[BirdNET model converter](https://github.com/birdnet-team/model-converter) apply it.
+Without the option all species share the same anchor. The V4 release uses it: with
+the common anchor, much-heard frogs such as the spring peeper stay below 0.1 (0.07 in
+New York in April); with the non-bird anchor they reach 0.25, while non-birds take
+about 6 % of each place's top 20 (40 % before naturalist effort, 1 % without the
+anchor). Much-photographed insects rise as well, which does no harm in a filter for
+sounds.
 
 ## Humans and domestic animals
 
