@@ -1,256 +1,93 @@
-# Model Export
+# Export and inference
 
-Convert a trained checkpoint to portable inference formats for deployment.
-
-## Quick Start
+## Exporting
 
 ```bash
-python convert.py                                    # ONNX FP16 (default)
-python convert.py --formats onnx tflite_fp16         # multiple formats
-python convert.py --formats all                      # everything
+python convert.py --checkpoint release/BirdNET+_Geomodel_V4.0_Global_17K.pt --outdir exports \
+    --formats onnx onnx_fp16 onnx_int8 torchscript
 ```
 
-## Supported Formats
-
-| Format | Flag | Size (scale 0.75, 12K species) | Description |
-|---|---|---|---|
-| ONNX FP32 | `onnx` | ~15 MB | Full-precision ONNX model |
-| ONNX FP16 | `onnx_fp16` | ~7.5 MB | Half-precision ONNX (default) |
-| TFLite FP32 | `tflite` | ~14 MB | TensorFlow Lite, full precision |
-| TFLite FP16 | `tflite_fp16` | ~13 MB | TensorFlow Lite, half precision |
-| TFLite INT8 | `tflite_int8` | ~4 MB | TensorFlow Lite, dynamic-range quantization |
-| TF SavedModel | `tf` | ~14 MB | TensorFlow SavedModel directory |
-| TorchScript | `torchscript` | ~27 MB | Traced + frozen `ScriptModule`, loadable via `torch.jit.load` |
-
-Use `--formats all` to export everything at once.
-
-!!! note "TorchScript output activation"
-    Unlike the ONNX/TFLite exports (which bake in sigmoid and return
-    probabilities), the TorchScript export returns raw species **logits** by
-    default. This suits runtimes that apply their own activation — for
-    example, BirdNET's `pt` and its `apply_sigmoid` flag. Pass
-    `--torchscript_sigmoid` to bake sigmoid into the traced graph instead.
-
-## CLI Reference
-
-| Flag | Default | Description |
+| format | file | contents |
 |---|---|---|
-| `--checkpoint` | `checkpoints/checkpoint_best.pt` | Source checkpoint |
-| `--outdir` | `exports` | Output directory |
-| `--formats` | `onnx_fp16` | Space-separated list of formats (or `all`) |
-| `--tol` | `1e-4` | Base tolerance for numerical validation |
-| `--device` | `auto` | Device for PyTorch reference model |
-| `--fp16_io` | off | Convert model I/O to FP16 as well (see below) |
-| `--torchscript_sigmoid` | off | Bake sigmoid into the TorchScript export (default: raw logits) |
+| `onnx` | `geomodel.onnx` | float32 |
+| `onnx_fp16` | `geomodel_fp16.onnx` | weight matrices stored as float16, computed in float32; scores within 0.01 of FP32 |
+| `onnx_int8` | `geomodel_int8.onnx` | weight matrices stored as int8 (one scale per output channel), computed in float32; the smallest file, scores within about 0.2 of FP32 and usually much closer |
+| `tflite` | `geomodel.tflite` | TensorFlow Lite, float32 |
+| `tflite_fp16` | `geomodel_fp16.tflite` | TensorFlow Lite with float16 weights |
+| `tflite_int8` | `geomodel_int8.tflite` | dynamic-range INT8 (activations rounded to 8 bits as well) |
+| `tf` | `saved_model/` | TensorFlow SavedModel |
+| `torchscript` | `geomodel.pt` | traced TorchScript; returns logits unless `--torchscript_sigmoid` |
 
-## FP16 I/O Behavior
+The apps ship the INT8 ONNX file. Its weights take one byte each, but nothing else
+is rounded: ONNX Runtime's own dynamic quantization, and TFLite's dynamic-range INT8,
+also round the activations to 8 bits, which pushes some scores far up at places far
+from any data (a house spider at 0.9 in the middle of the Pacific in our tests).
+Storing int8 weights and computing in float32 avoids that at the same file size.
 
-By default, ONNX FP16 exports keep model **inputs and outputs in FP32** while
-converting internal weights and activations to FP16.  This preserves full
-coordinate precision (latitude, longitude, week) and keeps LayerNormalization
-in FP32 for numerical stability.
+Each export is run on a fixed set of places and weeks and compared with PyTorch; it
+fails if the largest score difference exceeds the format's tolerance (1e-4 for
+float32, 0.01 for float16 weights, 0.25 for int8 weights). The label file next to the
+checkpoint and the model license are copied to the output folder.
 
-Pass `--fp16_io` to convert I/O tensors to FP16 as well.  This is slightly
-smaller but increases numerical divergence from the PyTorch reference.
+The release files on GitHub are made with the
+[BirdNET model converter](https://github.com/birdnet-team/model-converter), which uses
+the same model definition and adds LiteRT files with built-in operators only and
+Core ML packages.
 
-| Mode | Max diff (typical) | Notes |
-|---|---|---|
-| FP16 weights, FP32 I/O (default) | ~0.013 | Best accuracy, recommended |
-| Full FP16 (`--fp16_io`) | ~0.013 | Slightly lossy input precision |
+## What the exports compute
 
-## Export Wrapper
+All formats take one float32 tensor of shape `(batch, 3)` with the columns latitude
+(degrees), longitude (degrees) and week (1-48), and return `(batch, n_species)`
+scores in the order of the label file. The score curve, the floors for humans and
+domestic animals and the cap for domestic animals are part of the graph
+([Scores](scores.md)), so an export returns exactly what `predict.py` prints. For a
+whole-year list, run all 48 weeks and take the maximum per species.
 
-All exported models use a unified interface:
+The label file has one line per output: BirdNET id, scientific name and common
+name, tab-separated.
 
-- **Input**: `(batch, 3)` float tensor — columns are `[latitude, longitude, week]`
-- **Output**: `(batch, n_species)` float tensor — sigmoid probabilities
-
-This differs from the raw PyTorch model which takes three separate tensors.  The wrapper applies sigmoid internally so outputs are directly interpretable as probabilities.
-
-## Validation
-
-After each conversion, the script runs automatic numerical validation:
-
-1. A fixed set of 200 reference inputs (diverse lat/lon/week combinations) is generated
-2. The PyTorch model produces reference outputs
-3. The exported model is loaded back and run on the same inputs
-4. Maximum and mean absolute differences are computed
-5. If the max diff exceeds the tolerance, the conversion is marked as **FAIL**
-
-Tolerances are format-aware:
-
-| Format | Effective tolerance |
-|---|---|
-| ONNX FP32 | `tol` (1e-4) |
-| ONNX FP16 (FP32 I/O, default) | 0.06 |
-| ONNX FP16 (`--fp16_io`) | 0.05 |
-| TFLite FP32 | `tol` (1e-4) |
-| TFLite FP16 | `tol × 10` |
-| TFLite INT8 | `tol × 100` |
-| TF SavedModel | `tol` (1e-4) |
-
-## Dependencies
-
-ONNX formats require:
-
-```bash
-pip install onnx onnxruntime onnxscript onnxconverter-common
-```
-
-TFLite and TF SavedModel additionally require:
-
-```bash
-pip install tensorflow onnx2tf
-```
-
-!!! note "TFLite runtime requirement"
-    This model uses GELU, which maps to `tf.Erf` during conversion. TFLite
-    therefore emits Select TF Ops (`FlexErf`) for FP32/FP16 exports. Run
-    these models with a TensorFlow Lite runtime that includes the Flex
-    delegate (`SELECT_TF_OPS`).
-
-The script will print a clear error message if a required package is missing — it does not fail silently.
-
-## Output Structure
-
-```
-exports/
-├── geomodel.onnx             # ONNX FP32
-├── geomodel_fp16.onnx       # ONNX FP16
-├── geomodel.tflite          # TFLite FP32
-├── geomodel_fp16.tflite     # TFLite FP16
-├── geomodel_int8.tflite     # TFLite INT8
-├── geomodel.pt              # TorchScript (traced + frozen)
-├── saved_model/             # TF SavedModel
-├── labels.txt               # Species vocabulary (copied from checkpoint dir)
-├── LICENSE-MODELS.md        # Apache 2.0 license for model artifacts
-└── ACCEPTABLE_USE.md        # Responsible-use guidance
-```
-
-## Running Exported Models
-
-All exported formats share the same interface:
-
-- **Input**: `(batch, 3)` float32 tensor — columns are `[latitude, longitude, week]`
-- **Output**: `(batch, n_species)` float32 tensor — sigmoid probabilities
-
-### Loading labels
-
-```python
-def load_labels(path="exports/labels.txt"):
-    """Load species labels from labels.txt."""
-    labels = []
-    with open(path) as f:
-        for line in f:
-            parts = line.strip().split("\t")
-            labels.append({"code": parts[0], "sci": parts[1], "common": parts[2]})
-    return labels
-```
-
-### PyTorch (.pt)
-
-```python
-import torch
-import numpy as np
-from model.model import BirdNETGeoModel
-
-checkpoint = torch.load("checkpoints/checkpoint_best.pt", map_location="cpu",
-                        weights_only=False)
-cfg = checkpoint["model_config"]
-model = BirdNETGeoModel(
-    n_species=cfg["n_species"],
-    n_env_features=cfg["n_env_features"],
-    model_scale=cfg["model_scale"],
-    coord_harmonics=cfg.get("coord_harmonics", 8),
-    week_harmonics=cfg.get("week_harmonics", 8),
-)
-model.load_state_dict(checkpoint["model_state_dict"])
-model.eval()
-
-lat = torch.tensor([52.5])
-lon = torch.tensor([13.4])
-week = torch.tensor([22.0])
-
-with torch.no_grad():
-    logits = model(lat, lon, week, return_env=False)["species_logits"]
-    probs = torch.sigmoid(logits)          # (1, n_species)
-
-labels = load_labels("checkpoints/labels.txt")
-top = probs[0].topk(10)
-for i, idx in enumerate(top.indices):
-    print(f"{i+1}. {labels[idx]['common']}: {top.values[i]:.3f}")
-```
-
-### ONNX
+## Running them
 
 ```python
 import numpy as np
 import onnxruntime as ort
 
-session = ort.InferenceSession("exports/geomodel_fp16.onnx")
-
-inputs = np.array([[52.5, 13.4, 22.0]], dtype=np.float32)  # (batch, 3)
-probs = session.run(None, {"input": inputs})[0]             # (batch, n_species)
-
-labels = load_labels()
-top_k = 10
-top_indices = np.argsort(probs[0])[::-1][:top_k]
-for i, idx in enumerate(top_indices):
-    print(f"{i+1}. {labels[idx]['common']}: {probs[0][idx]:.3f}")
+labels = [line.rstrip('\n').split('\t') for line in open('exports/labels.txt', encoding='utf-8')]
+session = ort.InferenceSession('exports/geomodel_int8.onnx')
+scores = session.run(None, {'input': np.array([[50.83, 12.92, 22]], np.float32)})[0][0]
+for i in np.argsort(-scores)[:10]:
+    print(f'{scores[i]:.3f}  {labels[i][2]}')
 ```
 
-### TFLite
-
 ```python
-import numpy as np
-import tensorflow as tf
-
-interpreter = tf.lite.Interpreter(model_path="exports/geomodel_fp16.tflite")
-interpreter.allocate_tensors()
-
-input_detail = interpreter.get_input_details()[0]
-output_detail = interpreter.get_output_details()[0]
-
-inputs = np.array([[52.5, 13.4, 22.0]], dtype=np.float32)
-interpreter.set_tensor(input_detail["index"], inputs)
-interpreter.invoke()
-probs = interpreter.get_tensor(output_detail["index"])       # (1, n_species)
-
-labels = load_labels()
-top_k = 10
-top_indices = np.argsort(probs[0])[::-1][:top_k]
-for i, idx in enumerate(top_indices):
-    print(f"{i+1}. {labels[idx]['common']}: {probs[0][idx]:.3f}")
-```
-
-### TorchScript
-
-The TorchScript export is self-contained — `torch.jit.load` opens it directly
-with no need to import the model class or reconstruct it from a config (unlike
-the raw training checkpoint in the *PyTorch (.pt)* section above).
-
-```python
-import numpy as np
 import torch
 
-model = torch.jit.load("exports/geomodel.pt", map_location="cpu")
-model.eval()
-
-inputs = torch.tensor([[52.5, 13.4, 22.0]], dtype=torch.float32)  # (batch, 3)
+model = torch.jit.load('exports/geomodel.pt', map_location='cpu').eval()
 with torch.no_grad():
-    logits = model(inputs)              # (batch, n_species) — raw logits by default
-    probs = torch.sigmoid(logits)       # apply activation yourself
-
-labels = load_labels()
-top = probs[0].topk(10)
-for i, idx in enumerate(top.indices):
-    print(f"{i+1}. {labels[idx]['common']}: {top.values[i]:.3f}")
+    scores = torch.sigmoid(model(torch.tensor([[50.83, 12.92, 22.0]])))
 ```
 
-!!! note "Logits, not probabilities"
-    The default export returns raw logits — apply `sigmoid` yourself (or let
-    your runtime do it). Re-export with `--torchscript_sigmoid` if you want the
-    graph to return probabilities directly, matching the ONNX/TFLite exports.
+In Python with the repository, `model.io.load` opens any checkpoint (release,
+student, teacher, or a V3 release) and returns an object with `.species`,
+`.scores(lat, lng, week)` and, for models that predict encounter rates,
+`.rates(...)`:
 
-!!! tip "Batch inference"
-    All formats support batched inputs. Stack multiple `[lat, lon, week]` rows into a single `(N, 3)` array to predict many locations at once.
+```python
+from model.io import load
+
+model = load('release/BirdNET+_Geomodel_V4.0_Global_17K.pt')
+scores = model.scores([50.83], [12.92], [22])[0]
+```
+
+## predict.py
+
+```bash
+python predict.py --checkpoint release/BirdNET+_Geomodel_V4.0_Global_17K.pt --lat 50.83 --lon 12.92 --week 22
+python predict.py --checkpoint ... --lat 50.83 --lon 12.92 --week -1 --threshold 0.05 --top-k 300
+python predict.py --checkpoint ... --common-species 5000 --taxonomy taxonomy.json --output common.txt
+```
+
+`--week -1` gives the whole year. `--common-species N` builds a list of N species
+that covers the world evenly: mean scores over a 5° grid and four weeks for 20
+regions, then, round by round, the next four birds and one other species from each
+region's ranking.

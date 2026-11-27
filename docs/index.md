@@ -4,69 +4,77 @@
 
 # BirdNET Geomodel
 
-**Spatiotemporal species occurrence prediction for post-filtering BirdNET acoustic detections.**
+**Which species can be expected at this place in this week of the year?**
 
-BirdNET Geomodel predicts which species are likely to occur at a given location and time of year. It uses a multi-task neural network trained on [GBIF](https://www.gbif.org/) occurrence data and environmental features from [Google Earth Engine](https://earthengine.google.com/), producing species occurrence probabilities that serve as a prior for filtering acoustic detection results from [BirdNET](https://birdnet.cornell.edu/).
+The geomodel takes latitude, longitude and week and returns a score for each of
+about seventeen thousand species: birds, mammals, amphibians, insects, reptiles and
+fish of the BirdNET taxonomy. BirdNET apps use it to filter and rank what the audio
+model detects. A detection of a species that is not expected there scores low and
+is hidden or flagged; a detection of a species that is common there passes.
 
 <p align="center">
-  <img src="demo_migrants.gif" alt="Animated range maps of 9 migratory species across 48 weeks" width="100%">
+  <img src="demo_migrants.gif" alt="Animated range maps of migratory species across 48 weeks" width="100%">
 </p>
-Figure 1: Animated range maps of 9 migratory species across 48 weeks of the year. Each frame shows predicted occurrence probabilities for a single week, with darker colors indicating higher probabilities.
 
-## What It Is — and What It Isn't
+## What the score means
 
-The geomodel is a **convenience tool for casual users and citizen scientists** who want to get the most out of BirdNET without expert ornithological knowledge. If you don't know which birds to expect at your recording location, the geomodel provides a reasonable prior that helps BirdNET suppress unlikely species and surface the most plausible detections.
+The score follows how often a species is encountered at a place and time. Common
+species score high, scarce ones low, rare visitors far below the line, and the
+course over the year follows migration. A score of 0.1 corresponds to a species
+reported on about 0.3 % of checklists in the area. Humans always pass (the apps use
+the class to detect speech), and domestic animals sit in the middle range
+everywhere. Details: [Scores](model/scores.md).
 
-It is **not** a precise species distribution model. The predictions are intentionally coarse — "good enough" to improve acoustic classification, but not intended for scientific range analyses or conservation planning. Researchers who know their study area and the species they expect should use a **custom species list** curated by domain experts instead of relying on the geomodel. An expert-crafted list will always outperform an automated prior.
+## What it is not
 
-In short: the geomodel exists so that beginners don't have to guess which species might be present. If you already know, you don't need it.
+The geomodel is a filter for audio detections, built for people who do not know
+which species to expect where they record. It is not a species distribution model
+for research or conservation planning: its ranges are deliberately generous in
+places with few records, because wrongly hiding a true detection costs more than
+showing an unlikely one. If you know your study area and its species, a curated
+species list will serve you better.
 
-### Why a model instead of a lookup table?
+## Why a model and not a lookup table
 
-An alternative approach would be to query eBird or iNaturalist observation databases directly, but that requires shipping hundreds of megabytes of occurrence data and building spatial indices on the client. The trained geomodel achieves comparable results in under 15 MB (≈ 7.5 MB for the FP16 ONNX model) — small enough to bundle with any mobile or embedded application.
+Querying eBird or iNaturalist directly would mean shipping hundreds of megabytes of
+occurrence data and spatial indices. The model fits in under 10 MB (the INT8 ONNX
+file the apps ship), runs on the device, and makes reasonable
+predictions where nobody has recorded anything yet, because it learns how species
+relate to habitat and season rather than memorizing records.
 
-Because the model learns continuous spatial and temporal patterns rather than memorizing discrete observations, it also **interpolates** into areas with sparse or no survey coverage and **smooths out geographic biases** in the observation record (e.g. heavily surveyed regions like the US vs. under-surveyed tropical forests). A raw lookup table can only tell you what has been reported; the model can make reasonable predictions where nobody has looked yet.
-
----
-
-## How It Works
-
-The model learns spatial and temporal patterns from species observation data:
-
-1. **Environmental sampling** — An H3 hexagonal grid covers the globe; each cell is enriched with environmental features (elevation, climate, land cover, etc.) from Google Earth Engine.
-2. **Occurrence data** — GBIF observations are mapped onto the H3 grid, producing per-cell, per-week species lists.
-3. **Multi-task training** — A neural network learns to predict species occurrence from raw (latitude, longitude, week) inputs, using environmental reconstruction as an auxiliary training signal.
-4. **Inference** — Given any coordinate and week, the model outputs a ranked list of species with occurrence probabilities.
+## How it is built
 
 ```mermaid
 graph LR
-    A[H3 Grid + Earth Engine] --> C[Combined Parquet]
-    B[GBIF Occurrences] --> C
-    C --> D[Train Model]
-    D --> E["Predict: (lat, lon, week) → species"]
+    G[GBIF records] --> R[encounter rates]
+    T[BirdNET taxonomy] --> R
+    E[Earth Engine habitat] --> TE
+    R --> TE["teacher<br/>coordinates + week + habitat"]
+    TE --> ST["student<br/>coordinates + week"]
+    ST --> X["release<br/>score curve, exports"]
+    B[eBird frequencies] -.-> V[benchmark]
 ```
 
-## Key Features
+1. GBIF occurrence records are turned into **encounter rates** per place and week:
+   the share of observer-days that recorded each species ([Data pipeline](pipeline/overview.md)).
+2. A **teacher** network learns those rates from coordinates, week and the habitat
+   of the place, so it can carry what it learns to similar places with few records.
+3. A **student** network, the released model, learns the teacher's predictions
+   everywhere on land from coordinates and week alone ([Training](model/training.md)).
+4. The release adds the score curve and the rules for humans and domestic animals,
+   and is exported to ONNX, TFLite and TorchScript ([Export](model/export.md)).
+5. Every model is checked against eBird checklist frequencies, eBird Status &
+   Trends maps and real app detections ([Evaluation](evaluation/benchmark.md)).
 
-- **No environmental data needed at inference** — the model encodes spatial and temporal patterns from coordinates alone
-- **Multi-harmonic circular encoding** — properly handles periodicity of lat/lon and week-of-year
-- **Scalable** — handles millions of training samples with sparse species encoding and mixed-precision training
-- **Rich visualization** — range maps, seasonal occurrence charts, richness maps, variable importance plots
+## Links
 
-## Quick Links
-
-- [Installation](getting-started/installation.md) — set up the environment
-- [Quick Start](getting-started/quickstart.md) — run the full pipeline end to end
-- [Model Architecture](model/architecture.md) — how the neural network works
-- [API Reference](api/model.md) — Python API documentation
-- [GitHub Repository](https://github.com/birdnet-team/geomodel)
+- [Installation](getting-started/installation.md) and [Quick start](getting-started/quickstart.md)
+- [Web demo](demo/index.md): range maps and species lists in the browser
+- [GitHub repository](https://github.com/birdnet-team/geomodel) and [releases](https://github.com/birdnet-team/geomodel/releases)
 
 ## License
 
-The source code is licensed under the [MIT License](https://github.com/birdnet-team/geomodel/blob/main/LICENSE).
-
-Model artifacts—including checkpoints, converted models, and labels—are licensed under the [Apache License 2.0](https://github.com/birdnet-team/geomodel/blob/main/LICENSE-MODELS.md).
-
-## Acceptable Use
-
-BirdNET is built to support biodiversity research and conservation. See the [BirdNET Acceptable Use Policy](community/acceptable-use.md) for responsible-use guidance, uses we consider unacceptable, and branding guidance. The policy is guidance and does not add conditions to the Apache 2.0 model license.
+Code: [MIT License](https://github.com/birdnet-team/geomodel/blob/main/LICENSE).
+Models (checkpoints, exports, labels): [Apache License 2.0](https://github.com/birdnet-team/geomodel/blob/main/LICENSE-MODELS.md).
+See also the [BirdNET Acceptable Use Policy](community/acceptable-use.md); it is guidance and adds no
+conditions to the model license.

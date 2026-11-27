@@ -1,74 +1,53 @@
 # Installation
 
-## Requirements
-
-- Python 3.10+
-- CUDA-capable GPU recommended for training (CPU works but is much slower)
-- ~2 GB disk space for dependencies
-
-## Clone and Set Up
+Python 3.10 or newer.
 
 ```bash
 git clone https://github.com/birdnet-team/geomodel.git
 cd geomodel
-python3 -m venv .venv
-source .venv/bin/activate
-```
-
-## System Dependencies (Linux/Ubuntu)
-
-Geospatial Python packages require native libraries for GDAL, PROJ, and GEOS:
-
-```bash
-sudo apt update
-sudo apt install -y build-essential python3-dev gdal-bin libgdal-dev \
-    libproj-dev proj-data proj-bin libgeos-dev libspatialindex-dev
-
-python3 -m pip install --upgrade pip setuptools wheel
-```
-
-## Python Dependencies
-
-```bash
+python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-!!! tip "Troubleshooting"
-    If `pip install` fails for a geospatial package, install it individually to see the full error:
-    ```bash
-    pip install pyproj shapely fiona rtree pyarrow
-    ```
-    Manylinux wheels provide pre-built binaries for most packages on common Python versions.
+`requirements.txt` covers everything. If you only want to run a released model,
+`numpy`, `torch` and (for the exports) `onnxruntime` are enough. The other packages
+are needed for:
 
-## Google Earth Engine
+| packages | for |
+|---|---|
+| `duckdb`, `h3`, `pyarrow`, `pandas`, `global-land-mask` | the data pipeline and training |
+| `earthengine-api` | habitat and population features (stage 4) |
+| `matplotlib`, `cartopy`, `Pillow`, `scipy` | evaluation and maps |
+| `rasterio`, `pyproj` | caching eBird Status & Trends rasters |
+| `onnx`, `onnxscript`, `onnxruntime` | ONNX exports |
+| `tensorflow`, `onnx2tf`, `tf-keras`, `onnx-graphsurgeon`, `sng4onnx`, `psutil` | TFLite and SavedModel exports |
+| `pytest` | tests |
 
-Earth Engine access is only needed for **Stage 1** (environmental data sampling). If you already have a combined parquet file, you can skip this.
+Training needs a GPU with about 16 GB of memory for the release configuration; it
+runs on the CPU too, slowly. The data pipeline needs disk space for the GBIF
+download (several hundred GB to a few TB, depending on the download) and the
+per-record parquet files (about a tenth of that).
 
-1. Sign up at [earthengine.google.com](https://earthengine.google.com/)
-2. Authenticate: `earthengine authenticate`
-3. The provided `initialize_ee()` helper handles authentication in scripts
+## Earth Engine
 
-## Optional Dependencies
-
-These are only needed for specific features:
+The habitat features (stage 4) come from Google Earth Engine. You need an Earth
+Engine account and a one-time login on each machine:
 
 ```bash
-# Hyperparameter autotune (--autotune)
-pip install optuna
-
-# Model export (convert.py)
-pip install onnx onnxruntime onnxscript onnxconverter-common
-
-# TFLite / TF SavedModel export
-pip install tensorflow onnx2tf
+earthengine authenticate
 ```
 
-## Verifying the Installation
-
-After installing, you can verify everything works:
+## Checking the installation
 
 ```bash
-python -c "import torch; print(f'PyTorch {torch.__version__}, CUDA: {torch.cuda.is_available()}')"
-python -c "import geopandas; print(f'GeoPandas {geopandas.__version__}')"
-python -c "import h3; print(f'H3 {h3.__version__}')"
+python -m pytest tests
+```
+
+The tests use small synthetic data and take a few seconds.
+
+## Documentation
+
+```bash
+pip install -r requirements-docs.txt
+mkdocs serve        # http://localhost:8000, the web demo at /demo/
 ```

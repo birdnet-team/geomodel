@@ -10,8 +10,8 @@
   <a href="https://www.python.org/"><img src="https://img.shields.io/badge/python-3.10+-blue.svg" alt="Python 3.10+"></a>
   <a href="https://pytorch.org/"><img src="https://img.shields.io/badge/PyTorch-2.0+-ee4c2c.svg" alt="PyTorch"></a>
   <a href="https://birdnet-team.github.io/geomodel/"><img src="https://img.shields.io/badge/docs-mkdocs-blue.svg" alt="Documentation"></a>
-  <a href="https://github.com/birdnet-team/geomodel/releases/tag/v3.0.4"><img src="https://img.shields.io/badge/version-3.0.4-blue.svg" alt="Version 3.0.4"></a>
-  <img src="https://img.shields.io/badge/species-14%2C082-brightgreen" alt="14,082 species">
+  <a href="https://github.com/birdnet-team/geomodel/releases"><img src="https://img.shields.io/badge/version-4.0-blue.svg" alt="Version 4.0"></a>
+  <img src="https://img.shields.io/badge/species-16%2C960-brightgreen" alt="16,960 species">
 </p>
 
 <p align="center">
@@ -27,143 +27,126 @@
   <a href="https://github.com/birdnet-team/geomodel/releases/latest"><b>Download</b></a> · <a href="https://birdnet-team.github.io/geomodel/"><b>Documentation</b></a> · <a href="CONTRIBUTING.md"><b>Contributing</b></a> · <a href="LICENSE"><b>License</b></a>
 </p>
 
-## Setup
+## What it does
+
+The geomodel answers one question: which species can be expected at this place in
+this week of the year? It takes latitude, longitude and week (1-48, four per month)
+and returns a score per species. BirdNET apps use it to filter and rank what the
+audio model detects: a detection of a species that does not occur there scores low
+and is hidden or flagged.
+
+The score follows how often a species is encountered. Common species score high,
+scarce ones low, and the course of the score over the year follows migration. A
+score of 0.1 corresponds to a species reported on about 0.3 % of checklists in the
+area. Humans always pass (the apps use the class to detect speech), and domestic
+animals sit in the middle range everywhere.
+
+Version 4 covers 16,960 species of the BirdNET taxonomy (birds, mammals, amphibians,
+insects, reptiles, fish and a few others), each with a BirdNET id.
+
+## Install
 
 ```bash
 git clone https://github.com/birdnet-team/geomodel.git
 cd geomodel
 python3 -m venv .venv && source .venv/bin/activate
-
-# Linux: install geospatial system libraries
-sudo apt install -y build-essential python3-dev gdal-bin libgdal-dev \
-    libproj-dev proj-data proj-bin libgeos-dev libspatialindex-dev
-
 pip install -r requirements.txt
 ```
 
-Authenticate with Google Earth Engine: `earthengine authenticate`
+## Use a released model
 
-## Pipeline
-
-```
-1. geoutils.py   — Build H3 grid + sample Earth Engine environmental data
-2. gbifutils.py  — Process raw GBIF occurrence archive → filtered CSV
-3. combine.py    — Join geodata + GBIF → training parquet + taxonomy CSV
-4. train.py      — Train multi-task model → checkpoints
-5. predict.py    — Inference: (lat, lon, week) → species list
-```
+Release files are on the [releases page](https://github.com/birdnet-team/geomodel/releases):
+a PyTorch checkpoint with its label file, and ONNX, TFLite and TorchScript exports.
 
 ```bash
-# 1. Sample environmental data on H3 grid
-python utils/geoutils.py --km 350 --out-dir outputs/global_chunks \
-    --threads 8 --combine --combined-out data/global_350km_ee.parquet --fill-missing
-
-# 2. Process GBIF archive
-python utils/gbifutils.py --gbif /path/to/gbif_archive.zip --file occurrence.txt \
-    --output ./outputs/gbif_processed.csv.gz --taxonomy taxonomy_v0.2-Jun2026.csv
-
-# 3. Combine
-python utils/combine.py --geodata data/global_350km_ee.parquet \
-    --gbif ./outputs/gbif_processed.csv.gz --output ./outputs/combined.parquet
-
-# 4. Train
-python train.py --data_path ./outputs/combined.parquet --model_scale 0.75 --num_epochs 100
-
-# 5. Predict
-python predict.py --lat 50.83 --lon 12.92 --week 22
+python predict.py --checkpoint BirdNET+_Geomodel_V4.0_Global_17K.pt --lat 50.83 --lon 12.92 --week 22
+python predict.py --checkpoint BirdNET+_Geomodel_V4.0_Global_17K.pt --lat 50.83 --lon 12.92 --week -1   # whole year
 ```
 
-See the [documentation](https://birdnet-team.github.io/geomodel/) for detailed usage, model architecture, and visualization scripts.
+The exports take one float32 tensor `[batch, 3]` (latitude, longitude, week) and
+return `[batch, n_species]` scores in label order. The INT8 ONNX file (weights stored
+as int8, computed in float32) is the one the apps ship; its scores are within about
+0.2 of the FP32 model, usually much closer.
 
-## Model
+## How the model is built
 
-A multi-task neural network that learns spatial-temporal patterns from coordinates alone:
+Training data come from [GBIF](https://www.gbif.org) occurrence records, habitat
+layers from [Google Earth Engine](https://earthengine.google.com), and an independent
+benchmark from [eBird](https://ebird.org) checklist frequencies.
 
-- **Input:** Raw (lat, lon, week) — circular encoding is handled inside the model
-- **Primary task:** Multi-label species classification (BCE default; ASL, focal, AN also available)
-- **Auxiliary task:** Environmental feature regression (training only, acts as regularizer)
-- **Habitat head** (optional, `--habitat_head`): predicted env features → species logits, combined with direct head via learned gate — makes environment→species relationships explicit
-- **Scalable:** ~1.8M (scale=0.5) to ~36M (scale=2.0) parameters with ~12K species (default scale=0.75 ≈ 3.8M)
-- **Tiny footprint:** Under 15 MB (≈ 7.5 MB for the FP16 ONNX model) — replaces hundreds of MB of raw eBird/iNat observation data while interpolating into survey gaps and smoothing geographic biases
+```
+GBIF download ─► 1 gbif_map ─► 3 gbif_targets ─► 5 dataset ─► train_teacher.py ─► distill.py ─► package.py ─► convert.py
+                                     ▲                ▲            ▲ habitat            ▲ coordinates + week only
+BirdNET taxonomy ─► 2 taxonomy ──────┘                │            │
+Earth Engine ─────► 4 earthengine (habitat, population) ───────────┘
+eBird frequencies ► 6 ebird ─► evaluation/ (benchmark, GeoScore v2)
+```
 
-## Visualization
+1. **Records** (`pipeline/gbif_map.py`): one pass over the GBIF download keeps place,
+   date, species, dataset and a hash of the observer for every record.
+2. **Species** (`pipeline/taxonomy.py`): every taxonomy species is matched to the GBIF
+   key its records are filed under. Species without a key have no data and are not
+   in the model.
+3. **Encounter rates** (`pipeline/gbif_targets.py`): per H3 cell (~250 km²) and week,
+   the share of observer-days that recorded the species. Recent years weigh more.
+4. **Habitat** (`pipeline/earthengine.py`): climate, land cover, elevation, surface
+   water and population per cell, as area means.
+5. **Training file** (`pipeline/dataset.py`): rates, effort and habitat in one file,
+   split into spatially separate blocks.
+6. **Benchmark** (`pipeline/ebird.py`): eBird frequencies for evaluation only. eBird
+   data cannot be redistributed; to build the benchmark you need your own eBird API
+   access. The file format is described in the module.
+
+The **teacher** (`train_teacher.py`) learns encounter rates from coordinates, week and
+habitat, which lets it carry what it learns from well-observed places to similar,
+poorly observed ones. The **student** (`distill.py`) is the released model: it only
+knows coordinates and week and learns the teacher's predictions everywhere on land,
+limited to a few hundred kilometers around each species' records. `package.py` adds
+the score curve and the rules for humans and domestic animals; `convert.py` exports.
+
+The full set of commands, the file formats and the reasoning behind each step are in
+the [documentation](https://birdnet-team.github.io/geomodel/).
+
+## Evaluate
 
 ```bash
-# Per-species weekly probability charts
-python scripts/plot_species_weeks.py --lat 50.83 --lon 12.92
-
-# Seasonal range maps
-python scripts/plot_range_maps.py --species "Barn Swallow" --bounds europe
-
-# Species richness heatmap
-python scripts/plot_richness.py --week 26
-
-# Ground truth overlay (pass training parquet to any of the above)
-python scripts/plot_species_weeks.py --lat 50.83 --lon 12.92 --data_path outputs/combined.parquet
-python scripts/plot_range_maps.py --species "Barn Swallow" --data_path outputs/combined.parquet
-python scripts/plot_richness.py --week 26 --data_path outputs/combined.parquet
-
-# Variable importance (Spearman correlations)
-python scripts/plot_variable_importance.py --species "Great Tit" --data_path data.parquet
-
-# Environmental feature maps
-python scripts/plot_environmental.py --input data/global_350km_ee.parquet
+python -m evaluation.benchmark   CHECKPOINT data/benchmark/bench_20k --taxonomy taxonomy.json  # eBird benchmark, GeoScore v2
+python -m evaluation.seasonality CHECKPOINT data/benchmark/bench_20k --taxonomy taxonomy.json  # migrants passed outside their season
+python -m evaluation.groups      CHECKPOINT data/benchmark/bench_20k --taxonomy taxonomy.json  # how taxon groups share the top of the lists
+python -m evaluation.status_trends score CHECKPOINT data/st_2023_0p5.npz --taxonomy taxonomy.json  # eBird Status & Trends maps
+python -m evaluation.filter_study CHECKPOINT geofilter_pairs.parquet --taxonomy taxonomy.json  # effect on app detections
+python -m evaluation.range_maps  CHECKPOINT maps/ --species "Hirundo rustica" --taxonomy taxonomy.json  # weekly range maps (GIF)
+python -m pytest tests                                                                        # unit tests
 ```
 
-## Project Structure
+The benchmark, Status & Trends maps and app recordings are not distributed with the
+repository; the [documentation](https://birdnet-team.github.io/geomodel/) describes
+their formats.
+
+## Repository
 
 ```
-geomodel/
-├── train.py                 # Training (Stage 4)
-├── predict.py               # Inference (Stage 5)
-├── convert.py               # Export to ONNX / TFLite / TF SavedModel / TorchScript
-├── model/
-│   ├── model.py             # Neural network architecture
-│   ├── loss.py              # Multi-task loss functions
-│   ├── metrics.py           # GeoScore and validation metric helpers
-│   └── autotune.py          # Optuna hyperparameter autotune runner
-├── utils/
-│   ├── geoutils.py          # H3 grid + Earth Engine (Stage 1)
-│   ├── gbifutils.py         # GBIF processing (Stage 2)
-│   ├── combine.py           # Join geodata + GBIF (Stage 3)
-│   ├── data.py              # Dataset / DataLoader / preprocessing
-│   ├── regions.py           # Holdout region definitions
-│   └── taxonomy.py          # Taxonomy utilities
-├── scripts/                 # Plotting & diagnostic scripts
-├── docs/                    # MkDocs documentation source
-│   └── demo/                # Interactive web demo (ONNX Runtime Web)
-├── exports/                 # Exported model files + labels + license
-└── checkpoints/             # Model checkpoints + labels.txt
+pipeline/        data preparation, stages 1-6
+model/           network (model.py), loss (loss.py), checkpoints and score curve (io.py)
+training/        training file loader, ocean rule
+train_teacher.py teacher: coordinates + week + habitat
+distill.py       student: coordinates + week
+package.py       release checkpoint (labels, score curve, floors, caps)
+convert.py       ONNX / TFLite / TorchScript exports
+predict.py       species list for a place and week
+evaluation/      benchmark, seasonality, Status & Trends, app filter study, range maps
+data/            small curated inputs (humans and domestic animals)
+docs/            documentation and the web demo
+tests/           unit tests
 ```
 
-## Interactive Demo
+## Web demo
 
-An interactive web demo is included under `docs/demo/`. It runs the ONNX FP16 model entirely client-side using [ONNX Runtime Web](https://onnxruntime.ai/docs/tutorials/web/) — no server-side inference needed.
-
-Demo model assets are produced with top-level `convert.py` and then copied into `docs/demo/` (`geomodel_fp16.onnx`, `labels.txt`).
-
-Features:
-- **Range Map** — select a species to see its predicted occurrence probability on a Leaflet map. Resolution adapts to the zoom level (coarser when zoomed out, finer when zoomed in).
-- **Richness Map** — predicted species count per grid cell, color-coded from low to high.
-- **Species List** — click any location to see all predicted species for that point.
-- **Bar Charts** — click any location to see 48-week phenology bar charts for all species above a probability threshold, normalized globally.
-- **CSV export** — download data for any mode (species list, phenology, range map, richness).
-- **Week selector** — choose any of the 48 weeks of the year.
-
-### Running the docs locally
-
-```bash
-# Install docs dependencies (once)
-pip install -r requirements-docs.txt
-
-# Start the MkDocs dev server
-mkdocs serve
-
-# Or specify a custom address
-mkdocs serve -a 0.0.0.0:8000
-```
-
-Then open <http://localhost:8000/demo/> in your browser.
+`docs/demo/` runs the FP16 ONNX model in the browser with
+[ONNX Runtime Web](https://onnxruntime.ai/docs/tutorials/web/): range maps, species
+richness, species lists and weekly bar charts for any place. Start it with
+`pip install -r requirements-docs.txt && mkdocs serve` and open
+<http://localhost:8000/demo/>.
 
 ## Citation
 

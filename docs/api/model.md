@@ -1,6 +1,6 @@
 # model.model
 
-Neural network architecture for species occurrence prediction.
+Network architecture.
 
 ::: model.model
     options:

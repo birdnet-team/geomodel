@@ -1,177 +1,105 @@
-# Model Architecture
+# Architecture
 
-The BirdNET Geomodel is a multi-task neural network that predicts species occurrence from raw location and time inputs.
+The released model takes three numbers, latitude, longitude and week, and returns
+one value per species. Everything else (encoding, habitat, the score curve) happens
+inside the network or during training. Two networks share the same building blocks:
 
-## Design Philosophy
-
-The model is designed with a key constraint: **at inference time, only latitude, longitude, and week number are needed**. No environmental data, no preprocessing — just three numbers.
-
-To make this work, the model learns spatial and temporal patterns during training by jointly predicting:
-
-1. **Species occurrence** (primary task) — which species are present at a location/time
-2. **Environmental features** (auxiliary task) — what the environment looks like at a location
-
-The auxiliary task acts as a regularizer, encouraging the model to learn meaningful spatial representations even when species labels are sparse.
-
-## Architecture Overview
+- the **teacher** sees coordinates, week and the habitat of the place;
+- the **student** sees coordinates and week only. It is the released model.
 
 ```mermaid
 graph TD
-    subgraph Input
-        A[lat, lon, week]
-    end
-
-    subgraph CircularEncoding
-        B["lat → sin/cos harmonics (2 × n)"]
-        C["lon → sin/cos harmonics (2 × n)"]
-        D["week → sin/cos harmonics (2 × n)"]
-    end
-
-    A --> B
-    A --> C
-    A --> D
-
-    subgraph Encoder
-        E["Concatenate lat + lon"]
-        F[Linear Projection]
-        G["Residual Block × N<br/>(each FiLM-modulated)"]
-        H[LayerNorm]
-    end
-
-    B --> E
-    C --> E
-    D --> G
-    E --> F --> G --> H
-
-    subgraph Heads
-        I["Species Head<br/>(multi-label classification)"]
-        J["Environmental Head<br/>(regression)"]
-    end
-
-    H --> I
-    H --> J
-
-    subgraph "Habitat Head (optional)"
-        K["Habitat-Species Head<br/>(env → species)"]
-        L["Learned Gate σ(W·emb + b)"]
-        M["gate × direct +<br/>(1−gate) × habitat"]
-    end
-
-    J -.->|detach| K
-    K --> M
-    I --> M
-    H --> L
-    L --> M
+    A[lat, lon] --> E1["circular encoding<br/>sin/cos harmonics"]
+    W[week] --> E2["circular encoding"]
+    E1 --> P[linear projection]
+    P --> R["residual blocks<br/>each modulated by the week (FiLM)"]
+    E2 --> F[FiLM generators] --> R
+    R --> N[LayerNorm: embedding]
+    H["habitat features<br/>(teacher only)"] --> M[habitat MLP] --> S
+    N --> S(("+"))
+    S --> SH["species head<br/>residual blocks, low-rank bottleneck"]
+    SH --> O["one logit per species<br/>sigmoid = encounter rate"]
 ```
 
-## Components
+## Circular encoding
 
-### Circular Encoding
-
-Raw coordinates and week numbers are poor inputs for neural networks — the model wouldn't know that longitude -180° and +180° are the same place, or that week 48 is adjacent to week 1.
-
-**Circular encoding** solves this by mapping each value to sine/cosine pairs at multiple harmonics (Tancik et al., 2020):
+A network does not know that longitude -180° and 180° are the same place, or that
+week 48 is next to week 1. Each value is therefore mapped to sine and cosine pairs
+at several frequencies (Tancik et al., 2020):
 
 $$
-\text{encode}(\theta) = [\sin(\theta), \cos(\theta), \sin(2\theta), \cos(2\theta), \ldots, \sin(n\theta), \cos(n\theta)]
+\text{enc}(\theta) = [\sin\theta, \cos\theta, \sin 2\theta, \cos 2\theta, \ldots, \sin n\theta, \cos n\theta]
 $$
 
-- **Latitude**: degrees → radians, then encoded with `coord_harmonics` harmonics (default 8 → 16 features)
-- **Longitude**: same as latitude (16 features)
-- **Week**: mapped to $[0, 2\pi)$ over 48 weeks, then encoded with `week_harmonics` harmonics (default 8 → 16 features)
+Latitude and longitude are converted to radians and encoded with `coord_harmonics`
+frequencies each; the week is mapped to $[0, 2\pi)$ over 48 weeks and encoded with
+`week_harmonics` frequencies. The conversion to radians is written so that it stays
+exact when an export stores constants as float16 (otherwise the highest longitude
+frequency would be off by enough to move scores by about 0.05).
 
-Spatial input features: $2 \times 2 \times n$ = 32 by default (where $n$ = `coord_harmonics`).  Week features (16) are used for FiLM conditioning rather than concatenated.
+## Encoder
 
-Year-round predictions (week 0) are computed at inference time as the **max** across all 48 weekly predictions — no special week-0 encoding is needed.
+The encoded coordinates are projected to the embedding width and passed through
+residual blocks (LayerNorm, GELU, Linear, twice, with a skip connection). After each
+block the week sets a scale and shift per channel (FiLM; Perez et al., 2018):
+$x' = (1 + \tanh g) \cdot \text{block}(x) + \beta$, with $g, \beta$ produced from the
+week encoding by a small MLP per block. The tanh keeps the scale between 0 and 2,
+which also keeps float16 exports from overflowing. The FiLM output layers start at
+zero, so at initialization the week changes nothing and the network learns how much
+it matters.
+LayerNorm uses $\varepsilon = 10^{-4}$, which float16 can represent.
 
-### Shared Encoder (`SpatioTemporalEncoder`)
+## Species head
 
-The encoder maps spatial coordinates into a rich embedding, **modulated by temporal information** via FiLM (Feature-wise Linear Modulation; Perez et al., 2018):
+Residual blocks followed by a low-rank output: Linear(width → bottleneck), GELU,
+Linear(bottleneck → species). With seventeen thousand species the output layer is
+by far the largest part of the network, so the bottleneck width is the main knob for
+the file size.
 
-1. **Spatial projection**: Concatenated lat+lon circular features → Linear to `embed_dim` (default 512)
-2. **Residual blocks** — each block applies LayerNorm → GELU → Linear → LayerNorm → GELU → Dropout → Linear with a skip connection.  All LayerNorm layers use `eps=1e-4` (above the FP16 minimum normal ~6e-5) so that the epsilon retains full precision after half-precision quantization.
-3. **FiLM conditioning** — after each residual block, the week encoding generates per-block scale (γ) and shift (β) parameters via a two-layer MLP: $x' = (\gamma + 1) \cdot \text{block}(x) + \beta$.  The $+1$ centers γ around identity (no scaling) at initialization, stabilizing early training.  This forces the model to actively modulate spatial representations based on the time of year.
-4. **Final LayerNorm** for stable downstream processing
+The network's sigmoid output is an **encounter rate**. Release checkpoints turn it
+into the app score inside the exported graph (see [Scores](scores.md)).
 
-The pre-norm residual design ensures stable training and strong gradient flow even with many blocks.
+## Teacher: habitat input
 
-### Species Prediction Head
+The teacher adds a three-layer MLP that maps the habitat features of the place
+(climate, land cover, elevation, water; [Habitat](../pipeline/earthengine.md)) to a
+vector of the embedding width, which is added to the encoder output before the
+species head. Habitat lets the teacher predict a species in a well-matching but
+little-visited valley because it has seen it in similar valleys elsewhere.
 
-A multi-label classification head that outputs one logit per species:
+## Optional heads (ablations)
 
-1. Residual blocks for further processing
-2. **Low-rank bottleneck**: instead of a single large Linear(hidden → n_species), the head uses Linear(hidden → bottleneck) → GELU → Linear(bottleneck → n_species)
+`model/model.py` keeps two heads from version 3 for comparisons:
 
-The bottleneck (default 128) dramatically reduces parameters when n_species is large (10K+) and learns a compact species-embedding space whose dimensions can be interpreted as latent ecological niches.
+- an **environment head** that predicts the habitat features from the embedding,
+  used as an auxiliary task (`distill.py --env-aux`);
+- a **habitat-species head** with a learned gate between a direct and a
+  habitat-based species prediction (`distill.py --habitat-head`).
 
-Output: raw logits (apply sigmoid for probabilities).
+The release recipe uses neither: habitat reaches the student through the teacher.
 
-### Environmental Prediction Head
+## Size
 
-A regression head that predicts normalized environmental features (elevation, temperature, precipitation, etc.) from the shared embedding. Used during training as an auxiliary objective. When the habitat-species head is enabled (see below), the environmental head also runs during inference so its output can feed the habitat pathway.
+`create_model(model_scale=...)` scales all widths linearly from scale 1.0 (width
+512, four encoder blocks, two species-head blocks, bottleneck 128); block counts are
+rounded. Two overrides fit a size budget: `species_bottleneck` (output bottleneck)
+and `film_dim` (width of the FiLM generators, which need far less than the full
+width: the week encoding has only a few dozen values).
 
-### Habitat-Species Association Head (optional)
+The V4 release student:
 
-Enabled with `--habitat_head`, this head creates an **explicit pathway from predicted environment to species occurrence**, making the relationship directly learnable rather than implicit in the shared encoder.
-
-**Architecture:**
-
-1. **Input**: predicted environmental features from the environmental head, **detached** (`env_pred.detach()`) so species-loss gradients don't corrupt the env head's MSE regression objective — the env head learns clean environmental representations from MSE alone
-2. **Projection** + residual blocks + **low-rank bottleneck** → species logits (same structure as the species head)
-3. **Learned gate**: a per-species gate $g = \sigma(W \cdot e + b)$ conditioned on the encoder embedding $e$ combines the two pathways:
-
-$$
-\hat{y} = g \cdot y_{\text{direct}} + (1 - g) \cdot y_{\text{habitat}}
-$$
-
-The gate is initialized with zero weights and bias = 3 ($\sigma(3) \approx 0.95$), so the **direct species head strongly dominates initially** and the habitat contribution only fades in once the env and habitat heads have learned useful representations.
-
-4. **Auxiliary habitat loss**: the same species loss function is applied directly to the habitat head's logits (before gating) with weight `--habitat_weight` (default 0.5). This gives the habitat head a full-strength learning signal independent of the gate value — critical because the gate initially suppresses the habitat contribution to ~5%.
-
-**Why this helps:**
-
-- The direct species head learns spatial-temporal patterns from coordinates alone
-- The habitat head learns explicit environment→species associations (e.g., "high elevation + conifer forest → Clark's Nutcracker")
-- The stop-gradient ensures the env head produces stable, accurate environmental features, while the habitat head learns from those clean representations
-- Together, they enable the model to predict species in **unobserved areas** with similar environments to observed ones — without needing data-level label propagation
-
-**Parameter overhead:** the gate linear layer adds `embed_dim × n_species` parameters; the habitat head itself is similar in size to the environmental head. At scale 0.5 with 12K species, this adds ~3.9M parameters.
-
-## Model Scaling
-
-Model capacity is controlled by a continuous scaling factor (`--model_scale`).
-All dimensions scale linearly from the reference point at `1.0`; block counts
-are rounded to the nearest integer (minimum 1).
-
-Approximate parameter counts assume ~12K species (the species head's final
-layer adds `bottleneck × n_species` parameters, so the total varies with
-vocabulary size):
-
-| Scale | Embed Dim | Encoder Blocks | Species Head      | Bottleneck | Env Head          | Approx. Parameters |
-|-------|-----------|----------------|-------------------|------------|-------------------|-------------------|
-| 0.25  | 128       | 1              | 128, 1 block      | 32         | 64, 1 block       | ~0.5M             |
-| 0.50  | 256       | 2              | 256, 1 block      | 64         | 128, 1 block      | ~1.8M             |
-| 0.75  | 384       | 3              | 384, 2 blocks     | 96         | 192, 1 block      | ~3.8M             |
-| 1.00  | 512       | 4              | 512, 2 blocks     | 128        | 256, 1 block      | ~7.2M             |
-| 1.25  | 640       | 5              | 640, 2 blocks     | 160        | 320, 1 block      | ~12.4M            |
-| 1.50  | 768       | 6              | 768, 3 blocks     | 192        | 384, 2 blocks     | ~21.2M            |
-| 1.75  | 896       | 7              | 896, 4 blocks     | 224        | 448, 2 blocks     | ~33.2M            |
-| 2.00  | 1024      | 8              | 1024, 4 blocks    | 256        | 512, 2 blocks     | ~36M              |
-
-The "+ species" part scales with the number of species in the vocabulary (bottleneck × n_species parameters).
-
-## Encoding Parameters
-
-| Parameter | Default | Effect |
-|---|---|---|
-| `--coord_harmonics` | 8 | Higher values capture finer spatial patterns (more harmonics) |
-| `--week_harmonics` | 8 | Higher values capture sharper weekly transitions |
-
-!!! tip "Choosing harmonics"
-    The default values (8 coordinate, 8 week) work well for global models. Higher harmonics add capacity for finer-grained patterns but increase input dimensionality and risk overfitting on small datasets.
+| setting | value |
+|---|---|
+| `model_scale` | 1.1 (width 576, 4 encoder blocks) |
+| `coord_harmonics` | 16 |
+| `week_harmonics` | 8 |
+| `film_dim` | 64 |
+| `species_bottleneck` | 288 |
+| parameters | about 9.7 million |
+| ONNX INT8 file | just under 10 MB |
 
 ## References
 
-> Perez, E., Strub, F., de Vries, H., Dumoulin, V., & Courville, A. (2018). FiLM: Visual Reasoning with a General Conditioning Layer. In *AAAI Conference on Artificial Intelligence* (pp. 3942–3951).
+> Perez, E., Strub, F., de Vries, H., Dumoulin, V., & Courville, A. (2018). FiLM: Visual Reasoning with a General Conditioning Layer. *AAAI*, 3942-3951.
 
-> Tancik, M., Srinivasan, P.P., Mildenhall, B., Fridovich-Keil, S., Raber, N., Barron, J.T., & Ng, R. (2020). Fourier Features Let Networks Learn High Frequency Functions in Low Dimensional Domains. In *Advances in Neural Information Processing Systems* (pp. 7537–7547).
+> Tancik, M., Srinivasan, P. P., Mildenhall, B., Fridovich-Keil, S., Raber, N., Barron, J. T., & Ng, R. (2020). Fourier Features Let Networks Learn High Frequency Functions in Low Dimensional Domains. *NeurIPS*, 7537-7547.

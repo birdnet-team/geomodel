@@ -1,849 +1,141 @@
 # Training
 
-## Quick Start
+Training has two steps. A **teacher** learns encounter rates from the records,
+using coordinates, week and habitat. A **student**, the released model, learns the
+teacher's predictions from coordinates and week alone.
 
 ```bash
-python train.py --data_path outputs/combined.parquet
+python train_teacher.py data/train.npz runs/teacher --tag teacher --habitat --seed 1 \
+    --benchmark data/benchmark/bench_20k --habitat-table data/ee/habitat_res5.parquet
+
+python distill.py data/train.npz runs/teacher/teacher.pt data/ee/habitat_res5.parquet runs/student \
+    --tag student --population data/ee/population_res5.parquet --ubiquitous data/ubiquitous.csv \
+    --scale 1.1 --film 64 --bottleneck 288 --harmonics 16 --envelope 4 --ocean --steps 150000 \
+    --benchmark data/benchmark/bench_20k --int8-check
+
+python package.py runs/student/student.pt taxonomy.json data/ubiquitous.csv release \
+    --name BirdNET+_Geomodel_V4.0_Global_17K
 ```
 
-This trains a small model (scale 0.5) with sensible defaults. For a full training run:
+On one RTX 4090 the teacher takes about 25 minutes and the student about 35; the
+benchmark evaluation at the end of each adds about ten minutes on the CPU. The
+training file is held in memory (about 2 GB for the full data plus 3-4 GB during
+batching).
 
-```bash
-python train.py \
-    --data_path outputs/combined.parquet \
-    --model_scale 0.75 \
-    --num_epochs 100 \
-    --batch_size 1024 \
-    --lr 0.001
-```
+## Why two models
 
-## Training Pipeline
+Apps only know where and when, so the released model cannot take habitat as an
+input. But habitat is what lets a model predict a species in places nobody has
+recorded it: a teacher that has seen a warbler in many mountain forests will
+predict it in the next mountain forest. Distillation hands this knowledge to a
+model that only needs coordinates. The student is trained on the teacher's
+predictions for every land cell on Earth and every week, not only where records
+exist, so it fills the gaps the way the teacher would.
 
-The training script handles the full pipeline automatically:
+## Teacher
 
-1. **Load data** — read combined parquet file
-2. **Flatten** — expand H3 cells × 48 weeks into individual samples
-3. **Preprocess** — build species vocabulary, normalize environmental features
-4. **Split** — location-based train/val split (prevents spatial data leakage)
-5. **Train** — multi-task training with checkpointing
+### Data and loss
 
-## CLI Reference
-
-### Data
-
-| Flag | Default | Description |
-|---|---|---|
-| `--data_path` | *(required)* | Combined parquet file |
-| `--taxonomy` | auto-detected | Taxonomy CSV for species name labels |
-| `--species_remap` | `species-data/species_remap.csv` | Code→code remap CSV that corrects recent taxonomic splits in an already-combined parquet at train time (pass `''` to disable) |
-
-### Model
-
-| Flag | Default | Description |
-|---|---|---|
-| `--model_scale` | `0.75` | Continuous scaling factor (0.5 ≈ 1.8M, 0.75 ≈ 3.8M, 1.0 ≈ 7M, 2.0 ≈ 36M params) |
-| `--coord_harmonics` | `8` | Harmonics for lat/lon encoding |
-| `--week_harmonics` | `8` | Harmonics for week encoding |
-| `--habitat_head` | off | Enable habitat-species association head (env → species pathway with learned gate) |
-| `--habitat_weight` | `0.1` | Weight for auxiliary habitat-species loss (only used with `--habitat_head`) |
-
-### Training
-
-| Flag | Default | Description |
-|---|---|---|
-| `--batch_size` | `1024` | Batch size |
-| `--num_epochs` | `50` | Maximum epochs |
-| `--lr` | `0.001` | Initial learning rate |
-| `--weight_decay` | `0.001` | AdamW (Loshchilov & Hutter, 2019) weight decay |
-| `--species_weight` | `1.0` | Species loss multiplier |
-| `--env_weight` | `0.1` | Environmental loss multiplier |
-| `--species_loss` | `bce` | Loss function: `bce` (default), `asl` (asymmetric), `focal`, or `an` |
-| `--asl_gamma_pos` | `0.0` | ASL positive focusing parameter (0 = no down-weighting) |
-| `--asl_gamma_neg` | `2.0` | ASL negative focusing parameter (higher = more aggressive) |
-| `--asl_clip` | `0.05` | ASL probability margin for negatives (0 = disable) |
-| `--focal_alpha` | `0.5` | Focal loss alpha (weight for positive class; only with `--species_loss focal`) |
-| `--focal_gamma` | `2.0` | Focal loss gamma |
-| `--pos_lambda` | `4.0` | Positive up-weighting λ for AN loss |
-| `--neg_samples` | `1024` | Negative species to sample per example for AN loss (0 = all) |
-| `--label_smoothing` | `0.05` | Smooth binary targets to prevent overconfidence (0 = off) |
-| `--max_obs_per_species` | `0` | Cap observations per species (0 = no cap) |
-| `--min_obs_per_species` | `50` | Exclude species with fewer than N observations (0 = keep all) |
-| `--ocean_sample_rate` | `1.0` | Fraction of pure-ocean cells to keep. Keep at 1.0 for strong terrestrial negatives. |
-| `--ocean_buffer_km` | `25` | Land exclusion radius for the shared 1-km global land mask used by sampling, propagation, training-label cleanup, and inference. |
-| `--ocean_specialist_min_obs` | `5` | Raw pure-ocean observations required to retain a taxon as an ocean specialist. |
-| `--no_yearly` | off | Exclude week-0 (yearly) samples from training |
-| `--no_cache` | off | Disable data preprocessing cache (force reprocessing) |
-| `--jitter` | off | Jitter training coordinates within H3 cells each epoch |
-| `--label_freq_weight` | off | Replace positive labels with per-region soft target frequencies (graded-probability ranking) |
-| `--label_freq_weight_min` | `0.1` | Floor soft target for rare species (auto-raised above `--label_smoothing`) |
-| `--label_freq_weight_pct_lo` | `15` | Lower percentile within a region: species at or below get min target |
-| `--label_freq_weight_pct_hi` | `95` | Upper percentile within a region: species at or above get target 1.0 |
-| `--label_freq_weight_curve` | `1.0` | Exponent on the percentile ramp; values >1 give a sharper power-law cliff |
-| `--ubiquitous_species` | `species-data/ubiquitous_species.txt` | Path to a 2-column whitelist (`<code> <prob>`) of synanthropic species randomly injected as soft positives during training (empty string disables) |
-| `--ubiquitous_target` | `0.5` | Soft target value written for fired ubiquitous injections |
-| `--propagate_labels` | off | Propagate species labels from observed to sparse cells via env similarity |
-| `--propagate_k` | `10` | Number of nearest env-space neighbors for propagation |
-| `--propagate_max_radius` | `1000` | Geographic radius cap in km for propagation |
-| `--propagate_max_spread` | `2.0` | Species range expansion multiplier (0 = disable range check) |
-| `--propagate_min_obs` | `10` | Samples with fewer species than this receive propagated labels |
-| `--propagate_env_dist_max` | `2.0` | Max env-space Euclidean distance (post-StandardScaler) for a neighbor to contribute labels (0 = disabled) |
-| `--propagate_range_cap` | `500` | Hard cap in km on per-species propagation distance from nearest observation (0 = disabled) |
-| `--smooth_gaps` | `0` | Fill bounded temporal gaps up to N missing weeks after propagation (0..48; 0 = disabled; try 2) |
-| `--protect_aves_regions` | off | Preserve raw Aves presence/absence labels during propagation and gap smoothing in `europe`, `na_west_coast`, and/or `na_east_coast` |
-
-### Learning Rate Schedule
-
-| Flag | Default | Description |
-|---|---|---|
-| `--lr_schedule` | `cosine` | `cosine` (single decay to `lr_min`) or `none` |
-| `--lr_min` | `1e-6` | Minimum learning rate |
-| `--lr_warmup` | `3` | Linear warmup epochs before cosine schedule (0 = off) |
-
-### GeoScore — Composite Quality Metric
-
-GeoScore combines validation metrics into a single 0–1 value.
-It is the **primary optimization target**: early stopping, best-checkpoint
-selection, and Optuna autotune all maximize GeoScore.
-
-Implementation note: the GeoScore computation lives in
-`model/metrics.py` (`compute_geoscore`) and is imported by `train.py`.
+A training row is one cell, week and group (birds, or all other species) with its
+observer-day effort and the encounter rates of the species recorded there
+([Training file](../pipeline/dataset.md)). The loss is binary cross-entropy against
+those rates, summed over the species of the row's group and weighted per row by
+effort:
 
 $$
-\text{GeoScore} = \frac{\sum_{i} w_i \cdot s_i}{\sum_{i} w_i}
+L = \frac{\sum_{\text{rows}} w \cdot \sum_{s \in \text{group}} \text{BCE}(z_s, r_s)}{\sum_{\text{rows}} w},
+\qquad w = \frac{n}{n + c}
 $$
 
-where each $s_i$ is a component score normalized to $[0, 1]$ (higher = better):
+Binary cross-entropy against a rate is the binomial log-likelihood per observer-day,
+so the sigmoid of the output learns the rate itself. The weight saturates: a row
+backed by one observer-day counts a little, a row with fifty almost fully, and a cell
+with fifty thousand checklists does not outweigh a thousand cells with fifty
+(`--c 5`). Species of the other group are masked out.
 
-| Component | Key | Weight | Transform |
-|---|---|---|---|
-| Ranking quality | `mAP` | 0.20 | as-is |
-| Classification quality | `F1 @ 10%` | 0.20 | as-is |
-| List-length calibration | `list_ratio @ 10%` | 0.15 | $\max(0,\; 1 - \lvert\ln(\text{LR})\rvert)$ |
-| Endemic species | `watchlist_mean_ap` | 0.10 | as-is |
-| Geographic generalization | `holdout_map` | 0.10 | as-is (out-of-region mAP) |
-| Density robustness | `mAP_density_ratio` | 0.20 | as-is (sparse / dense) |
-| Decorrelation | `pred_density_corr` | 0.05 | $\max(0,\; 1 - \lvert r\rvert)$ |
+### Optimization
 
-!!! info "Why a composite metric?"
+AdamW (learning rate 1e-3, weight decay 1e-4), one-cycle schedule, batches of 1,024
+rows, gradient clipping at 5, six epochs. The epoch with the lowest validation loss
+is kept; training stops two epochs after the last improvement. The output bias
+starts at -5 (rate 0.007), since most species are absent from most rows.
 
-    Optimizing mAP alone can push the model toward over-predicting species
-    (inflating recall at the cost of precision) or ignoring rare/endemic
-    species.  GeoScore guards against this by explicitly rewarding:
+### Evaluation
 
-    - **List calibration** — the log-symmetric penalty ensures predicted
-      species lists are close in length to observed lists.
-    - **Endemic coverage** — watchlist AP prevents the model from focusing
-      exclusively on common species.
-    - **Bias robustness** — density ratio and decorrelation penalize
-      models that merely mirror observer effort patterns.
-    - **Geographic generalization** — holdout mAP measures performance
-      on geographically held-out regions, rewarding models that
-      extrapolate beyond their training distribution.
+With `--benchmark`, the teacher is scored on the eBird benchmark at the end
+([Benchmark](../evaluation/benchmark.md)); habitat features at the benchmark cells
+come from `--habitat-table`. In that mode the test blocks join the training data,
+because the benchmark is the test set. `--holdout-km 150` removes every training
+cell within 150 km of a benchmark cell for a strictly spatial test. Without
+`--benchmark` the script reports, per group, log loss, top-10 capture, recall of
+regular species and rank correlation on the test blocks, next to a baseline that
+predicts each species' average rate everywhere.
 
-!!! tip "Missing components"
+## Student
 
-    When a component is unavailable (e.g. no watchlist species in the
-    vocabulary, or no observation-density data), its weight is
-    redistributed proportionally among the remaining components.
-    GeoScore is always comparable across runs.
+### The pool
 
-### Early Stopping
+Each step draws 2,048 cells from the pool, every land cell of the habitat table
+(about 540,000) plus every cell of the training file (sea cells with records
+included), with a random week each. The teacher predicts every species there, and
+the student is fitted to those predictions with binary cross-entropy. No records
+are used in this step.
 
-| Flag | Default | Description |
+### What is added to the teacher's predictions
+
+**Range envelope** (`--envelope 4`). A species' target is set to zero more than four
+degrees (1° bins, about 440 km) from any of its records. Habitat matching alone
+would put a species on every continent with a similar climate: a European forest
+bird in the forests of Japan. The envelope keeps the teacher's habitat knowledge
+local.
+
+**Humans and domestic animals** (`--ubiquitous`, `--population`). Their targets get a
+floor that grows with population density and built-up area, from 0.30 (humans) or
+0.25 (domestic animals) on empty land to 0.50 in towns ([Scores](scores.md)).
+
+**Ocean** (`--ocean`). Open-ocean cells (H3 resolution 3, more than 25 km from any
+land) join the pool, and at sea every species except the marine ones is set to
+zero. Marine species are those recorded in at least five open-ocean training rows.
+Without this, the student interpolates freely over water and land species near a
+coast spill hundreds of kilometers offshore.
+
+### Optimization
+
+AdamW (learning rate 1e-3, weight decay 1e-5), one-cycle schedule, 150,000 steps.
+The output bias starts at -6. The checkpoint holds the weights, the species list
+(BirdNET ids), their eBird codes and the arguments.
+
+### INT8
+
+The apps ship the INT8 ONNX file: weight matrices stored as int8 with one scale per
+output channel, arithmetic in float32 ([Export](export.md)). This can be emulated
+exactly in PyTorch by rounding the weights, and `--int8-check` scores the student
+that way next to the float32 result. The difference in GeoScore is a few tenths.
+
+## Ablation switches
+
+Options that the release recipe does not use stay available for comparisons:
+
+| script | option | what it does |
 |---|---|---|
-| `--patience` | `10` | Stop after N epochs without GeoScore improvement (0 = disabled) |
-
-### Data Split
-
-| Flag | Default | Description |
-|---|---|---|
-| `--val_size` | `0.1` | Validation set fraction |
-| `--sample_fraction` | `1.0` | Fraction of locations to keep (0–1) |
-
-Splitting is **location-based**: all samples from one H3 cell go to the same split, preventing spatial data leakage.  The split uses a fixed random seed (`42`) for reproducibility.
-
-#### Sample fraction
-
-When `--sample_fraction` is less than 1.0 it reduces the effective dataset size by subsampling a random fraction of *locations* once before training starts.  Both train and validation splits are subsampled the same way.
-
-Key properties:
-
-- **Deterministic** — the location subsample uses a fixed seed (`42`).
-- **All temporal structure preserved** — every week belonging to a selected H3 cell is kept.
-- **Evaluation stays consistent** — validation and test sets are fixed across epochs and runs.
-
-#### Coordinate jitter
-
-When `--jitter` is passed, Gaussian noise is added to training coordinates every time a sample is drawn.  The noise standard deviation is derived automatically from the H3 cell resolution (40 % of the average edge length in degrees), so most jittered points stay inside their originating cell.
-
-- **Validation and test sets are never jittered** — they always use exact cell centers.
-- **Each draw is independent** — the same sample receives different noise every epoch.
-- Latitude is clamped to $[-90, 90]$; longitude wraps at $\pm 180°$.
-
-### Data Preprocessing Cache
-
-Training caches the fully preprocessed train/val split to disk so that
-subsequent runs with the same data and preprocessing settings skip the
-expensive loading, normalization, and splitting steps.
-
-Cache files are stored in `<checkpoint_dir>/.data_cache/` and keyed by a
-SHA-256 hash of the input file identity (path, mtime, size) plus all
-CLI flags that affect data preprocessing (loss type, species thresholds,
-propagation settings, etc.).
-
-- **Automatic invalidation** — changing the data file or any preprocessing
-  flag produces a new hash, so a fresh cache is built.
-- **`--no_cache`** — disables caching entirely (always reprocesses).
-- **Safe writes** — cache files are written atomically via a temporary
-  file and rename.
-
-### Region Hold-Out (Observation Bias Evaluation)
-
-| Flag | Default | Description |
-|---|---|---|
-| `--holdout_regions` | — | Space-separated region names to mask from training and evaluate separately |
-
-GBIF observation data is heavily biased toward densely populated areas.
-The `--holdout_regions` flag removes well-surveyed geographic regions from
-the training set and creates a separate held-out evaluation set.  The model
-must predict species in these regions using only surrounding data.
-
-Available regions:
-
-| Name | Area | Bounding Box (lon_min, lat_min, lon_max, lat_max) |
-|---|---|---|
-| `us_northwest` | Oregon, Washington | (-125.0, 42.0, -116.5, 49.0) |
-| `benelux` | Belgium, Netherlands, Luxembourg | (2.5, 49.5, 7.2, 53.6) |
-| `uk` | United Kingdom | (-8.2, 49.9, 1.8, 58.7) |
-| `california` | California | (-124.5, 32.5, -114.1, 42.0) |
-| `japan` | Japan | (129.5, 30.0, 145.8, 45.5) |
-
-```bash
-# Hold out US Northwest from training
-python train.py --data_path data.parquet --holdout_regions us_northwest
-
-# Hold out multiple regions
-python train.py --data_path data.parquet --holdout_regions us_northwest benelux
-```
-
-Holdout metrics (mAP, F1\@10%, density-stratified mAP) are reported per epoch
-and saved in `training_history.json`.
-
-#### Density-Stratified Metrics
-
-Independently of region hold-out, every validation epoch computes
-**density-stratified mAP**: validation samples are split into quartiles by
-per-location observation density (total species detections across all weeks).
-A bias-robust model shows a **smaller gap** between mAP in the sparse
-quartile (Q1) and the dense quartile (Q4).
-
-| Metric | Description |
-|---|---|
-| **mAP_sparse** | mAP for bottom-25% density locations |
-| **mAP_dense** | mAP for top-25% density locations |
-| **mAP density ratio** | sparse / dense (higher = more robust, 1.0 = no bias) |
-| **pred–density _r_** | Pearson correlation between obs density and predicted species count (lower = less biased) |
-
-### Checkpoints
-
-| Flag | Default | Description |
-|---|---|---|
-| `--checkpoint_dir` | `./checkpoints` | Directory for checkpoint files |
-| `--resume` | — | Path to checkpoint to resume training from |
-| `--save_every` | `5` | Save checkpoint every N epochs |
-| `--device` | `auto` | `auto`, `cuda`, or `cpu` |
-| `--num_workers` | `min(4, CPUs)` | DataLoader worker processes |
-
-## Loss Functions
-
-### Asymmetric Loss
-
-Asymmetric Loss (ASL; Ridnik et al., 2021) is a multi-label focal loss variant that applies **separate focusing parameters** to positive and negative samples.  In species distribution modeling the vast majority of labels are negative (a given species is absent from most locations), so ASL aggressively down-weights easy negatives while keeping all positive signal intact.
-
-$$
-\mathcal{L}_{\text{ASL}} = \frac{1}{N}\sum_i
-\begin{cases}
-(1-p_i)^{\gamma_+}\,\log(p_i) & y_i=1 \\[4pt]
-(p_{m})^{\gamma_-}\,\log(1-p_{m}) & y_i=0
-\end{cases}
-$$
-
-where $p_i = \sigma(z_i)$ and $p_m = \max(p_i - m,\, 0)$ is the probability after a hard margin shift $m$ (the `--asl_clip` parameter).  The margin discards very easy negatives entirely ($p_i < m \Rightarrow$ zero loss).
-
-| Parameter | Default | Notes |
-|---|---|---|
-| `--asl_gamma_pos` | `0.0` | Positive focusing — 0 keeps all positive gradient |
-| `--asl_gamma_neg` | `2.0` | Negative focusing — higher suppresses easy negatives more |
-| `--asl_clip` | `0.05` | Hard probability margin for negatives (0 = disable) |
-
-!!! info "Why γ-=2 instead of 4?"
-    The original ASL paper uses γ-=4 for ImageNet-scale multi-label classification
-    where the positive/negative imbalance is less extreme.  In our setting
-    (10K species, >99.9% negatives per sample) the imbalance is far more
-    severe, and aggressive negative suppression with γ-=4 can cause the model
-    to under-predict rare species.  **γ-=2 is a conservative default** that
-    still down-weights easy negatives while preserving enough gradient signal
-    from moderately-confident negatives.  Experimenting with
-    γ-∈{2, 4, 6} can help find the best trade-off for your dataset.
-
-### BCE
-
-Standard binary cross-entropy with logits.  Enable with `--species_loss bce`.
-
-$$
-\mathcal{L}_{\text{BCE}} = -\frac{1}{N} \sum_{i} \left[ y_i \log(\sigma(z_i)) + (1-y_i) \log(1-\sigma(z_i)) \right]
-$$
-
-BCE treats every positive and negative label equally — no focusing, no
-re-weighting.  This makes it the simplest baseline and often achieves the
-best raw **mAP** (ranking quality) because it does not distort the gradient
-landscape.  However, the lack of negative suppression means the model
-receives overwhelmingly more gradient from the >99.9% negative labels,
-which can lead to:
-
-- **Over-prediction** — inflated species lists (list-ratio >> 1.0)
-- **Poor calibration** — probabilities not well-separated between present/absent species
-- **Rare species neglect** — endemic or restricted-range species drowned out by common-species negatives
-
-### Focal Loss
-
-Focal loss (Lin et al., 2017) down-weights easy examples and
-up-weights hard ones.  Originally designed for single-label object detection,
-it applies here as a multi-label variant where each species is an independent
-binary classification.
-
-$$
-\mathcal{L}_{\text{focal}} = -\alpha_t (1 - p_t)^\gamma \log(p_t)
-$$
-
-where $\alpha_t$ is the class-weighting factor and $\gamma$ is the focusing
-parameter.  At $\gamma=0$ focal loss collapses to weighted BCE.
-
-The key parameter is **`--focal_alpha`** which controls the weight given to
-the positive class:
-
-| `focal_alpha` | Positive weight | Negative weight | Effect |
-|---|---|---|---|
-| 0.25 | 0.25 | 0.75 | Down-weights positives — **harmful** when positives are already rare |
-| 0.50 | 0.50 | 0.50 | Neutral — lets `focal_gamma` handle all re-weighting (default) |
-| 0.75 | 0.75 | 0.25 | Up-weights positives — can help if recall is too low |
-
-!!! info "Why alpha=0.5 instead of 0.25?"
-    The original focal loss paper uses α=0.25 for COCO object detection where
-    foreground/background imbalance is ~1:3.  In our setting each species
-    occurs in <0.1% of samples, so down-weighting the already-rare positive
-    class with α=0.25 starves the model of positive gradient.  **α=0.5
-    (neutral)** lets the focusing parameter γ handle the imbalance alone,
-    which is the safer default for extreme multi-label problems.
-
-Enable with `--species_loss focal`.  Tune `--focal_alpha` and `--focal_gamma` as needed.
-
-### Assume-Negative Loss
-
-For presence-only data (like GBIF observations), species not appearing in a
-checklist may still be present — they were simply not observed.  Standard BCE
-treats every missing label as a true negative, which is incorrect.
-
-The AN loss implements the **Full Location-Aware Assume Negative** (LAN-full)
-strategy from Cole et al. (2023).  It combines two types of
-pseudo-negatives:
-
-- **Community pseudo-negatives (SLDS)**: at each observed location, species not
-  in the checklist are treated as absent.
-- **Spatial pseudo-negatives (SSDL)**: for each observed species, a random
-  other location is sampled where it is assumed absent.
-
-Positives are up-weighted by λ to compensate for the overwhelming majority of
-pseudo-negative labels:
-
-$$
-\mathcal{L}_{\text{AN}} = \lambda \cdot \frac{1}{|P|} \sum_{i \in P} \text{BCE}(z_i, 1) + \frac{1}{M} \sum_{j \in N_M} \text{BCE}(z_j, 0)
-$$
-
-where $P$ is the set of positive species, $N_M$ is a random sample of $M$
-assumed-negative species, and $\lambda$ controls positive up-weighting.
-
-!!! info "Why λ=4 instead of 8?"
-    The SINR paper uses λ=8 for the iNaturalist domain where positive labels
-    are rarer and more uncertain.  Our training data includes structured
-    checklists (eBird) with higher detection reliability, so strong positive
-    up-weighting can amplify false positives.  **λ=4 is a conservative
-    default** that balances positive/negative gradients without over-correcting.
-    Increase if recall is too low; try values in the range 1–64.
-
-Enable with `--species_loss an`:
-
-```bash
-python train.py \
-    --species_loss an \
-    --pos_lambda 4 \
-    --neg_samples 1024 \
-    --label_smoothing 0.05
-```
-
-| Parameter | Default | Notes |
-|---|---|---|
-| `--pos_lambda` | `4` | Balances positive/negative gradient; increase if recall too low |
-| `--neg_samples` | `1024` | 0 = use all negatives (exact but slow) |
-| `--label_smoothing` | `0.05` | Prevents overconfident predictions; set 0 to disable |
-
-### Observation Cap
-
-When `--max_obs_per_species` is set, common species that appear in more than
-the specified number of samples are randomly removed from excess sample lists.
-The samples themselves are kept (they may still have other species) — only the
-over-represented species labels are dropped.  This prevents ubiquitous species
-from dominating the gradient signal.
-
-### Minimum Observation Filter
-
-When `--min_obs_per_species` is set (default: 50), species that appear in
-fewer than the specified number of samples are excluded from the vocabulary
-entirely.  This removes extremely rare species that the model cannot
-meaningfully learn from small sample counts and reduces the output dimension.
-Set to 0 to keep all species regardless of observation count.
-
-### Label Frequency Weighting (Soft Target Frequencies)
-
-Our training data contains only hard presence/absence labels (1s and 0s) — a
-species was either observed at a location/week or it was not.  However, for
-producing useful ranked species lists the model should ideally score common
-species higher than rare ones.  `--label_freq_weight` addresses this by
-**replacing the positive label `1.0` with a soft target in `(0, 1]`** that
-approximates *how often the species is observed at locations like this one*.
-
-Despite the legacy CLI name, this is **not** a per-species loss weight — it
-is a **soft BCE target**.  BCE with a soft target $t$ minimizes at
-$\sigma(\text{logit}) = t$, so the model learns to predict regional
-observation frequency rather than just presence/absence.  Validation always
-uses binary labels for unbiased evaluation.
-
-The approximation "observation frequency $\approx$ local abundance" is not
-ecologically exact — detection probability and population density are
-distinct quantities — but it provides a practical proxy that yields
-well-ordered predictions without requiring actual abundance counts.
-
-#### The observation bias problem
-
-Citizen-science observation density varies enormously across regions.  The
-US alone can contribute 10× more records than the Neotropics, so a naive
-**global** frequency count would assign high targets to common North American
-species while suppressing species-rich tropical communities.  The result is
-inflated prediction lists in heavily surveyed areas (e.g. 100 species at
->70% probability for a location in New York) and deflated lists in
-under-surveyed but species-rich areas (e.g. only 18 species above 40% for
-a location in Colombia).
-
-#### Per-region, per-species soft targets
-
-To eliminate this bias — *and* to ensure a clear common-vs-rare fall-off at
-every location — we compute soft targets **per (region, species) pair** via
-regional percentile normalization.  The algorithm:
-
-1. **Partition** the globe into geographic bins (30° latitude × 60°
-   longitude).
-2. **Count** per-species occurrences within each bin independently.
-3. **Rank** each species within its bin by percentile (fraction of species
-   in that bin with fewer observations).
-4. **Map** each (region, species) percentile to a soft target via linear
-   interpolation controlled by `--label_freq_weight_pct_lo` and
-   `--label_freq_weight_pct_hi`.
-5. **Fall back** to the species' global-max-percentile target for (region,
-   species) cells where the species was not directly observed in that
-   region (e.g. when label propagation introduced pseudo-labels).  This
-   preserves the propagation signal without polluting unrelated regions.
-
-At sample time, each present species' label is set to
-`region_target[sample_region, species]`.  This means the same species can
-have different soft targets at different locations: a Common Loon labeled
-present in northern Minnesota gets a high target there, while the same
-species labeled present at a sparse southern location gets a much lower
-target — producing a clean ranked list at every location.
-
-#### Linear mapping
-
-The position between `pct_lo` (default 15) and `pct_hi` (default 95) is
-linearly interpolated:
-
-$$
-t = \frac{p - p_{\text{lo}}}{p_{\text{hi}} - p_{\text{lo}}}, \qquad
-w = w_{\text{min}} + t \cdot (1 - w_{\text{min}})
-$$
-
-Species at or below `pct_lo` get `min_weight`; species at or above
-`pct_hi` get target 1.0.  Only positive labels are affected — zeros stay
-at 0 (or `label_smoothing` if smoothing is on).
-
-#### Soft target curve (defaults)
-
-With `pct_lo=15`, `pct_hi=95`, `min_weight=0.1`:
-
-| Regional percentile | Soft target | Category |
-|---|---|---|
-| ≤ 15 (`pct_lo`) | **0.10** | Rare in region — minimal positive signal |
-| 30 | 0.27 | Uncommon |
-| 50 | 0.49 | Average for the region |
-| 70 | 0.72 | Common |
-| 85 | 0.88 | Very common |
-| ≥ 95 (`pct_hi`) | **1.00** | Top species in the region — full positive signal |
-
-With only the top 5% saturating at 1.0, the model retains incentive to
-rank species *within* the common group — producing a clear fall-off even
-at species-rich locations like Ithaca, NY.
-
-#### Interaction with label smoothing and AN loss
-
-- `--label_freq_weight_min` is automatically raised to `2 ×
-  --label_smoothing` (with a printed warning) if set lower, so that
-  present-but-rare species (target = `min_weight`) remain distinguishable
-  from smoothed assumed-negatives (target = `label_smoothing`).
-- The Assume-Negative loss (`--species_loss an`) treats any
-  strictly-positive target as a positive (not just `> 0.5`), so soft
-  targets do not silently flip rare positives into assumed-negatives.
-
-#### Parameters
-
-| Parameter | Default | Description |
-|---|---|---|
-| `--label_freq_weight` | off | Enable per-region soft target frequencies |
-| `--label_freq_weight_min` | `0.1` | Floor soft target for rare species (auto-raised above `--label_smoothing`) |
-| `--label_freq_weight_pct_lo` | `15` | Within-region percentile at or below which species get `min_weight` |
-| `--label_freq_weight_pct_hi` | `95` | Within-region percentile at or above which species get target 1.0 |
-| `--label_freq_weight_curve` | `1.0` | Exponent applied to the percentile ramp (`>1` = power-law cliff) |
-
-```bash
-python train.py --label_freq_weight
-```
-
-!!! note
-    Soft target frequencies apply to the **training set only** — validation
-    uses standard binary labels for unbiased evaluation.
-
-!!! tip
-    To make the fall-off even sharper at very rich locations, push
-    `--label_freq_weight_pct_hi` higher still (e.g. `99` — only the top
-    1% saturate).  Conversely, lower it (e.g. `90`) for a softer top end.
-    Raising `--label_freq_weight_pct_lo` (e.g. `25`) collapses more rare
-    species into the floor; lowering it (e.g. `5`) keeps them on the ramp.
-
-!!! tip "Sharper cliff with `--label_freq_weight_curve`"
-    The default ramp is **linear in percentile**, so a species at the 75th
-    regional percentile already gets a target of `~0.77`.  In well-surveyed
-    cells this saturates many moderately-common species into the
-    high-confidence band and produces over-long predicted lists.  Set
-    `--label_freq_weight_curve 3` (or higher) to bend the ramp into a
-    power-law cliff: with `pct_lo=15`, `pct_hi=95`, `curve=3`, the 75th
-    percentile species gets target `~0.43` instead of `~0.77`, while the
-    genuinely top-recorded species still saturate at `1.0`.  Use this in
-    combination with `--threshold` at inference for crisp short lists.
-
-### Ubiquitous-Species Soft Injection
-
-Synanthropic taxa — humans, livestock, dogs, cats, commensal rats,
-honey bees, the chicken proxy *Gallus gallus* — are present essentially
-anywhere humans are, but they are massively under-recorded in
-citizen-science data because observers focus on wild species.  Without a
-prior, the model learns sharply confident absences for these species
-across most of its training cells.
-
-The training loop addresses this by reading a small whitelist file and
-randomly injecting whitelisted species as **soft positives** during
-training.  At every batch, for each whitelisted species that is *not*
-already a positive in a given sample, a Bernoulli draw at the per-species
-probability decides whether the target is set to `--ubiquitous_target`
-(default `0.5`).  Existing positives are never overwritten — observed
-data always wins.
-
-#### Whitelist file format
-
-`species-data/ubiquitous_species.txt` ships with the repository.  Two
-whitespace-separated columns per line, plus an optional `#` comment:
-
-```
-<species_code>   <injection_probability>    # comment
-```
-
-- `species_code` matches the labels used in training (eBird 6-letter
-  codes for birds; numeric iNaturalist IDs for non-birds).  Codes that
-  are not in the trained vocabulary are silently dropped at load time.
-- `injection_probability` ∈ `[0, 1]` is applied independently per
-  `(sample, species)` draw.
-
-Probability tiers used in the default file:
-
-| Tier | Probability | Examples |
-|---|---|---|
-| Cosmopolitan | `0.50` | Human, dog, cat, honey bee, chicken |
-| Globally widespread | `0.30` | Cattle, sheep, goat, horse, brown rat, black rat |
-| Strongly regional | `0.15` | *Bombus terrestris*, *B. impatiens* |
-
-#### Curation rules of the default list
-
-- **No wild birds.**  The only bird is `redjun` (*Gallus gallus*), which
-  serves as the chicken proxy because GBIF/iNaturalist records of
-  domestic chickens fall under the species-level taxon.
-- **No small mammals an audio model cannot detect** (mice, rabbits
-  removed; rats kept because they are commensal and heavily recorded
-  near settlements).
-- **No regional umbrella taxa** (Gray Wolf and European Wildcat were
-  removed — these are wild species, not synanthropes).
-
-#### Disabling
-
-Pass `--ubiquitous_species ''` to disable the feature entirely.  The
-ubiquitous injection is **applied to the training set only** —
-validation always uses observed binary labels.
-
-!!! note
-    The injection is a noisy soft prior, not a constant one.  Different
-    samples in the same epoch see different injection patterns, and the
-    same sample sees different patterns in different epochs.  This
-    discourages the model from memorising the prior and lets the
-    observed signal still dominate at well-surveyed cells.
-
-!!! tip
-    Combine with `--max_obs_per_species` if you want to additionally
-    flatten the dominance of the most-recorded synanthropes (humans
-    have orders of magnitude more iNaturalist records than any other
-    taxon).
-
-### Environmental Neighbor Label Propagation
-
-The model struggles to predict species in areas with few or no eBird
-observations.  The environmental auxiliary task teaches spatial
-representations, but doesn't explicitly tell the model that
-"similar environment → similar species."
-
-**`--propagate_labels`** addresses this by copying species lists from
-well-observed cells to nearby sparse cells that share similar
-environmental features.  It runs **before** vocabulary building and
-species encoding, so propagated species participate fully in training.
-
-#### Algorithm
-
-1. **Identify sparse samples** — any sample whose species list has fewer
-   than `--propagate_min_obs` (default 10) species.
-2. **Normalize environmental features** — StandardScaler fit on all
-   samples, NaN columns dropped.
-3. **Build a KD-tree** on the observed (non-sparse) samples'
-   normalized env vectors, grouped by week (each of the 48 weeks
-   plus week 0 gets its own tree so that seasonal species don't
-   leak across weeks).
-4. **Query** *k* nearest neighbors (`--propagate_k`, default 10) in
-   env-feature space for each sparse sample.
-5. **Filter by geographic distance** — discard any neighbor farther than
-   `--propagate_max_radius` km (default 1000) using haversine distance.
-6. **Filter by environmental distance** — discard any neighbor whose
-   Euclidean distance in standardized env space exceeds
-   `--propagate_env_dist_max` (default 2.0). This rejects neighbors
-   that are geographically close but environmentally dissimilar.
-7. **Filter by species range** — for each species in a neighbor list,
-   check if the target cell is within `--propagate_max_spread` (default 2.0)
-   multiples of the species' observed range radius from its nearest
-   original observation. A hard cap of `--propagate_range_cap` km
-   (default 500) is also applied. This prevents island endemics
-   (e.g. Hawaii-specific birds) from leaking onto the mainland just
-   because the environment matches.
-8. **Apply the pure-ocean guard** — query the packaged 1-km global land
-   mask at the cell centre and on a ring `--ocean_buffer_km` away. A cell is
-   pure ocean only when every query is water. Terrestrial labels are never
-   copied into such cells. Before propagation, raw ocean observations also
-   derive a marine-specialist allow-list; all other ocean positives are
-   removed so those samples become strong negatives during training. The
-   same allow-list and land query are stored with the checkpoint and enforced
-   by `predict.py`. JRC `water_fraction` is deliberately not used because
-   that inland-water product reports masked ocean pixels as missing data.
-9. **Merge** the neighbor species into the sparse sample's list
-   (union, no duplicates).
-10. **Optionally smooth temporal gaps** — if `--smooth_gaps N` is greater
-  than zero, fill absent runs of up to `N` weeks in each per-cell,
-  per-species 1..48 week series, but only when the run is bounded by
-  positives on both sides. The week cycle is circular, so gaps across the
-  week 48 → week 1 boundary can be filled.
-
-#### Parameters
-
-| Flag | Default | Description |
-|------|---------|-------------|
-| `--propagate_labels` | off | Enable env-neighbor label propagation |
-| `--propagate_k` | 10 | Number of nearest env-space neighbors |
-| `--propagate_max_radius` | 1000 | Geographic radius cap (km) |
-| `--propagate_max_spread` | 2.0 | Species range expansion multiplier |
-| `--propagate_min_obs` | 10 | Sparsity threshold (species count) |
-| `--propagate_env_dist_max` | 2.0 | Max env-space distance for neighbor eligibility |
-| `--propagate_range_cap` | 500 | Hard km ceiling on per-species propagation distance |
-| `--smooth_gaps` | 0 | Fill bounded temporal gaps up to N missing weeks after propagation (0..48) |
-
-!!! tip
-    Start with defaults and check whether the model's predictions in
-    previously blank areas improve.  For island endemics where long-distance
-    transfers are inappropriate, lowering `--propagate_max_radius`
-    (e.g. to 500 km) and `--propagate_range_cap` limits geographic reach.
-
-### References
-
-> Ridnik, T., Ben-Baruch, E., Zamir, N., Noy, A., Friedman, I., Protter, M., & Zelnik-Manor, L. (2021). Asymmetric Loss For Multi-Label Classification. In *IEEE/CVF International Conference on Computer Vision* (pp. 82–91).
-
-> Lin, T.-Y., Goyal, P., Girshick, R., He, K., & Dollár, P. (2017). Focal Loss for Dense Object Detection. In *IEEE International Conference on Computer Vision* (pp. 2980–2988).
-
-> Cole, E., Van Horn, G., Lange, C., Shepard, A., Leary, P., Perona, P., Loarie, S., & Mac Aodha, O. (2023). Spatial implicit neural representations for global-scale species mapping. In *International Conference on Machine Learning* (pp. 6320–6342). PMLR.
-
-### Multi-Task Weighting
-
-Total loss is a weighted sum:
-
-$$
-\mathcal{L}_{\text{total}} = w_{\text{species}} \cdot \mathcal{L}_{\text{species}} + w_{\text{env}} \cdot \mathcal{L}_{\text{env}}
-$$
-
-The environmental MSE loss regularizes the spatial embedding. Default weights: species=1.0, env=0.5.
-
-Environmental features with missing values (NaN) are excluded from the MSE
-computation via masked loss — the model is not penalized for positions where
-the ground truth is unknown.
-
-## Training Features
-
-### Automatic Mixed Precision (AMP)
-
-On CUDA GPUs, training automatically uses float16 for forward/backward passes (with float32 master weights). This roughly doubles throughput with negligible accuracy impact.
-
-### GPU Memory Management
-
-On CUDA devices, training configures PyTorch's memory allocator to use **expandable segments** (`PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`).  This lets the allocator grow and shrink memory blocks dynamically instead of reserving large contiguous chunks upfront, reducing fragmentation and allowing the GPU to share memory more cleanly with other processes.
-
-### Gradient Clipping
-
-Gradients are clipped to max norm 1.0 to prevent training instability from occasional large gradients.
-
-### Checkpoints
-
-The trainer saves:
-
-- `checkpoint_latest.pt` — after every save interval and on early stopping
-- `checkpoint_best.pt` — whenever validation GeoScore improves
-- `labels.txt` — species vocabulary (species code → scientific name → common name)
-- `training_history.json` — per-epoch losses, learning rate, and evaluation metrics
-
-Each checkpoint contains the full model state, optimizer state, scheduler state, AMP scaler, and species vocabulary — everything needed to resume training or run inference.
-
-If a checkpoint file is corrupted (e.g. from a crash during writing), `--resume` will log a warning and start training from scratch instead of crashing.
-
-### Evaluation Metrics
-
-During each validation epoch, the following metrics are computed and recorded:
-
-| Metric | Description |
-|---|---|
-| **mAP** | Mean per-sample average precision — measures how well positive species are ranked above negatives |
-| **Top-10 recall** | Fraction of true positives appearing in the model's 10 highest-probability predictions |
-| **Top-30 recall** | Fraction of true positives in the top 30 predictions |
-| **F1 @ 5% / 10% / 25%** | Micro-averaged F1 score at three probability thresholds |
-| **Precision @ 5% / 10% / 25%** | Micro-averaged precision at three probability thresholds |
-| **Recall @ 5% / 10% / 25%** | Micro-averaged recall at three probability thresholds |
-| **List-ratio @ 5% / 10% / 25%** | Ratio of predicted list length to true list length (1.0 = perfect calibration) |
-| **Mean list length @ 5% / 10% / 25%** | Average number of species predicted above the threshold |
-| **Watchlist mean AP** | Mean average precision across 18 endemic/restricted-range watchlist species |
-| **Per-species AP** | Individual AP for each watchlist species |
-| **mAP sparse** | mAP for bottom-25% observation density locations |
-| **mAP dense** | mAP for top-25% observation density locations |
-| **mAP density ratio** | sparse/dense ratio (1.0 = no observation bias effect) |
-| **pred–density _r_** | Pearson correlation between obs density and predicted species count |
-
-Metrics are printed after each epoch and saved in `training_history.json`. Use [`scripts/plot_training.py`](../plotting/training-curves.md) to visualize them.
-
-### Watchlist Species
-
-The trainer tracks individual average precision for 18 endemic and restricted-range bird species grouped by island system.  These species have small, disjoint ranges that are particularly challenging for spatiotemporal models:
-
-| Group | Species |
-|---|---|
-| **Hawaiian** | Hawaiian Goose (Nēnē), Hawaiian Hawk, Hawaii Elepaio, Apapane, Iiwi, Hawaii Amakihi |
-| **New Zealand** | Kea, North Island Brown Kiwi, South Island Takahe, Rifleman, Tui, North Island Kokako |
-| **Galápagos** | Galápagos Hawk, Galápagos Rail, Galápagos Petrel |
-| **Other** | Kagu (New Caledonia), California Condor, Whooping Crane |
-
-Per-species AP and the watchlist mean AP are recorded in `training_history.json` every epoch.
-
-When `--sample_fraction` is used, the trainer checks that all watchlist species still have samples in both the training and validation splits and emits a warning if any are missing.
-
-## Resuming Training
-
-```bash
-python train.py --resume checkpoints/checkpoint_latest.pt --num_epochs 50
-```
-
-This loads the model, optimizer, scheduler, and scaler states and continues training for 50 more epochs.  If the checkpoint is corrupted (truncated write, power loss, etc.) training starts from scratch with a warning rather than crashing.
-
-## Hyperparameter Autotune
-
-Automatically search for optimal hyperparameters using [Optuna](https://optuna.org/) (Akiba et al., 2019; Bayesian optimization with TPE sampler and median pruning).
-
-Implementation note: the autotune runner and parameter search space live in
-`model/autotune.py` and are called from top-level `train.py`.
-
-```bash
-python train.py --data_path data.parquet --autotune                  # tune all params
-python train.py --data_path data.parquet --autotune lr pos_lambda    # tune specific params
-```
-
-### Tunable Parameters
-
-| Parameter | Search space |
-|---|---|
-| `pos_lambda` | 1.0 → 64 (log scale) |
-| `neg_samples` | {128, 256, 512, 1024, 2048, 4096} |
-| `label_smoothing` | 0 → 0.1 |
-| `env_weight` | 0.01 → 1.0 (log scale) |
-| `jitter` | {true, false} |
-| `species_loss` | {asl, an, bce, focal} |
-| `asl_gamma_neg` | 1.0 → 8.0 |
-| `asl_clip` | 0.0 → 0.2 |
-| `focal_alpha` | 0.1 → 0.9 |
-| `focal_gamma` | 0.5 → 5.0 |
-| `model_scale` | 0.25 → 3.0 (log scale) |
-| `coord_harmonics` | 2 → 8 (integer) |
-| `week_harmonics` | 2 → 8 (integer) |
-| `label_freq_weight` | {true, false} |
-| `label_freq_weight_min` | 0.05 → 0.3 (log scale) |
-| `label_freq_weight_pct_lo` | 5.0 → 35.0 |
-| `label_freq_weight_pct_hi` | 70.0 → 95.0 |
-| `label_freq_weight_curve` | 1.0 → 5.0 |
-| `propagate_k` | 1 → 20 (integer) |
-| `propagate_max_radius` | 100 → 1500 km (log scale) |
-| `propagate_min_obs` | 1 → 20 (integer) |
-| `propagate_max_spread` | 0.5 → 3.0 |
-| `propagate_env_dist_max` | 0.5 → 5.0 |
-| `propagate_range_cap` | 200 → 2000 km |
-| `smooth_gaps` | 0 → 4 (integer) |
-
-The dataset is normally built once before tuning starts.  Data-affecting
-parameters (`--max_obs_per_species`, `--min_obs_per_species`, `--no_yearly`)
-are set via the CLI and stay fixed across all trials.
-
-!!! warning "Propagation parameters rebuild the dataset every trial"
-    Tuning any `propagate_*` parameter (or `smooth_gaps`) makes each trial
-    re-run label propagation and rebuild its own train/val split from the raw
-    data, because propagation changes the species vocabulary.  This also
-    disables the preprocessed-data cache for the whole run.  Expect
-    substantially longer trials and higher peak memory than tuning
-    model/loss parameters alone.
-
-### Autotune CLI
-
-| Flag | Default | Description |
-|---|---|---|
-| `--autotune` | — | Enable autotune. Without args: tune all. With args: tune listed params only. |
-| `--autotune_trials` | `30` | Number of Optuna trials |
-| `--autotune_epochs` | `15` | Epochs per trial |
-| `--autotune_ranges` | — | JSON overrides for per-parameter search spaces; use `[lo, hi]` for numeric params or a list of allowed values for categorical params |
-
-Each trial trains a fresh model and optimizes towards validation GeoScore.  Optuna's `MedianPruner` kills unpromising trials early (after 3 warmup epochs).  Results are saved to `checkpoints/autotune/autotune_results.json`, and a suggested `train.py` command with the best parameters is printed.
-
-`--autotune_ranges` applies to every autotunable parameter.  For example, `{"coord_harmonics": [8, 16], "week_harmonics": [8, 16]}` constrains those integer searches to that interval instead of the default bounds.
-
-## References
-
-> Loshchilov, I. & Hutter, F. (2019). Decoupled Weight Decay Regularization. In *International Conference on Learning Representations*.
-
-> Akiba, T., Sano, S., Yanase, T., Ohta, T., & Koyama, M. (2019). Optuna: A Next-generation Hyperparameter Optimization Framework. In *ACM SIGKDD International Conference on Knowledge Discovery & Data Mining* (pp. 2623–2631).
+| `train_teacher.py` | `--link cloglog` | rate = 1 - exp(-exp(z)), the link of a Poisson abundance model |
+| | `--pos-weight` | scales the loss of entries with a positive rate |
+| | `--gamma-pos`, `--gamma-neg` | focal down-weighting of easy entries (asymmetric loss) |
+| | `--rank-weight` | adds a list-wise term that rewards putting common species on top |
+| | `--c` | effort at which a row has half weight |
+| | `--no-coords` | habitat and week only |
+| | without `--habitat` | coordinates and week only (no distillation needed) |
+| | `--week-harmonics`, `--coord-harmonics`, `--scale` | network shape |
+| `distill.py` | `--envelope 0` | no range envelope |
+| | without `--ocean` | no ocean rule |
+| | `--env-aux` | predict the habitat as an auxiliary task |
+| | `--habitat-head` | habitat-species head with a learned gate |
+| | `--qat-frac` | INT8-aware training (weights and inputs) at the end |
+| `pipeline.gbif_targets` | `--effort group` | non-bird effort from the species' own group |
+| | `--half-life` | recency weighting (large value = none) |
+
+## Reproducibility
+
+`--seed` fixes the batch order and initialization. Two teachers trained with
+different seeds differ by about half a GeoScore point on the benchmark, so
+differences smaller than that between runs are noise.

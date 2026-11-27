@@ -1,6 +1,6 @@
 # model.loss
 
-Loss functions for multi-task learning.
+Loss for encounter-rate targets.
 
 ::: model.loss
     options:

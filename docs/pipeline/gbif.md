@@ -1,69 +1,95 @@
-# GBIF Occurrence Processing
+# GBIF records
 
-`utils/gbifutils.py` reads a raw GBIF Darwin Core Archive (DwC-A) zip file, applies quality filters, and writes a clean CSV of species observations.
+[GBIF](https://www.gbif.org) aggregates occurrence records from eBird, iNaturalist,
+observation.org, national monitoring schemes, museum collections and many more.
+Two stages turn a GBIF download into encounter rates.
 
-## Obtaining GBIF Data
-
-1. Go to [GBIF.org](https://www.gbif.org/) and navigate to **Occurrences**
-2. Apply filters for your region and taxa of interest (e.g. class Aves, country, date range)
-3. Download the results as a **Darwin Core Archive** (`.zip`)
-4. The zip contains a tab-separated CSV — note the filename inside for the `--file` argument
-
-## Filters Applied
-
-The processing pipeline applies these filters in order:
-
-1. **Drop incomplete records** — rows missing coordinates, date, taxonKey, or scientific name
-2. **Taxonomy filter** — when `--taxonomy` is provided, keep only species present in the taxonomy file and add common names (most selective, applied first for speed)
-3. **Taxonomic class filter** — keep only specified classes (default: Aves, Amphibia, Insecta, Mammalia, Reptilia)
-4. **Binomial names only** — keep species with exactly two words in the name (skip subspecies, genera, etc.)
-
-## Week Numbering
-
-Dates are converted to **BirdNET week numbers** (1–48), where each week spans approximately 7.6 days. This matches BirdNET's internal temporal resolution and ensures week 48 covers the end of December.
-
-## CLI Options
+## Stage 1: records
 
 ```bash
-python utils/gbifutils.py \
-    --gbif /path/to/gbif_archive.zip \
-    --file occurrence.csv \
-    --output ./outputs/gbif_processed.csv.gz \
-    --taxonomy taxonomy_v0.2-Jun2026.csv \
-    --max_rows 10000000 \
-    --workers 8
+unzip -p gbif_download.zip occurrence.txt | python -m pipeline.gbif_map data/gbif_map --workers 8
 ```
 
-| Flag | Description |
+The input is the `occurrence.txt` table of a Darwin Core Archive download, streamed
+from the zip file. The module splits the stream into blocks (`--chunk-mb`, 256 MB by
+default), parses each block in a worker process and writes one parquet part per
+block. Each kept record becomes one row:
+
+| column | type | meaning |
+|---|---|---|
+| `cell6` | uint64 | H3 cell at resolution 6 |
+| `year`, `month`, `day` | int16, int8, int8 | date (`year` 0 = unknown) |
+| `week` | int8 | model week 1-48 |
+| `species_key` | int32 | GBIF species key |
+| `class_key` | int32 | GBIF class key (212 = birds) |
+| `dataset_key` | string | GBIF dataset key |
+| `observer` | uint32 | hash of `recordedByID`, else `recordedBy` (0 = unknown) |
+| `unc_m` | uint32 | coordinate uncertainty in meters (0 = unknown) |
+| `n_ind` | int32 | individual count (0 = unknown) |
+
+Records without coordinates, species, month or day are dropped, as are records GBIF
+flags with geospatial issues. Per block, `_stats/part_*.json` counts what came in and
+what was kept. Block boundaries depend only on the block size, so a run that stops
+resumes at the next missing block.
+
+The point of this stage is to keep what later decisions need (year, dataset,
+observer) and nothing else. The grid, the definition of effort, the year window and
+the recency weights are all decided in stage 3, which reads these parts instead of
+the multi-terabyte archive.
+
+## Stage 3: encounter rates
+
+```bash
+python -m pipeline.gbif_targets data/gbif_map data/species.csv data/targets --effort naturalist
+```
+
+### Observer-days
+
+The unit of evidence is the observer-day: one observer, one date, one resolution-5
+cell. Twenty records of a species by one person on one day count once. Records
+without an observer count as one observer-day per dataset, date and cell. For each
+species, cell and week:
+
+- `k`: observer-days on which the species was recorded
+- `n`: observer-days of effort (below)
+- `k / n`: the encounter rate
+
+### Effort
+
+What counts as effort decides what a zero means.
+
+**Birds** use every bird observer-day, including species the model does not cover.
+Most bird records come from complete checklists (eBird), on which any species seen
+or heard would have been reported, so a bird missing from many observer-days in a
+cell is rare there. This makes the bird rate close to eBird's checklist frequency.
+
+**Other species** use, with `--effort naturalist`, all observer-days with any record
+of any taxon outside eBird's bird-only checklists. A frog's rate is then the share
+of naturalist activity in the cell that included the frog. This puts mammals,
+insects, frogs and fish on one scale, and a cell with plenty of naturalists but no
+record of a species gives it real zeros.
+
+The older alternative, `--effort group`, counts only observer-days with a modeled
+species of the same group (mammals for mammals, and so on). It inflates small
+groups: when a group has a handful of modeled species, its effort is mostly their
+own records, and their rates are close to 1 wherever they are recorded at all. A
+crab recorded on most crustacean observer-days then looks as common as the most
+common bird. It is kept for comparison.
+
+### Recency
+
+Each observer-day counts `0.5 ** ((ref_year - year) / half_life)` in the weighted
+columns `k_w` and `n_w` (half-life 10 years, reference year 2026 by default). Ranges
+shift, and observer behavior changes; recent records describe today better.
+`--max-year` drops later records, for testing on years the model has not seen.
+
+### Output
+
+| file | columns |
 |---|---|
-| `--gbif` | Path to GBIF Darwin Core Archive zip |
-| `--file` | Name of the CSV file inside the zip |
-| `--output` | Output path for processed CSV (`.csv.gz` for compression) |
-| `--taxonomy` | Path to taxonomy CSV for filtering and name enrichment |
-| `--max_rows` | Maximum rows to process (for testing with large archives) |
-| `--workers` | Number of parallel worker processes (default: `min(cpu_count-1, 8)`) |
+| `species_res5.parquet` | `cell, week, grp, birdnet_id, k, k_w, n_years, year_max` |
+| `effort_res5.parquet` | `cell, week, grp, n, n_w, n_species` |
 
-## Parallel Processing
-
-For large archives (100M+ rows), the script uses multiprocessing to speed up
-parsing and filtering.  The main process reads 64 MB byte blocks from the zip
-sequentially, then distributes each block to a pool of worker processes for
-independent parsing, filtering, and CSV output.  Results are collected in order
-and written to a single output stream.
-
-On an 8-core machine, this typically achieves 4–6× speedup over single-threaded
-processing.
-
-## Output Format
-
-A gzipped CSV with columns:
-
-| Column | Description |
-|---|---|
-| `latitude` | Decimal latitude |
-| `longitude` | Decimal longitude |
-| `taxonKey` | GBIF taxonomic identifier |
-| `verbatimScientificName` | Scientific name from the record |
-| `commonName` | Common name (from taxonomy, if available) |
-| `week` | BirdNET week number (1–48) |
-| `class` | Taxonomic class (e.g. Aves) |
+`grp` is `Aves` for birds and the taxon group (or `Other` with naturalist effort)
+for the rest. The stage runs in [DuckDB](https://duckdb.org); `--mem`, `--threads`
+and `--temp-limit` bound memory, cores and spill space.
