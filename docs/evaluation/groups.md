@@ -14,7 +14,7 @@ At 400 benchmark places and four weeks (4, 16, 28, 40), per group:
 | column | meaning |
 |---|---|
 | `outputs` | species of the group in the model |
-| `per_place_ge_0_5`, `per_place_ge_0_9` | species scoring at least 0.5 / 0.9 per place |
+| `per_place_ge_0_1`, `per_place_ge_0_5`, `per_place_ge_0_9` | species scoring at least 0.1 (the recommended filter line), 0.5 or 0.9 per place |
 | `top5_mean` | mean score of the group's five highest species per place |
 | `share_of_top20` | share of each place's top 20 that the group takes |
 
