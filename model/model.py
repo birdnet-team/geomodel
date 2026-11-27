@@ -138,6 +138,7 @@ class SpatioTemporalEncoder(nn.Module):
         n_blocks: int = 4,
         dropout: float = 0.1,
         n_weeks: int = 48,
+        film_dim: int | None = None,
     ):
         """Initialize the spatio-temporal encoder.
 
@@ -148,6 +149,9 @@ class SpatioTemporalEncoder(nn.Module):
             n_blocks: Number of residual blocks.
             dropout: Dropout probability.
             n_weeks: Total weeks in the annual cycle.
+            film_dim: Hidden width of each FiLM generator (default:
+                embed_dim).  The week encoding has only a few dozen
+                dimensions, so a much narrower generator loses nothing.
         """
         super().__init__()
         self.coord_harmonics = coord_harmonics
@@ -169,9 +173,9 @@ class SpatioTemporalEncoder(nn.Module):
         # FiLM: one (γ, β) pair per residual block, generated from week encoding
         self.film_generators = nn.ModuleList([
             nn.Sequential(
-                nn.Linear(week_dim, embed_dim),
+                nn.Linear(week_dim, film_dim or embed_dim),
                 nn.GELU(),
-                nn.Linear(embed_dim, 2 * embed_dim),  # (γ, β)
+                nn.Linear(film_dim or embed_dim, 2 * embed_dim),  # (γ, β)
             ) for _ in range(n_blocks)
         ])
         # Zero-init the FiLM output layers so γ starts at identity (tanh(0)=0
@@ -430,6 +434,7 @@ class BirdNETGeoModel(nn.Module):
         habitat_head_dim: int = 256,
         habitat_head_blocks: int = 1,
         habitat_bottleneck: int = 128,
+        film_dim: int | None = None,
     ):
         """Initialize the full multi-task model.
 
@@ -455,6 +460,8 @@ class BirdNETGeoModel(nn.Module):
             habitat_head_dim: Hidden dim for habitat-species head.
             habitat_head_blocks: Residual blocks in habitat-species head.
             habitat_bottleneck: Low-rank bottleneck for habitat-species head.
+            film_dim: Hidden width of the encoder's FiLM generators
+                (default: embed_dim).
         """
         super().__init__()
         self.n_species = n_species
@@ -463,6 +470,7 @@ class BirdNETGeoModel(nn.Module):
         self.encoder = SpatioTemporalEncoder(
             coord_harmonics=coord_harmonics, week_harmonics=week_harmonics,
             embed_dim=embed_dim, n_blocks=encoder_blocks, dropout=dropout,
+            film_dim=film_dim,
         )
         self.species_head = SpeciesPredictionHead(
             input_dim=embed_dim, n_species=n_species,
@@ -601,6 +609,8 @@ def create_model(
     coord_harmonics: int = 4,
     week_harmonics: int = 8,
     habitat_head: bool = False,
+    species_bottleneck: int | None = None,
+    film_dim: int | None = None,
 ) -> BirdNETGeoModel:
     """Create model with a continuous size scaling factor.
 
@@ -622,11 +632,18 @@ def create_model(
         coord_harmonics: Harmonics for lat/lon encoding.
         week_harmonics: Harmonics for week encoding.
         habitat_head: Enable habitat-species association head.
+        species_bottleneck: Override the low-rank bottleneck before the
+            output layer (default: 128 scaled by ``model_scale``).  The
+            output layer is n_species x bottleneck, so this is the finest
+            knob for hitting a size budget.
+        film_dim: Override the hidden width of the FiLM (week) generators
+            (default: embed_dim).
     """
     # Reference dimensions at scale=1.0 (former "medium")
     embed_dim = max(64, round(512 * model_scale / 64) * 64)
     species_head_dim = embed_dim
-    species_bottleneck = max(32, round(128 * model_scale / 32) * 32)
+    if species_bottleneck is None:
+        species_bottleneck = max(32, round(128 * model_scale / 32) * 32)
     env_head_dim = max(64, round(256 * model_scale / 64) * 64)
 
     encoder_blocks = max(1, round(4 * model_scale))
@@ -658,4 +675,5 @@ def create_model(
         habitat_head_dim=habitat_head_dim,
         habitat_head_blocks=habitat_head_blocks,
         habitat_bottleneck=habitat_bottleneck,
+        film_dim=film_dim,
     )

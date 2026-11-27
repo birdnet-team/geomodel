@@ -7,6 +7,7 @@ of shape ``(batch, n_species)``.
 Supported formats:
     onnx        ONNX FP32
     onnx_fp16   ONNX FP16 (default) — weights in FP16, I/O in FP32 by default
+    onnx_int8   ONNX INT8 — int8 weights per output channel, float32 arithmetic
     tflite      TensorFlow Lite FP32
     tflite_fp16 TensorFlow Lite FP16
     tflite_int8 TensorFlow Lite INT8 (dynamic-range quantisation)
@@ -70,16 +71,62 @@ class ExportWrapper(nn.Module):
     runtime can apply its own activation.
     """
 
-    def __init__(self, model: nn.Module, apply_sigmoid: bool = True):
+    def __init__(
+        self,
+        model: nn.Module,
+        apply_sigmoid: bool = True,
+        score_floor: torch.Tensor | None = None,
+        score_curve: dict | None = None,
+        score_cap: torch.Tensor | None = None,
+    ):
         super().__init__()
         self.model = model
         self.apply_sigmoid = apply_sigmoid
+        # Optional score curve for models trained on encounter rates: the model's
+        # sigmoid output is a rate r, and the exported score is
+        #   logit(score) = logit(anchor) + steepness * (log10 r - log10 f0)
+        # so a species reported on a fraction f0 of checklists scores `anchor`.
+        if score_curve is not None:
+            self.curve_gain = float(score_curve["steepness"]) / math.log(10.0)
+            self.curve_offset = math.log(score_curve["anchor"] / (1 - score_curve["anchor"])) - float(
+                score_curve["steepness"]
+            ) * math.log10(score_curve["f0"])
+        else:
+            self.curve_gain = None
+        # Optional per-species minimum score (e.g. humans and domestic animals,
+        # which occur almost everywhere). Applied in logit space so that it holds
+        # for probability and logit outputs alike; 0 means no floor.
+        if score_floor is not None:
+            floor = score_floor.float().clamp(0.0, 0.999)
+            floor_logit = torch.where(
+                floor > 0, torch.logit(floor.clamp_min(1e-6)), torch.full_like(floor, -1e4)
+            )
+            self.register_buffer("floor_logit", floor_logit)
+        else:
+            self.floor_logit = None
+        # Optional per-species maximum score (e.g. domestic animals, which should
+        # pass everywhere without topping the list); 1 means no cap.
+        if score_cap is not None:
+            cap = score_cap.float()
+            cap_logit = torch.where(
+                cap < 1, torch.logit(cap.clamp(1e-6, 0.999)), torch.full_like(cap, 1e4)
+            )
+            self.register_buffer("cap_logit", cap_logit)
+        else:
+            self.cap_logit = None
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         lat = x[:, 0]
         lon = x[:, 1]
         week = x[:, 2]
         logits = self.model(lat, lon, week, return_env=False)["species_logits"]
+        if self.curve_gain is not None:
+            # log(sigmoid(z)) = -softplus(-z), numerically stable for any z
+            logits = self.curve_offset - self.curve_gain * nn.functional.softplus(-logits)
+        if self.floor_logit is not None:
+            logits = torch.maximum(logits, self.floor_logit)
+        if self.cap_logit is not None:
+            logits = torch.minimum(logits, self.cap_logit)
         if self.apply_sigmoid:
             return torch.sigmoid(logits)
         return logits
@@ -173,12 +220,14 @@ def _torch_onnx_export(wrapper: nn.Module, dummy: torch.Tensor, path: Path) -> N
 
 
 def _strip_onnx_debug_metadata(path: Path) -> None:
-    """Remove exporter debug metadata that embeds local file paths.
+    """Remove exporter debug metadata from every node.
 
     The dynamo-based exporter stores a Python stack trace on every node
-    (``pkg.torch.onnx.stack_trace``), which contains absolute paths of the
-    machine that ran the export.  It has no effect on inference, so it is
-    dropped before the model is published.
+    (``pkg.torch.onnx.stack_trace``, with absolute paths of the machine that
+    ran the export) plus module names, FX node names and name scopes
+    (``namespace``, ``pkg.torch.onnx.*``): about 0.15 MB for this model.
+    None of it affects inference, so it is dropped before the model is
+    published.
     """
     import onnx
 
@@ -186,9 +235,7 @@ def _strip_onnx_debug_metadata(path: Path) -> None:
 
     def _clean(graph) -> None:
         for node in graph.node:
-            kept = [p for p in node.metadata_props if p.key != "pkg.torch.onnx.stack_trace"]
             del node.metadata_props[:]
-            node.metadata_props.extend(kept)
             node.doc_string = ""
             for attr in node.attribute:
                 if attr.HasField("g"):
@@ -199,9 +246,7 @@ def _strip_onnx_debug_metadata(path: Path) -> None:
     _clean(model.graph)
     for fn in model.functions:
         for node in fn.node:
-            kept = [p for p in node.metadata_props if p.key != "pkg.torch.onnx.stack_trace"]
             del node.metadata_props[:]
-            node.metadata_props.extend(kept)
     onnx.save(model, str(path))
 
 
@@ -301,6 +346,101 @@ def _export_onnx(
     return passed, max_diff
 
 
+def _int8_weight_only(model_proto) -> int:
+    """Store every MatMul / Gemm weight matrix as int8, one scale per output channel.
+
+    Each weight becomes an int8 initializer followed by a ``DequantizeLinear``
+    node, so the file holds about one byte per parameter while all arithmetic
+    stays in float32.  Unlike ONNX Runtime's dynamic quantisation, activations
+    are not rounded to 8 bits: that rounding is what pushes some scores up at
+    places far from the training data (e.g. open ocean).  Returns the number of
+    matrices converted.
+    """
+    from onnx import helper
+    from onnx import numpy_helper as nh
+
+    graph = model_proto.graph
+    users: dict[str, list] = {}
+    for node in graph.node:
+        for k, name in enumerate(node.input):
+            users.setdefault(name, []).append((node, k))
+    dq_nodes = []
+    for init in list(graph.initializer):
+        w = nh.to_array(init)
+        if w.ndim != 2 or w.dtype != np.float32 or w.size < 4096:
+            continue
+        uses = users.get(init.name, [])
+        if not uses or not all(n.op_type in ("MatMul", "Gemm") and k == 1 for n, k in uses):
+            continue
+        trans_b = any(
+            a.name == "transB" and a.i
+            for n, _ in uses
+            if n.op_type == "Gemm"
+            for a in n.attribute
+        )
+        axis = 0 if trans_b else 1  # output-channel axis of the B matrix
+        scale = np.abs(w).max(axis=1 - axis) / 127.0
+        scale[scale == 0] = 1.0
+        q = np.clip(np.round(w / np.expand_dims(scale, 1 - axis)), -127, 127).astype(np.int8)
+        graph.initializer.remove(init)
+        graph.initializer.extend([
+            nh.from_array(q, init.name + "_int8"),
+            nh.from_array(scale.astype(np.float32), init.name + "_scale"),
+            nh.from_array(np.zeros_like(scale, dtype=np.int8), init.name + "_zero"),
+        ])
+        dq_nodes.append(helper.make_node(
+            "DequantizeLinear",
+            [init.name + "_int8", init.name + "_scale", init.name + "_zero"],
+            [init.name],
+            axis=axis,
+            name=init.name + "_dequantize",
+        ))
+    for node in reversed(dq_nodes):
+        graph.node.insert(0, node)
+    del graph.value_info[:]
+    return len(dq_nodes)
+
+
+def _export_onnx_int8(
+    wrapper: ExportWrapper,
+    ref_inputs: np.ndarray,
+    ref_outputs: np.ndarray,
+    outdir: Path,
+    tol: float,
+    device: torch.device,
+) -> tuple[bool, float]:
+    """Export to ONNX with int8 weights (weight-only, per output channel).
+
+    The smallest ONNX variant: about one byte per parameter.  See
+    ``_int8_weight_only`` for why activations are kept in float32.
+    """
+    try:
+        import onnx
+        import onnxruntime as ort
+    except ImportError as e:
+        print(e)
+        return False, float("nan")
+
+    path = outdir / "geomodel_int8.onnx"
+    print(f"\n[onnx_int8] Exporting to {path}")
+    wrapper.eval()
+    _torch_onnx_export(wrapper, torch.randn(1, 3, device=device), path)
+    model_proto = onnx.load(str(path), load_external_data=True)
+    data_path = Path(str(path) + ".data")
+    if data_path.exists():
+        data_path.unlink()
+    n = _int8_weight_only(model_proto)
+    onnx.save(model_proto, str(path), save_as_external_data=False)
+    print(f"  Stored {n} weight matrices as int8")
+
+    sess = ort.InferenceSession(str(path), providers=["CPUExecutionProvider"])
+    exported = sess.run(None, {"input": ref_inputs.astype(np.float32)})[0].astype(np.float32)
+    # Int8 weights shift individual scores by a few hundredths, rarely up to ~0.2
+    passed, max_diff = _validate(ref_outputs, exported, max(tol, 0.25))
+    print(f"  File size: {path.stat().st_size / (1024 * 1024):.2f} MB")
+    return passed, max_diff
+
+
 # ---------------------------------------------------------------------------
 # TorchScript export
 # ---------------------------------------------------------------------------
@@ -314,6 +454,9 @@ def _export_torchscript(
     tol: float,
     device: torch.device,
     apply_sigmoid: bool = False,
+    score_floor: torch.Tensor | None = None,
+    score_curve: dict | None = None,
+    score_cap: torch.Tensor | None = None,
 ) -> tuple[bool, float]:
     """Export to a traced, frozen TorchScript module.
 
@@ -339,7 +482,13 @@ def _export_torchscript(
     path = outdir / "geomodel.pt"
     print(f"\n[torchscript] Exporting to {path}")
 
-    ts_wrapper = ExportWrapper(model, apply_sigmoid=apply_sigmoid).to(device)
+    ts_wrapper = ExportWrapper(
+        model,
+        apply_sigmoid=apply_sigmoid,
+        score_floor=score_floor,
+        score_curve=score_curve,
+        score_cap=score_cap,
+    ).to(device)
     ts_wrapper.eval()
 
     dummy = torch.randn(1, 3, device=device)
@@ -525,6 +674,7 @@ def _export_tflite(
 ALL_FORMATS = [
     "onnx",
     "onnx_fp16",
+    "onnx_int8",
     "tflite",
     "tflite_fp16",
     "tflite_int8",
@@ -585,6 +735,8 @@ def convert(
         coord_harmonics=model_config.get("coord_harmonics", 8),
         week_harmonics=model_config.get("week_harmonics", 4),
         habitat_head=model_config.get("habitat_head", False),
+        species_bottleneck=model_config.get("species_bottleneck"),
+        film_dim=model_config.get("film_dim"),
     )
     model.load_state_dict(ckpt["model_state_dict"])
     model.to(dev)
@@ -597,7 +749,20 @@ def convert(
         f"{n_params:,} parameters"
     )
 
-    wrapper = ExportWrapper(model).to(dev)
+    score_floor = ckpt.get("score_floor")
+    if score_floor is not None:
+        score_floor = torch.as_tensor(score_floor, dtype=torch.float32)
+        print(f"Score floor on {int((score_floor > 0).sum())} species")
+    score_curve = ckpt.get("score_curve")
+    if score_curve is not None:
+        print(f"Score curve: {score_curve}")
+    score_cap = ckpt.get("score_cap")
+    if score_cap is not None:
+        score_cap = torch.as_tensor(score_cap, dtype=torch.float32)
+        print(f"Score cap on {int((score_cap < 1).sum())} species")
+    wrapper = ExportWrapper(
+        model, score_floor=score_floor, score_curve=score_curve, score_cap=score_cap
+    ).to(dev)
     wrapper.eval()
 
     outpath = Path(outdir)
@@ -650,6 +815,9 @@ def convert(
             device=dev,
             keep_io_fp32=keep_io_fp32,
         ),
+        "onnx_int8": lambda: _export_onnx_int8(
+            wrapper, ref_inputs, ref_outputs, outpath, tol=tol, device=dev
+        ),
         "tflite": lambda: _export_tflite(
             wrapper, ref_inputs, ref_outputs, outpath, mode="fp32", tol=tol, device=dev
         ),
@@ -670,6 +838,9 @@ def convert(
             tol=tol,
             device=dev,
             apply_sigmoid=torchscript_sigmoid,
+            score_floor=score_floor,
+            score_curve=score_curve,
+            score_cap=score_cap,
         ),
     }
 
