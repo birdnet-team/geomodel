@@ -1,0 +1,64 @@
+# Upgrading from V3
+
+For apps and libraries that use the V3 geomodel (V3.0.x releases). The input stays
+the same; what the outputs mean and how they are labeled changes.
+
+## What stays
+
+- One float32 input tensor `[batch, 3]`: latitude, longitude, week (1-48, four per
+  month). Week 0 or -1 for the whole year is handled outside the model, as before:
+  run all 48 weeks and take the maximum.
+- One value per species, in label-file order, between 0 and 1.
+- TorchScript returns logits; ONNX and TFLite return the final values.
+
+## What changes
+
+| | V3 | V4 |
+|---|---|---|
+| species | 14,082 | 16,960 |
+| label ids | eBird codes for birds, iNaturalist ids for others | BirdNET ids (`BN…`) for all |
+| label file | `id <TAB> scientific name <TAB> common name` | same layout, BirdNET ids |
+| output | "was the species recorded here", from union labels | score from the encounter rate |
+| humans, domestic animals | as learned | humans ≥ 0.30, domestic animals 0.25-0.50 everywhere |
+| INT8 file | TFLite dynamic-range INT8 | ONNX with int8 weights, float32 arithmetic |
+
+**Ids.** Every V4 output is a species of the BirdNET taxonomy and is labeled with
+its BirdNET id, the same id the BirdNET audio models use. Join geomodel and audio
+results by id instead of by name or eBird code. The taxonomy
+([Species](../pipeline/taxonomy.md)) maps BirdNET ids to eBird codes, iNaturalist
+ids and names.
+
+**Scores.** A V3 output was close to 1 wherever a species had been recorded at all,
+including a single old vagrant record. A V4 score follows how often the species is
+encountered ([Scores](scores.md)): common species near 1, regular ones in the
+middle, rare visitors near 0. Lists filtered at the same line are therefore shorter
+where many people record: on the eBird benchmark, at 0.1, the V4.0 candidate passes
+205-227 bird species per cell and week in well-observed cells against 295-304 for
+V3.0.4, and 210 against 239 in thinly observed ones, while keeping 96-97 % of the
+regular species. Rare visitors in well-observed cells pass about half as often.
+(Numbers for the V4.0 candidate; they will be updated for the final release.)
+
+**Threshold.** V3 apps used lines around 0.1-0.15 on V3 outputs. For V4, 0.1 is the
+recommended line: a species reported on about 0.3 % of checklists. On the 2025 app
+study, V4 at 0.1 rejects slightly fewer confident detections than V3 at 0.1 and
+removes as many unlikely ones ([App filter study](../evaluation/filter_study.md)).
+
+**Humans and domestic animals** no longer depend on records. Humans always pass
+(their score never drops below 0.30), so apps that use the human class for speech
+detection can rely on it anywhere, including at sea.
+
+**INT8.** The INT8 file is ONNX (`…_INT8.onnx`): weights are stored in 8 bits, all
+arithmetic is float32, and scores stay within about 0.2 of the FP32 model. The old
+TFLite INT8 file also rounded activations, which moved some scores far from the data
+by a lot. FP32 files are provided in ONNX, TFLite and TorchScript, FP16 files in ONNX
+and TFLite.
+
+## Checking an integration
+
+Run the same place and week through your integration and through `predict.py`; the
+scores should match to about 1e-4 for FP32 files, 0.01 for ONNX FP16 (somewhat more
+for TFLite FP16) and 0.2 for INT8:
+
+```bash
+python predict.py BirdNET+_Geomodel_V4.0_Global_17K.pt --lat 50.83 --lon 12.92 --week 22 --top-k 20
+```

@@ -209,7 +209,7 @@ def main(argv=None) -> None:
         with torch.no_grad():
             val_loss = (float(np.mean([step_loss(val[i:i + 2048]).item() for i in range(0, len(val), 2048)]))
                         if len(val) else float('nan'))
-        history.append(dict(epoch=epoch, train=total / batches, val=val_loss))
+        history.append(dict(epoch=epoch, train=total / batches, val=val_loss if len(val) else None))
         print(f'epoch {epoch:2d}  train {total / batches:7.3f}  val {val_loss:7.3f}  '
               f'{(time.time() - start) / 60:5.1f} min', flush=True)
         if val_loss < best[0] or not len(val):  # without validation rows the last epoch is kept
@@ -224,7 +224,8 @@ def main(argv=None) -> None:
     checkpoint = dict(state=net_state, env=env_state, species=data.species, codes=data.codes.tolist(),
                       args=vars(args), feature_mean=data.feature_mean, feature_std=data.feature_std)
     torch.save(checkpoint, f'{args.out}/{args.tag}.pt')
-    result = dict(args=vars(args), best_val=best[0], best_epoch=best[1], history=history)
+    best_val = None if math.isnan(best[0]) else best[0]  # NaN without validation rows; JSON has no NaN
+    result = dict(args=vars(args), best_val=best_val, best_epoch=best[1], history=history)
 
     if args.benchmark:
         from evaluation.benchmark import evaluate
@@ -240,7 +241,7 @@ def main(argv=None) -> None:
     with open(f'{args.out}/{args.tag}.json', 'w') as f:
         json.dump(result, f, indent=1)
     if args.results:
-        line = dict(tag=args.tag, best_val=round(best[0], 3), best_epoch=best[1])
+        line = dict(tag=args.tag, best_val=None if best_val is None else round(best_val, 3), best_epoch=best[1])
         if 'benchmark' in result:
             line.update(result['benchmark']['geoscore'])
         with open(args.results, 'a') as f:

@@ -27,6 +27,10 @@ naturalists are active but never record it. Small groups need this: when a group
 has only a few modeled species, the group's own effort is mostly the records of
 those species, and their rates are close to 1 wherever they are recorded at all.
 
+``--effort modeled`` narrows that effort to observer-days on which a species of the
+model (any group, birds included) was recorded, so a day spent photographing plants
+or fungi does not count against a frog.
+
 Recent years weigh more: each observer-day counts ``0.5 ** ((ref_year - year) / half_life)``
 in ``k_w`` and ``n_w``. ``--max-year`` drops later records (held-out-year tests).
 
@@ -73,9 +77,9 @@ def build(map_dir: str, species_csv: str, out_dir: str, *, half_life: float = 10
         raise SystemExit(f'no part_*.parquet in {map_dir}')
     if limit_files:
         files = files[:limit_files]
-    if effort not in ('group', 'naturalist'):
+    if effort not in ('group', 'naturalist', 'modeled'):
         raise ValueError(f'unknown effort definition {effort!r}')
-    other = "'Other'" if effort == 'naturalist' else 't.grp'
+    other = "'Other'" if effort in ('naturalist', 'modeled') else 't.grp'
 
     con = duckdb.connect()
     con.execute(f"SET threads={threads}; SET memory_limit='{mem}'; SET temp_directory='{out}/_tmp'; "
@@ -122,16 +126,19 @@ def build(map_dir: str, species_csv: str, out_dir: str, *, half_life: float = 10
               WHERE {'TRUE' if effort == 'group' else "grp = 'Aves'"}
               GROUP BY cell, week, grp, year, month, day, obs)
         GROUP BY cell, week, grp"""
-    if effort == 'naturalist':
-        # All non-bird species share one effort: observer-days with any record of
-        # any taxon outside eBird's bird-only checklists.
+    if effort in ('naturalist', 'modeled'):
+        # All non-bird species share one effort: observer-days outside eBird's bird-only
+        # checklists with any record (naturalist) or with a record of a modeled species
+        # of any group, birds included (modeled).
+        modeled_only = ('AND species_key IN (SELECT species_key FROM tax WHERE species_key IS NOT NULL)'
+                        if effort == 'modeled' else '')
         group_effort += f"""
         UNION ALL
         SELECT cell, week, 'Other' AS grp, count(*) AS n, sum(w)::FLOAT AS n_w, NULL AS n_species
         FROM (SELECT DISTINCT {h3_parent_sql(H3_RES)} AS cell, week, year, month, day, {observer} AS obs,
                      {weight} AS w
               FROM read_parquet({files!r})
-              WHERE {where} AND dataset_key <> '{EBIRD_DATASET}')
+              WHERE {where} AND dataset_key <> '{EBIRD_DATASET}' {modeled_only})
         GROUP BY cell, week"""
     con.execute(f"COPY ({group_effort}) TO '{out}/effort_res{H3_RES}.parquet' (FORMAT parquet, COMPRESSION zstd)")
 
@@ -150,8 +157,9 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument('--ref-year', type=int, default=2026, help='year that counts fully')
     parser.add_argument('--min-year', type=int, default=0, help='drop records before this year (0 = keep all)')
     parser.add_argument('--max-year', type=int, default=0, help='drop records after this year (0 = keep all)')
-    parser.add_argument('--effort', default='group', choices=['group', 'naturalist'],
-                        help='effort of non-bird species: their own group, or all naturalist observer-days')
+    parser.add_argument('--effort', default='group', choices=['group', 'naturalist', 'modeled'],
+                        help='effort of non-bird species: their own group, all naturalist observer-days, '
+                             'or naturalist observer-days with a modeled species')
     parser.add_argument('--limit-files', type=int, default=0, help='read only the first N parts (tests)')
     parser.add_argument('--threads', type=int, default=8)
     parser.add_argument('--mem', default='24GB', help='DuckDB memory limit')

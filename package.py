@@ -48,6 +48,7 @@ def main(argv=None) -> None:
     p.add_argument('--f0', type=float, default=0.003, help='encounter rate that scores --anchor')
     p.add_argument('--anchor', type=float, default=0.1)
     p.add_argument('--steepness', type=float, default=3.0, help='logit units per factor of ten in rate')
+    p.add_argument('--nonbird-f0', type=float, help='a different anchor rate for non-bird species (default: --f0)')
     args = p.parse_args(argv)
 
     ckpt = torch.load(args.student, map_location='cpu', weights_only=False)
@@ -86,7 +87,10 @@ def main(argv=None) -> None:
         model_config=config, model_state_dict=ckpt['state'],
         species_vocab=dict(species_to_idx={s: i for i, s in enumerate(species)},
                            idx_to_species={i: s for i, s in enumerate(species)}),
-        score_curve=curve,
+        score_curve=curve if args.nonbird_f0 is None else dict(
+            # Humans and domestic animals keep the common anchor: their floors were trained on it.
+            curve, f0_species=[args.f0 if taxonomy[s]['taxon_group'] == 'Aves' or kind.get(s) in ('human', 'domestic')
+                               else args.nonbird_f0 for s in species]),
         score_floor=floor.tolist(), score_cap=cap.tolist(),
         codes=codes, taxon_groups=[taxonomy[s]['taxon_group'] for s in species],
         source=dict(student=pathlib.Path(args.student).name,

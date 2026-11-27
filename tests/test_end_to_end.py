@@ -108,5 +108,53 @@ def test_documented_chain(work):
     assert (onnx_scores[:, human] >= 0.30 - 1e-4).all()  # the floor holds in the export
     assert release.extra['codes'][:3] == ['aaa1', 'bbb1', 'ccc1']
 
+    run('package.py', f'{d}/runs/student.pt', f'{d}/taxonomy.csv', f'{d}/ubiquitous.csv', f'{d}/release', '--name', 'gm2',
+        '--nonbird-f0', '0.001')
+    f0 = dict(zip(load(f'{d}/release/gm2.pt').species, load(f'{d}/release/gm2.pt').curve['f0_species']))
+    assert f0['BN00001'] == 0.003 and f0['BN20001'] == 0.001 and f0['BN22686'] == 0.003  # human keeps the common anchor
+
     listing = run('predict.py', f'{d}/release/gm.pt', '--lat', '50.8', '--lon', '12.9', '--week', '22', '--threshold', '0')
     assert 'Human' in listing
+
+
+def test_modeled_effort_counts_only_days_with_modeled_species(work):
+    """--effort modeled: non-eBird observer-days with a modeled species; plant-only days do not count."""
+    import h3
+    d = str(work)
+    # add unmodeled plant records (key 999) on extra observer-days, non-eBird
+    text = (work / 'occurrence.txt').read_text()
+    rng = np.random.default_rng(1)
+    extra = []
+    for i in range(300):
+        extra.append('\t'.join([f'plant{i%7}', '', '1', '2021', str(int(rng.integers(1,13))), str(int(rng.integers(1,29))),
+                                f'{50.8+rng.normal(0,.3):.4f}', f'{12.9+rng.normal(0,.3):.4f}', '', 'inat', 'false', '6', '999']))
+    # and a few NULL species keys
+    extra.append('\t'.join(['x', '', '1', '2021', '5', '5', '50.8', '12.9', '', 'inat', 'false', '6', '']))
+    (work / 'occ2.txt').write_text(text + '\n'.join(extra) + '\n')
+    with open(work / 'occ2.txt', 'rb') as f:
+        out = subprocess.run([sys.executable, '-m', 'pipeline.gbif_map', f'{d}/map2', '--workers', '1'], stdin=f,
+                             cwd=ROOT, capture_output=True, text=True, timeout=600)
+    assert out.returncode == 0, out.stderr
+    for eff in ('naturalist', 'modeled'):
+        run('-m', 'pipeline.gbif_targets', f'{d}/map2', f'{d}/species.csv', f'{d}/t_{eff}', '--effort', eff,
+            '--threads', '1', '--mem', '1GB')
+    m = pd.concat([pd.read_parquet(p) for p in sorted(Path(f'{d}/map2').glob('part_*.parquet'))])
+    m['dataset_key'] = m['dataset_key'].astype(str)
+    keys = {k for k, *_ in SPECIES}
+    m['cell5'] = [int(h3.str_to_int(h3.cell_to_parent(h3.int_to_str(int(c)), 5))) for c in m.cell6]
+    sel = m[(m.dataset_key != EBIRD) & m.species_key.isin(keys)]
+    ref = sel.drop_duplicates(['cell5', 'week', 'year', 'month', 'day', 'observer']).groupby(['cell5', 'week']).size()
+    eff = {e: pd.read_parquet(f'{d}/t_{e}/effort_res5.parquet') for e in ('naturalist', 'modeled')}
+    o = eff['modeled'][eff['modeled'].grp == 'Other'].set_index(['cell', 'week']).n
+    o.index = o.index.set_names(['cell5', 'week'])
+    o = o.sort_index(); ref = ref.sort_index()
+    assert eff['naturalist'][eff['naturalist'].grp == 'Other'].n.sum() > o.sum()  # plant days only count there
+    assert (o.astype(int).values == ref.values).all() and list(o.index) == list(ref.index)
+    # k <= n for non-birds
+    sp = pd.read_parquet(f'{d}/t_modeled/species_res5.parquet')
+    j = sp[sp.grp == 'Other'].merge(eff['modeled'][eff['modeled'].grp == 'Other'], on=['cell', 'week', 'grp'], how='left')
+    assert j.n.notna().all() and (j.k <= j.n).all()
+    # Aves rows identical between modes
+    a = lambda e: eff[e][eff[e].grp == 'Aves'].sort_values(['cell', 'week']).reset_index(drop=True)
+    pd.testing.assert_frame_equal(a('naturalist'), a('modeled'))
+
