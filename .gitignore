@@ -4,15 +4,12 @@
 # Exclude IDE files
 .vscode/
 
-# Exclude bulk species metadata, but keep the small curated inputs that the
-# code reads by default (a plain `species-data/` rule would also hide these,
-# leaving --ubiquitous_species and --species_remap silently disabled on a
-# fresh clone).
-species-data/*
-!species-data/generate_taxonomy.py
-!species-data/species_remap.csv
-!species-data/ubiquitous_species.txt
-wanted_species.txt
+# Data products (GBIF, Earth Engine, eBird, training files) stay local; only the
+# small curated inputs the code reads are tracked.
+data/*
+!data/ubiquitous.csv
+species-data/
+runs/
 
 # Exclude report dir
 report/

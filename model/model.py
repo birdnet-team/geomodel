@@ -1,20 +1,51 @@
 """
-Multi-task neural network model for species occurrence prediction.
+The geomodel network: (latitude, longitude, week) -> one logit per species.
 
-Architecture uses residual blocks with pre-norm (LayerNorm → GELU) for stable
-training and strong gradient flow.  The shared encoder maps raw (lat, lon, week)
-inputs through circular encoding into a rich embedding that feeds two task heads:
-  - Species prediction (multi-label classification)
-  - Environmental reconstruction (auxiliary regression)
+Inputs are raw degrees and the week number (1-48); the circular encoding happens
+inside the network, so an exported model needs no preprocessing. A shared encoder
+(residual blocks, each modulated by the week through FiLM) feeds the species head.
+The sigmoid of a species logit is its encounter rate (see ``model/io.py`` for the
+score curve that releases apply on top).
 
-Input encoding is handled *inside* the model so that inference only requires
-raw latitude, longitude, and week number — no external preprocessing needed.
+Two optional heads are kept for ablations: an environment head that predicts
+habitat features from the embedding (auxiliary task) and a habitat-species head
+with a learned gate. The release recipe uses neither; habitat reaches the released
+model through the teacher (``train_teacher.py``, ``distill.py``).
 """
 
 import math
+from typing import Dict, Tuple
+
+import numpy as np
 import torch
 import torch.nn as nn
-from typing import Dict
+
+
+def _float16_safe_factor(factor: float) -> Tuple[float, float, float]:
+    """Split ``factor`` into ``(high, low, scale)`` with ``factor == (high + low) * scale``.
+
+    ``scale`` is a power of two that brings the factor into [1, 2); ``high`` is the
+    float16 value nearest to the scaled factor and ``low`` the float16 value nearest
+    to the rest. All three are exact in float16.
+    """
+    scale = 2.0 ** math.floor(math.log2(factor))
+    scaled = factor / scale
+    high = float(np.float16(scaled))
+    low = float(np.float16(scaled - high))
+    return high, low, scale
+
+
+def _to_radians(value: torch.Tensor, half_turn: float) -> torch.Tensor:
+    """``value * pi / half_turn``, computed so that float16 exports keep it exact.
+
+    FP16 exports store constants as float16. ``pi / 180`` in float16 is off by 2e-4
+    of its value, which the highest longitude harmonic turns into an angle error of
+    5e-3 rad and the network into score errors of about 0.05. Two float16-exact
+    products and a power-of-two scaling avoid that. The products are added before
+    the scaling, so converters cannot fold the constants back into one.
+    """
+    high, low, scale = _float16_safe_factor(math.pi / half_turn)
+    return (value * high + value * low) * scale
 
 
 # ---------------------------------------------------------------------------
@@ -68,7 +99,7 @@ class CircularEncoding(nn.Module):
 
 #: LayerNorm epsilon — set above the FP16 minimum normal value (~6e-5)
 #: so that the epsilon remains representable with full precision after
-#: FP16 quantisation.  The PyTorch default (1e-5) falls in the FP16
+#: FP16 quantization.  The PyTorch default (1e-5) falls in the FP16
 #: subnormal range where precision degrades.
 LAYERNORM_EPS: float = 1e-4
 
@@ -195,11 +226,11 @@ class SpatioTemporalEncoder(nn.Module):
             week: (batch,) week number (1–48)
         """
         # Convert degrees → radians
-        lat_rad = lat * (math.pi / 180.0)
-        lon_rad = lon * (math.pi / 180.0)
+        lat_rad = _to_radians(lat, 180.0)
+        lon_rad = _to_radians(lon, 180.0)
 
         # Convert week → radians (2π-periodic over n_weeks)
-        week_rad = 2.0 * math.pi * (week - 1.0) / self.n_weeks
+        week_rad = _to_radians(week - 1.0, self.n_weeks / 2.0)
 
         lat_features = self.lat_enc(lat_rad)    # (batch, 2*coord_harmonics)
         lon_features = self.lon_enc(lon_rad)    # (batch, 2*coord_harmonics)
@@ -493,7 +524,7 @@ class BirdNETGeoModel(nn.Module):
             # Learned per-species gate conditioned on the encoder embedding.
             # gate = σ(W·embedding + b) ∈ (0, 1) per species.
             # Combined logits = gate * direct + (1 - gate) * habitat.
-            # Bias initialised to +3 → σ(3) ≈ 0.95, so the direct head
+            # Bias initialized to +3 → σ(3) ≈ 0.95, so the direct head
             # strongly dominates at the start.  The habitat contribution
             # only fades in once the env head and habitat head have learned
             # useful representations.

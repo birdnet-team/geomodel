@@ -1,46 +1,33 @@
-"""Export a trained BirdNET Geomodel checkpoint to portable inference formats.
+"""Export a release checkpoint to the formats apps and libraries load.
 
-The export wrapper takes a single input tensor of shape ``(batch, 3)`` where
-columns are ``[latitude, longitude, week]`` and returns species probabilities
-of shape ``(batch, n_species)``.
+    python convert.py --checkpoint release/BirdNET+_Geomodel_V4.0_Global_17K.pt --outdir exports \
+        --formats onnx onnx_fp16 onnx_int8 torchscript
 
-Supported formats:
-    onnx        ONNX FP32
-    onnx_fp16   ONNX FP16 (default) — weights in FP16, I/O in FP32 by default
-    onnx_int8   ONNX INT8 — int8 weights per output channel, float32 arithmetic
-    tflite      TensorFlow Lite FP32
-    tflite_fp16 TensorFlow Lite FP16
-    tflite_int8 TensorFlow Lite INT8 (dynamic-range quantisation)
-    tf          TensorFlow SavedModel
-    torchscript TorchScript (traced + frozen) — loadable via torch.jit.load
-    all         All of the above
+Every export takes one float32 tensor ``(batch, 3)`` with the columns latitude,
+longitude and week (1-48) and returns one score per species, in label order. The
+score curve, floors and caps stored in the checkpoint (``package.py``) are part of
+the exported graph, so the files return the same scores as ``predict.py``.
 
-TorchScript output activation:
-    Unlike the ONNX/TFLite exports (which bake in sigmoid and return
-    probabilities), the TorchScript export returns raw species *logits* by
-    default, leaving the activation to the downstream runtime (e.g. birdnet's
-    ``TorchBackend`` and its ``apply_sigmoid`` flag).  Pass
-    ``--torchscript_sigmoid`` to bake sigmoid into the traced graph instead.
+Formats:
+    onnx         ONNX, float32
+    onnx_fp16    ONNX, weight matrices stored as float16, computed in float32
+    onnx_int8    ONNX, weight matrices stored as int8 (one scale per output channel),
+                 computed in float32: the smallest file, scores within about 0.2
+    tflite       TensorFlow Lite, float32
+    tflite_fp16  TensorFlow Lite with float16 weights
+    tflite_int8  TensorFlow Lite dynamic-range INT8 (activations rounded too; not
+                 recommended, scores far from the data can move a lot)
+    tf           TensorFlow SavedModel
+    torchscript  TorchScript (traced); returns logits unless --torchscript_sigmoid
+    all          all of the above
 
-FP16 I/O behavior:
-    By default, ONNX FP16 exports keep model inputs and outputs in FP32
-    (``keep_io_fp32=True``).  This preserves full coordinate precision
-    (latitude, longitude, week) and reduces numerical differences versus
-    the PyTorch reference (typically <0.05 max diff).  Pass ``--fp16_io``
-    to convert I/O tensors to FP16 as well, at the cost of larger
-    numerical divergence.
+Each export is checked against PyTorch on a fixed set of places and weeks and
+fails if the largest score difference exceeds the format's tolerance. The label
+file next to the checkpoint and the model license are copied to the output folder.
 
-After each conversion, a numerical validation is run: a batch of reference
-inputs is passed through both the original PyTorch model and the exported model,
-and the maximum absolute difference in species probabilities is reported.
-Conversion fails if the difference exceeds a configurable tolerance.
-
-Usage:
-    python convert.py                                   # ONNX FP16 (default)
-    python convert.py --formats onnx tflite_fp16        # specific formats
-    python convert.py --formats all                     # everything
-    python convert.py --fp16_io                         # FP16 I/O (lossy)
-    python convert.py --checkpoint checkpoints/checkpoint_best.pt --outdir exports
+For the published release files, the BirdNET model converter
+(https://github.com/birdnet-team/model-converter) adds LiteRT models with built-in
+operators only and Core ML.
 """
 
 import argparse
@@ -53,7 +40,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-from model.model import create_model
+from model.io import curve_terms, model_from_config
 
 
 # ---------------------------------------------------------------------------
@@ -87,10 +74,7 @@ class ExportWrapper(nn.Module):
         #   logit(score) = logit(anchor) + steepness * (log10 r - log10 f0)
         # so a species reported on a fraction f0 of checklists scores `anchor`.
         if score_curve is not None:
-            self.curve_gain = float(score_curve["steepness"]) / math.log(10.0)
-            self.curve_offset = math.log(score_curve["anchor"] / (1 - score_curve["anchor"])) - float(
-                score_curve["steepness"]
-            ) * math.log10(score_curve["f0"])
+            self.curve_gain, self.curve_offset = curve_terms(score_curve)
         else:
             self.curve_gain = None
         # Optional per-species minimum score (e.g. humans and domestic animals,
@@ -263,7 +247,6 @@ def _export_onnx(
     fp16: bool,
     tol: float,
     device: torch.device,
-    keep_io_fp32: bool = True,
 ) -> tuple[bool, float]:
     """Export to ONNX format.
 
@@ -272,15 +255,9 @@ def _export_onnx(
         ref_inputs: Reference input array ``(n, 3)`` for validation.
         ref_outputs: Expected output probabilities from PyTorch.
         outdir: Output directory.
-        fp16: If ``True``, convert weights to FP16.
+        fp16: If ``True``, store the weight matrices as float16.
         tol: Base numerical tolerance for FP32 validation.
         device: Torch device.
-        keep_io_fp32: When *fp16* is ``True``, keep model inputs and
-            outputs in FP32 while converting internal weights and
-            activations to FP16.  This preserves full coordinate
-            precision (latitude, longitude, week) and significantly
-            reduces numerical differences compared to full FP16.
-            Default ``True``.
     """
     try:
         import onnx
@@ -306,38 +283,15 @@ def _export_onnx(
         onnx.save(model_proto, str(path), save_as_external_data=False)
 
     if fp16:
-        from onnxconverter_common import float16
-
-        model_fp32 = onnx.load(str(path))
-        # Suppress benign truncation warnings for very small weight
-        # values (e.g. near-zero biases clamped to +/-1e-7 in FP16).
-        with warnings.catch_warnings():
-            warnings.filterwarnings(
-                "ignore", category=UserWarning, module=r"onnxconverter_common\.float16"
-            )
-            model_fp16 = float16.convert_float_to_float16(
-                model_fp32, keep_io_types=keep_io_fp32
-            )
-        onnx.save(model_fp16, str(path))
-        io_note = " (I/O kept at FP32)" if keep_io_fp32 else ""
-        print(f"  Converted weights to FP16{io_note}")
+        model_proto = onnx.load(str(path))
+        n = _fp16_weights(model_proto)
+        onnx.save(model_proto, str(path))
+        print(f"  {n} weight matrices stored as float16 (computed in float32)")
 
     # Validate with ONNX Runtime
     sess = ort.InferenceSession(str(path), providers=["CPUExecutionProvider"])
-    input_dtype = sess.get_inputs()[0].type
-    if "float16" in input_dtype:
-        inp = ref_inputs.astype(np.float16)
-    else:
-        inp = ref_inputs.astype(np.float32)
-    exported = sess.run(None, {"input": inp})[0].astype(np.float32)
-
-    # Tolerance: FP16 weights with FP32 I/O is much tighter than full FP16
-    if fp16 and keep_io_fp32:
-        effective_tol = max(tol, 0.08)
-    elif fp16:
-        effective_tol = 0.08
-    else:
-        effective_tol = tol
+    exported = sess.run(None, {"input": ref_inputs.astype(np.float32)})[0]
+    effective_tol = max(tol, 0.01) if fp16 else tol
     passed, max_diff = _validate(ref_outputs, exported, effective_tol)
 
     total_bytes = path.stat().st_size
@@ -346,12 +300,55 @@ def _export_onnx(
     return passed, max_diff
 
 
+def _weight_matrices(model_proto):
+    """MatMul / Gemm weight initializers with at least 4096 values, with the axis of their output channels."""
+    from onnx import numpy_helper as nh
+
+    users: dict[str, list] = {}
+    for node in model_proto.graph.node:
+        for k, name in enumerate(node.input):
+            users.setdefault(name, []).append((node, k))
+    for init in list(model_proto.graph.initializer):
+        w = nh.to_array(init)
+        if w.ndim != 2 or w.dtype != np.float32 or w.size < 4096:
+            continue
+        uses = users.get(init.name, [])
+        if not uses or not all(n.op_type in ("MatMul", "Gemm") and k == 1 for n, k in uses):
+            continue
+        trans_b = any(a.name == "transB" and a.i for n, _ in uses if n.op_type == "Gemm" for a in n.attribute)
+        yield init, w, 0 if trans_b else 1
+
+
+def _fp16_weights(model_proto) -> int:
+    """Store the large weight matrices as float16 followed by a Cast to float32.
+
+    The file is about half the size of FP32 while all arithmetic stays in float32,
+    which keeps scores within about 0.01 of FP32. Returns the number of matrices.
+    """
+    from onnx import TensorProto, helper
+    from onnx import numpy_helper as nh
+
+    graph = model_proto.graph
+    casts = []
+    for init, w, _ in _weight_matrices(model_proto):
+        if np.abs(w).max() > np.finfo(np.float16).max:
+            continue
+        graph.initializer.remove(init)
+        graph.initializer.append(nh.from_array(w.astype(np.float16), init.name + "_fp16"))
+        casts.append(helper.make_node("Cast", [init.name + "_fp16"], [init.name], to=TensorProto.FLOAT,
+                                      name=init.name + "_cast"))
+    for node in reversed(casts):
+        graph.node.insert(0, node)
+    del graph.value_info[:]
+    return len(casts)
+
+
 def _int8_weight_only(model_proto) -> int:
     """Store every MatMul / Gemm weight matrix as int8, one scale per output channel.
 
     Each weight becomes an int8 initializer followed by a ``DequantizeLinear``
     node, so the file holds about one byte per parameter while all arithmetic
-    stays in float32.  Unlike ONNX Runtime's dynamic quantisation, activations
+    stays in float32.  Unlike ONNX Runtime's dynamic quantization, activations
     are not rounded to 8 bits: that rounding is what pushes some scores up at
     places far from the training data (e.g. open ocean).  Returns the number of
     matrices converted.
@@ -360,25 +357,8 @@ def _int8_weight_only(model_proto) -> int:
     from onnx import numpy_helper as nh
 
     graph = model_proto.graph
-    users: dict[str, list] = {}
-    for node in graph.node:
-        for k, name in enumerate(node.input):
-            users.setdefault(name, []).append((node, k))
     dq_nodes = []
-    for init in list(graph.initializer):
-        w = nh.to_array(init)
-        if w.ndim != 2 or w.dtype != np.float32 or w.size < 4096:
-            continue
-        uses = users.get(init.name, [])
-        if not uses or not all(n.op_type in ("MatMul", "Gemm") and k == 1 for n, k in uses):
-            continue
-        trans_b = any(
-            a.name == "transB" and a.i
-            for n, _ in uses
-            if n.op_type == "Gemm"
-            for a in n.attribute
-        )
-        axis = 0 if trans_b else 1  # output-channel axis of the B matrix
+    for init, w, axis in _weight_matrices(model_proto):  # axis: output channels of the B matrix
         scale = np.abs(w).max(axis=1 - axis) / 127.0
         scale[scale == 0] = 1.0
         q = np.clip(np.round(w / np.expand_dims(scale, 1 - axis)), -127, 127).astype(np.int8)
@@ -631,7 +611,7 @@ def _export_tflite(
         converter.target_spec.supported_types = [tf.float16]
     elif mode == "int8":
         converter.optimizations = [tf.lite.Optimize.DEFAULT]
-        # Dynamic range quantisation — no calibration dataset needed
+        # Dynamic range quantization — no calibration dataset needed
 
     tflite_model = converter.convert()
     path.write_bytes(tflite_model)
@@ -689,7 +669,6 @@ def convert(
     formats: list[str] | None = None,
     tol: float = 1e-4,
     device: str = "auto",
-    keep_io_fp32: bool = True,
     torchscript_sigmoid: bool = False,
 ) -> dict[str, tuple[bool, float]]:
     """Convert a checkpoint to the requested formats.
@@ -700,9 +679,6 @@ def convert(
         formats: List of format names (default: ``['onnx_fp16']``).
         tol: Base tolerance for numerical validation.
         device: ``'auto'``, ``'cuda'``, or ``'cpu'``.
-        keep_io_fp32: Keep model inputs/outputs in FP32 for FP16
-            exports.  This preserves coordinate precision and reduces
-            numerical divergence.  Default ``True``.
         torchscript_sigmoid: Bake sigmoid into the TorchScript export so it
             returns probabilities.  Default ``False`` (return raw logits).
 
@@ -728,16 +704,7 @@ def convert(
     ckpt = torch.load(checkpoint_path, map_location=dev, weights_only=False)
     model_config = ckpt["model_config"]
 
-    model = create_model(
-        n_species=model_config["n_species"],
-        n_env_features=model_config["n_env_features"],
-        model_scale=model_config.get("model_scale", 1.0),
-        coord_harmonics=model_config.get("coord_harmonics", 8),
-        week_harmonics=model_config.get("week_harmonics", 4),
-        habitat_head=model_config.get("habitat_head", False),
-        species_bottleneck=model_config.get("species_bottleneck"),
-        film_dim=model_config.get("film_dim"),
-    )
+    model = model_from_config(model_config)
     model.load_state_dict(ckpt["model_state_dict"])
     model.to(dev)
     model.eval()
@@ -813,7 +780,6 @@ def convert(
             fp16=True,
             tol=tol,
             device=dev,
-            keep_io_fp32=keep_io_fp32,
         ),
         "onnx_int8": lambda: _export_onnx_int8(
             wrapper, ref_inputs, ref_outputs, outpath, tol=tol, device=dev
@@ -890,8 +856,8 @@ def main():
     parser.add_argument(
         "--checkpoint",
         type=str,
-        default="checkpoints/checkpoint_best.pt",
-        help="Path to model checkpoint (default: checkpoints/checkpoint_best.pt)",
+        required=True,
+        help="release checkpoint (package.py)",
     )
     parser.add_argument(
         "--outdir",
@@ -920,12 +886,6 @@ def main():
         help="Device for PyTorch model (default: auto)",
     )
     parser.add_argument(
-        "--fp16_io",
-        action="store_true",
-        help="Convert model I/O to FP16 as well (default: keep "
-        "inputs/outputs at FP32 for better precision)",
-    )
-    parser.add_argument(
         "--torchscript_sigmoid",
         action="store_true",
         help="Bake sigmoid into the TorchScript export so it returns "
@@ -939,7 +899,6 @@ def main():
         formats=args.formats,
         tol=args.tol,
         device=args.device,
-        keep_io_fp32=not args.fp16_io,
         torchscript_sigmoid=args.torchscript_sigmoid,
     )
 

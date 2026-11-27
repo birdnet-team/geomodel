@@ -1,41 +1,33 @@
-# Core
+# Model, training and inference
 numpy
 pandas
-geopandas
 pyarrow
-shapely
-h3
-global-land-mask
-scikit-learn
-tqdm
-
-# Deep learning
+h3>=4
 torch
 
-# Visualization
+# Data pipeline (pipeline/)
+duckdb
+global-land-mask
+earthengine-api      # pipeline.earthengine only
+
+# Evaluation and maps (evaluation/)
 matplotlib
 cartopy
 Pillow
-
-# Analysis (optional — only for scripts/)
 scipy
+rasterio             # evaluation.status_trends cache step only
+pyproj               # evaluation.status_trends cache step only
 
-# Data collection (optional — only for building datasets)
-earthengine-api
-python-dotenv
-
-# Model export (optional — only for convert.py)
+# Export (convert.py)
 onnx
 onnxruntime
-onnxconverter-common
 onnxscript
-onnx-graphsurgeon
-onnx2tf
-tensorflow
+tensorflow           # tflite / tf formats only
+onnx2tf              # tflite / tf formats only
 tf-keras
-ai-edge-litert
-psutil
+onnx-graphsurgeon
 sng4onnx
+psutil
 
-# Hyperparameter tuning (optional — only for --autotune)
-optuna
+# Tests
+pytest
