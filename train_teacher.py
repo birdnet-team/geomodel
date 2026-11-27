@@ -176,6 +176,8 @@ def main(argv=None) -> None:
     print(f'{data.n_species} species in {data.groups}; rows: {len(train)} train, {len(val)} validation, '
           f'{len(test)} test; device {device}', flush=True)
 
+    if not len(val):
+        print('note: no validation rows (all cells in training blocks); keeping the last epoch', flush=True)
     model = Teacher(data.n_species, data.n_features, args).to(device)
     nn.init.constant_([m for m in model.net.species_head.modules() if isinstance(m, nn.Linear)][-1].bias, -5.0)
     loss_fn = EncounterLoss(c=args.c, link=args.link, pos_weight=args.pos_weight, gamma_pos=args.gamma_pos,
@@ -205,11 +207,12 @@ def main(argv=None) -> None:
             batches += 1
         model.eval()
         with torch.no_grad():
-            val_loss = float(np.mean([step_loss(val[i:i + 2048]).item() for i in range(0, len(val), 2048)]))
+            val_loss = (float(np.mean([step_loss(val[i:i + 2048]).item() for i in range(0, len(val), 2048)]))
+                        if len(val) else float('nan'))
         history.append(dict(epoch=epoch, train=total / batches, val=val_loss))
         print(f'epoch {epoch:2d}  train {total / batches:7.3f}  val {val_loss:7.3f}  '
               f'{(time.time() - start) / 60:5.1f} min', flush=True)
-        if val_loss < best[0]:
+        if val_loss < best[0] or not len(val):  # without validation rows the last epoch is kept
             best = (val_loss, epoch, {k: v.detach().cpu().clone() for k, v in model.state_dict().items()})
         elif epoch - best[1] >= args.patience:
             break
