@@ -7,12 +7,17 @@ hide:
 # Interactive Demo
 
 <p style="margin-bottom: 0.5em;">
-The geomodel running in your browser: the FP16 ONNX model is loaded once and every
-prediction is computed locally with
+The geomodel running in your browser: the INT8 ONNX model (10 MB, the file the apps
+ship) is loaded once and every prediction is computed locally with
 <a href="https://onnxruntime.ai/docs/tutorials/web/" target="_blank">ONNX Runtime Web</a>.
 Pick a species for its weekly range, click the map for the species list of a place,
-or switch to species richness or weekly bar charts.
+or switch to species richness (species scoring 0.1 or more) or weekly bar charts.
 </p>
+
+!!! info "Pre-release model"
+    The demo runs a V4 release candidate. It will be replaced by the V4.0 release
+    model when that is published; until then its scores can differ slightly from the
+    release.
 
 <div id="demo-root"></div>
 

@@ -12,7 +12,9 @@
  */
 
 /* global ort */
-var ORT_CDN = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.21.0/dist/";
+// 1.18: later versions load their WebAssembly through dynamic import(), which classic workers
+// in older browsers do not support
+var ORT_CDN = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.18.0/dist/";
 importScripts(ORT_CDN + "ort.min.js");
 ort.env.wasm.wasmPaths = ORT_CDN;
 

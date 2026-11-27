@@ -16,7 +16,7 @@
   "use strict";
 
   // ---- Configuration -------------------------------------------------------
-  var MODEL_URL = "geomodel_fp16.onnx";
+  var MODEL_URL = "geomodel_int8.onnx";
   var LABELS_URL = "labels.txt";
 
   // Grid resolution per zoom level (degrees per cell)
@@ -25,41 +25,41 @@
   // Perceptual scaling: gamma < 1 stretches low values for visibility
   var DISPLAY_GAMMA = 0.5;
 
-  // Preselected species (id of the V3 labels; matched by scientific name otherwise)
+  // Preselected species (BirdNET id; matched by scientific name if the label file uses other ids)
   // Curated to showcase: long-distance migrants, year-round residents,
   // pelagic seabirds, island endemics, raptors, and non-bird taxa.
   var FEATURED_SPECIES = [
     // Long-distance migrants
-    { key: "barswa",  sci: "Hirundo rustica",        common: "Barn Swallow" },
-    { key: "arcter",  sci: "Sterna paradisaea",      common: "Arctic Tern" },
-    { key: "comcuc",  sci: "Cuculus canorus",         common: "Common Cuckoo" },
-    { key: "rthhum",  sci: "Archilochus colubris",   common: "Ruby-throated Hummingbird" },
-    { key: "eubeat1", sci: "Merops apiaster",         common: "European Bee-eater" },
+    { key: "BN04673",  sci: "Hirundo rustica",        common: "Barn Swallow" },
+    { key: "BN09567",  sci: "Sterna paradisaea",      common: "Arctic Tern" },
+    { key: "BN02850",  sci: "Cuculus canorus",         common: "Common Cuckoo" },
+    { key: "BN00809",  sci: "Archilochus colubris",   common: "Ruby-throated Hummingbird" },
+    { key: "BN05913", sci: "Merops apiaster",         common: "European Bee-eater" },
     // Year-round residents
-    { key: "gretit1", sci: "Parus major",             common: "Great Tit" },
-    { key: "norcar",  sci: "Cardinalis cardinalis",   common: "Northern Cardinal" },
-    { key: "supfai1", sci: "Malurus cyaneus",         common: "Superb Fairywren" },
-    { key: "greroa",  sci: "Geococcyx californianus", common: "Greater Roadrunner" },
+    { key: "BN07148", sci: "Parus major",             common: "Great Tit" },
+    { key: "BN01619",  sci: "Cardinalis cardinalis",   common: "Northern Cardinal" },
+    { key: "BN05633", sci: "Malurus cyaneus",         common: "Superb Fairywren" },
+    { key: "BN04104",  sci: "Geococcyx californianus", common: "Greater Roadrunner" },
     // Pelagic seabirds
-    { key: "bripet",  sci: "Hydrobates pelagicus",    common: "European Storm-Petrel" },
-    { key: "wispet",  sci: "Oceanites oceanicus",     common: "Wilson\u2019s Storm-Petrel" },
-    { key: "atlpuf",  sci: "Fratercula arctica",      common: "Atlantic Puffin" },
-    { key: "bkbalb",  sci: "Thalassarche melanophris",common: "Black-browed Albatross" },
+    { key: "BN04710",  sci: "Hydrobates pelagicus",    common: "European Storm-Petrel" },
+    { key: "BN06695",  sci: "Oceanites oceanicus",     common: "Wilson\u2019s Storm-Petrel" },
+    { key: "BN03932",  sci: "Fratercula arctica",      common: "Atlantic Puffin" },
+    { key: "BN10027",  sci: "Thalassarche melanophris",common: "Black-browed Albatross" },
     // Island endemics
-    { key: "hawgoo",  sci: "Branta sandvicensis",     common: "Hawaiian Goose (N\u0113n\u0113)" },
-    { key: "kea1",    sci: "Nestor notabilis",        common: "Kea" },
-    { key: "galhaw1", sci: "Buteo galapagoensis",     common: "Gal\u00e1pagos Hawk" },
-    { key: "galpen1", sci: "Spheniscus mendiculus",   common: "Gal\u00e1pagos Penguin" },
-    { key: "kagu1",   sci: "Rhynochetos jubatus",     common: "Kagu" },
+    { key: "BN01239",  sci: "Branta sandvicensis",     common: "Hawaiian Goose (N\u0113n\u0113)" },
+    { key: "BN06548",    sci: "Nestor notabilis",        common: "Kea" },
+    { key: "BN01301", sci: "Buteo galapagoensis",     common: "Gal\u00e1pagos Hawk" },
+    { key: "BN09411", sci: "Spheniscus mendiculus",   common: "Gal\u00e1pagos Penguin" },
+    { key: "BN08936",   sci: "Rhynochetos jubatus",     common: "Kagu" },
     // Nocturnal species
-    { key: "tawowl1", sci: "Strix aluco",             common: "Tawny Owl" },
-    { key: "grhowl",  sci: "Bubo virginianus",        common: "Great Horned Owl" },
-    { key: "eurnig1", sci: "Caprimulgus europaeus",   common: "Eurasian Nightjar" },
-    { key: "compot1", sci: "Nyctibius griseus",       common: "Common Potoo" },
+    { key: "BN09644", sci: "Strix aluco",             common: "Tawny Owl" },
+    { key: "BN01263",  sci: "Bubo virginianus",        common: "Great Horned Owl" },
+    { key: "BN01584", sci: "Caprimulgus europaeus",   common: "Eurasian Nightjar" },
+    { key: "BN06669", sci: "Nyctibius griseus",       common: "Common Potoo" },
     // Non-bird taxa
-    { key: "42069",   sci: "Vulpes vulpes",           common: "Red Fox" },
-    { key: "41663",   sci: "Procyon lotor",           common: "Common Raccoon" },
-    { key: "46001",   sci: "Sciurus vulgaris",        common: "Eurasian Red Squirrel" },
+    { key: "BN26799",   sci: "Vulpes vulpes",           common: "Red Fox" },
+    { key: "BN25392",   sci: "Procyon lotor",           common: "Common Raccoon" },
+    { key: "BN26067",   sci: "Sciurus vulgaris",        common: "Eurasian Red Squirrel" },
   ];
 
   // ---- Colormap ------------------------------------------------------------
@@ -181,21 +181,21 @@
           '<div class="ctrl-group" id="threshold-wrap" style="display:none">' +
             '<label for="threshold-select">Min score</label>' +
             '<select id="threshold-select">' +
-              '<option value="1">1%</option>' +
-              '<option value="5" selected>5%</option>' +
-              '<option value="10">10%</option>' +
-              '<option value="25">25%</option>' +
-              '<option value="50">50%</option>' +
+              '<option value="1">0.01</option>' +
+              '<option value="5">0.05</option>' +
+              '<option value="10" selected>0.10</option>' +
+              '<option value="25">0.25</option>' +
+              '<option value="50">0.50</option>' +
             '</select>' +
           '</div>' +
           '<div class="ctrl-group" id="barchart-threshold-wrap" style="display:none">' +
             '<label for="barchart-threshold">Min avg score</label>' +
             '<select id="barchart-threshold">' +
-              '<option value="1">1%</option>' +
-              '<option value="5" selected>5%</option>' +
-              '<option value="10">10%</option>' +
-              '<option value="25">25%</option>' +
-              '<option value="50">50%</option>' +
+              '<option value="1">0.01</option>' +
+              '<option value="5" selected>0.05</option>' +
+              '<option value="10">0.10</option>' +
+              '<option value="25">0.25</option>' +
+              '<option value="50">0.50</option>' +
             '</select>' +
           '</div>' +
           '<div class="ctrl-group ctrl-group-btn" id="csv-btn-wrap" style="display:none">' +
@@ -284,9 +284,9 @@
   function initMap() {
     map = L.map("demo-map", { center: [30, 0], zoom: 2, minZoom: 2, maxZoom: 4 });
 
-    L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png", {
-      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OSM</a> &copy; <a href="https://carto.com/">CARTO</a>',
-      maxZoom: 4, subdomains: "abcd",
+    L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}", {
+      attribution: "Tiles &copy; Esri &mdash; Esri, DeLorme, NAVTEQ",
+      maxZoom: 4,
     }).addTo(map);
 
     map.on("click", onMapClick);
@@ -618,7 +618,7 @@
   }
 
   // ---- Species richness ----------------------------------------------------
-  var RICHNESS_THRESHOLD = 0.05;
+  var RICHNESS_THRESHOLD = 0.1;  // the line the apps filter at
 
   async function renderRichness() {
     if (rendering) { renderGeneration++; return; }
@@ -712,15 +712,15 @@
       }
       results.sort(function (a, b) { return b.prob - a.prob; });
       document.getElementById("sp-coords").textContent =
-        lat.toFixed(4) + "\u00b0, " + lon.toFixed(4) + "\u00b0 \u00b7 Week " + week + " \u00b7 " + results.length + " species above " + (threshold * 100).toFixed(0) + "%";
+        lat.toFixed(4) + "\u00b0, " + lon.toFixed(4) + "\u00b0 \u00b7 Week " + week + " \u00b7 " + results.length + " species at or above " + threshold.toFixed(2);
       document.getElementById("sp-tbody").innerHTML = results.map(function (r, idx) {
         return '<tr><td>' + (idx + 1) + '</td><td>' + r.label.common + '</td><td style="font-style:italic">' +
-               r.label.sci + '</td><td>' + (r.prob * 100).toFixed(1) + '%</td><td class="prob-bar-cell"><div class="prob-bar" style="width:' +
+               r.label.sci + '</td><td>' + r.prob.toFixed(2) + '</td><td class="prob-bar-cell"><div class="prob-bar" style="width:' +
                Math.round(r.prob * 100) + '%"></div></td></tr>';
       }).join("");
       document.getElementById("species-panel").style.display = "block";
       document.getElementById("barchart-panel").style.display = "none";
-      setStatus(results.length + " species above " + (threshold * 100).toFixed(0) + "% at (" + lat.toFixed(2) + ", " + lon.toFixed(2) + ")");
+      setStatus(results.length + " species at or above " + threshold.toFixed(2) + " at (" + lat.toFixed(2) + ", " + lon.toFixed(2) + ")");
 
       // Build CSV for species list
       var csvLines = ["rank,species_id,common_name,scientific_name,score"];
@@ -766,7 +766,7 @@
     html += '<div class="legend-ticks">';
     [0, 0.5, 1].forEach(function (t) {
       var rawT = Math.pow(t, 1 / DISPLAY_GAMMA);
-      html += "<span>" + (isRichness ? Math.round(rawT * maxVal) : Math.round(rawT * maxProb * 100) + "%") + "</span>";
+      html += "<span>" + (isRichness ? Math.round(rawT * maxVal) : (rawT * maxProb).toFixed(2)) + "</span>";
     });
     html += "</div></div>";
     el.innerHTML = html;
@@ -901,7 +901,7 @@
             '<span class="bc-rank">' + (ti2 + 1) + '</span>' +
             '<span class="bc-name">' + lbl.common + '</span>' +
             '<span class="bc-sci">' + lbl.sci + '</span>' +
-            '<span class="bc-avg">' + (avg * 100).toFixed(1) + '% avg</span>' +
+            '<span class="bc-avg">' + avg.toFixed(2) + ' avg</span>' +
           '</div>' +
           '<div class="bc-bars">';
 
@@ -911,7 +911,7 @@
           var opacity = Math.max(0.15, prob / globalMax);
           // Month boundary markers
           var monthClass = (wk3 % 4 === 0) ? " bc-month-start" : "";
-          html += '<div class="bc-bar' + monthClass + '" style="height:' + pct.toFixed(1) + '%;opacity:' + opacity.toFixed(2) + '" data-tip="Week ' + (wk3 + 1) + ': ' + (prob * 100).toFixed(1) + '%"></div>';
+          html += '<div class="bc-bar' + monthClass + '" style="height:' + pct.toFixed(1) + '%;opacity:' + opacity.toFixed(2) + '" data-tip="Week ' + (wk3 + 1) + ': ' + prob.toFixed(2) + '"></div>';
         }
 
         html += '</div>' +
@@ -923,10 +923,10 @@
       }
 
       document.getElementById("bc-coords").textContent =
-        lat.toFixed(4) + "\u00b0, " + lon.toFixed(4) + "\u00b0 \u00b7 " + topIndices.length + " species above " + (threshold * 100).toFixed(0) + "% avg \u00b7 normalized to " + (globalMax * 100).toFixed(1) + "%";
+        lat.toFixed(4) + "\u00b0, " + lon.toFixed(4) + "\u00b0 \u00b7 " + topIndices.length + " species with an average of at least " + threshold.toFixed(2) + " \u00b7 bars scaled to " + globalMax.toFixed(2);
       document.getElementById("bc-container").innerHTML = html;
       document.getElementById("barchart-panel").style.display = "block";
-      setStatus(topIndices.length + " species above " + (threshold * 100).toFixed(0) + "% avg at (" + lat.toFixed(2) + ", " + lon.toFixed(2) + ")");
+      setStatus(topIndices.length + " species with an average of at least " + threshold.toFixed(2) + " at (" + lat.toFixed(2) + ", " + lon.toFixed(2) + ")");
 
       // Build CSV for bar charts
       var csvLines = ["species_id,common_name,scientific_name"];

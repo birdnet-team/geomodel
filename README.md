@@ -148,7 +148,7 @@ paper/           LaTeX source of the V3 paper
 
 ## Web demo
 
-`docs/demo/` runs the FP16 ONNX model in the browser with
+`docs/demo/` runs the INT8 ONNX model in the browser with
 [ONNX Runtime Web](https://onnxruntime.ai/docs/tutorials/web/): range maps, species
 richness, species lists and weekly bar charts for any place. Start it locally with
 `pip install -r requirements-docs.txt && mkdocs serve` and open
