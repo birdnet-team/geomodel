@@ -120,3 +120,11 @@ def test_v3_release_checkpoint_loads_with_its_labels(tmp_path):
                        return_env=False)['species_logits'].numpy()
     assert np.allclose(p.scores(lat, lng, week), 1 / (1 + np.exp(-logits)), atol=1e-6)
     assert find_labels(str(path), 3, p.species) == str(tmp_path / 'BirdNET+_Geomodel_V3.0.4_Global_14K_Labels.txt')
+
+
+def test_no_coords_teacher_ignores_coordinates():
+    """A model trained with --no-coords saw lat = lng = 0; the Predictor feeds it the same."""
+    model = create_model(n_species=3, n_env_features=1, model_scale=0.25, coord_harmonics=4, week_harmonics=4).eval()
+    p = Predictor('student', model, ['a', 'b', 'c'], extra=dict(args=dict(no_coords=True)))
+    a, b = p.rates([50.8, -33.9], [12.9, 151.2], [22, 22]), p.rates([0.0, 0.0], [0.0, 0.0], [22, 22])
+    assert np.allclose(a, b) and np.allclose(a[0], a[1])

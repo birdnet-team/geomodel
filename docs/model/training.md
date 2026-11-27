@@ -138,7 +138,7 @@ Options that the release recipe does not use stay available for comparisons:
 | | `--rank-weight` | adds a list-wise term that rewards putting common species on top |
 | | `--c` | effort at which a row has half weight (release: 40; 5 and 15 were compared) |
 | | `--no-coords` | habitat and week only |
-| | without `--habitat` | coordinates and week only (no distillation needed) |
+| | without `--habitat` | coordinates and week only (evaluated directly; `package.py` takes students) |
 | | `--week-harmonics`, `--coord-harmonics`, `--scale` | network shape |
 | `distill.py` | `--envelope 0` | no range envelope |
 | | without `--ocean` | no ocean rule |

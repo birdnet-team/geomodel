@@ -50,7 +50,21 @@ def test_envelope_leaves_out_held_out_cells(tiny_training_file):
 def test_open_ocean_and_marine_species(tiny_training_file):
     assert open_ocean([0.0, 50.83], [-150.0, 12.92]).tolist() == [True, False]
     data = TrainingData(str(tiny_training_file))
-    assert not marine_species(data, min_rows=1)[0]
+    assert not marine_species(data, min_rows=1).any()  # nothing recorded at sea
+
+
+def test_marine_species_found_at_sea(tiny_training_file, tmp_path):
+    z = dict(np.load(tiny_training_file))
+    # the last row (the open-sea cell) now records species 2
+    z['col'] = np.append(z['col'], np.int32(2))
+    z['val'] = np.append(z['val'], np.float32(0.2))
+    z['ptr'] = z['ptr'].copy()
+    z['ptr'][-1] += 1
+    path = tmp_path / 'sea.npz'
+    np.savez(path, **z)
+    data = TrainingData(str(path))
+    assert marine_species(data, min_rows=1).tolist() == [False, False, True, False, False]
+    assert not marine_species(data, min_rows=1, skip_cells=np.array([False, False, False, True])).any()
 
 
 def test_weight_rounding_matches_int8_grid():

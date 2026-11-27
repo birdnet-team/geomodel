@@ -156,6 +156,8 @@ def main(argv=None) -> None:
     device = torch.device(args.device if args.device != 'cuda' or torch.cuda.is_available() else 'cpu')
     start = time.time()
 
+    if args.holdout_km > 0 and not args.benchmark:
+        raise SystemExit('--holdout-km needs --benchmark (the cells to hold out are the benchmark cells)')
     data = TrainingData(args.data)
     if args.benchmark:
         from evaluation.benchmark import read_benchmark

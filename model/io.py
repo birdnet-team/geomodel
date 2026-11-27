@@ -136,8 +136,10 @@ class Predictor:
     @torch.no_grad()
     def logits(self, lat: Sequence[float], lng: Sequence[float], week: Sequence[float],
                features: np.ndarray | None = None) -> np.ndarray:
-        lat_t = torch.as_tensor(np.asarray(lat, np.float32))
-        lng_t = torch.as_tensor(np.asarray(lng, np.float32))
+        lat, lng = np.asarray(lat, np.float32), np.asarray(lng, np.float32)
+        if (self.extra.get('args') or {}).get('no_coords'):  # trained on lat = lng = 0 (ablation)
+            lat, lng = np.zeros_like(lat), np.zeros_like(lng)
+        lat_t, lng_t = torch.as_tensor(lat), torch.as_tensor(lng)
         week_t = torch.as_tensor(np.asarray(week, np.float32))
         if self.kind == 'teacher':
             if features is None:

@@ -130,6 +130,8 @@ def main(argv=None) -> None:
             from pipeline.taxonomy import load_taxonomy
             group = {r['birdnet_id']: r['taxon_group'] for r in load_taxonomy(args.taxonomy)}
             is_bird = np.array([group.get(s) == 'Aves' for s in predictor.species])
+            if not any(s in group for s in predictor.species):
+                p.error('none of the outputs are BirdNET ids of this taxonomy (a V3 checkpoint?)')
         elif predictor.extra.get('taxon_groups') is not None:  # releases carry their groups
             is_bird = np.array([g == 'Aves' for g in predictor.extra['taxon_groups']])
         else:
