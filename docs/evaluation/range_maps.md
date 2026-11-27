@@ -1,7 +1,7 @@
 # Range maps
 
 ```bash
-python -m evaluation.range_maps CHECKPOINT maps/ --species "Hirundo rustica" "Ciconia ciconia" --taxonomy taxonomy.json \
+python -m evaluation.range_maps CHECKPOINT maps/ --species "Hirundo rustica" "Ciconia ciconia" --taxonomy taxonomy.csv \
     --compare BirdNET_Geomodel_V3.0.4.pt --compare-labels BirdNET_Geomodel_V3.0.4_labels.txt --compare-name V3.0.4
 ```
 

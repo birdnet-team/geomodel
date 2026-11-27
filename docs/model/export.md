@@ -82,9 +82,9 @@ scores = model.scores([50.83], [12.92], [22])[0]
 ## predict.py
 
 ```bash
-python predict.py --checkpoint release/BirdNET+_Geomodel_V4.0_Global_17K.pt --lat 50.83 --lon 12.92 --week 22
-python predict.py --checkpoint ... --lat 50.83 --lon 12.92 --week -1 --threshold 0.05 --top-k 300
-python predict.py --checkpoint ... --common-species 5000 --taxonomy taxonomy.json --output common.txt
+python predict.py release/BirdNET+_Geomodel_V4.0_Global_17K.pt --lat 50.83 --lon 12.92 --week 22
+python predict.py ... --lat 50.83 --lon 12.92 --week -1 --threshold 0.05 --top-k 300
+python predict.py ... --common-species 5000 --taxonomy taxonomy.csv --output common.txt
 ```
 
 `--week -1` gives the whole year. `--common-species N` builds a list of N species

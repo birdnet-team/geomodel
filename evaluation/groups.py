@@ -1,6 +1,6 @@
 """How the taxon groups share the top of the species lists.
 
-    python -m evaluation.groups CHECKPOINT data/benchmark/bench_20k --taxonomy TAXONOMY.json [--places 400] [--show 8]
+    python -m evaluation.groups CHECKPOINT data/benchmark/bench_20k [--taxonomy TAXONOMY.csv] [--places 400] [--show 8]
 
 Encounter rates of different groups are only comparable if they are measured
 against comparable effort (see ``pipeline.gbif_targets --effort``). When they are
@@ -47,14 +47,19 @@ def main(argv=None) -> None:
     p = argparse.ArgumentParser(description=__doc__.split('\n\n')[0])
     p.add_argument('checkpoint')
     p.add_argument('benchmark', help='benchmark prefix (places to sample)')
-    p.add_argument('--taxonomy', required=True, help='BirdNET taxonomy JSON (taxon groups, names)')
+    p.add_argument('--taxonomy', help='BirdNET taxonomy (CSV or JSON); releases carry their groups')
     p.add_argument('--places', type=int, default=400)
     p.add_argument('--show', type=int, default=8, help='species listed per named place')
     args = p.parse_args(argv)
 
     model = load(args.checkpoint)
-    taxonomy = {r['birdnet_id']: r for r in load_taxonomy(args.taxonomy)}
-    groups = np.array([taxonomy[s]['taxon_group'] if s in taxonomy else '?' for s in model.species])
+    taxonomy = {r['birdnet_id']: r for r in load_taxonomy(args.taxonomy)} if args.taxonomy else {}
+    if taxonomy:
+        groups = np.array([taxonomy[s]['taxon_group'] if s in taxonomy else '?' for s in model.species])
+    elif model.extra.get('taxon_groups') is not None:
+        groups = np.array(model.extra['taxon_groups'])
+    else:
+        raise SystemExit('pass --taxonomy (this checkpoint does not carry taxon groups)')
     if (groups == '?').all():
         raise SystemExit('no output is a taxonomy species (V3 checkpoints use other ids)')
 

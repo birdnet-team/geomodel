@@ -2,7 +2,7 @@
 
 ```bash
 python -m evaluation.status_trends cache ST_DIR data/st_2023_0p5.npz
-python -m evaluation.status_trends score CHECKPOINT data/st_2023_0p5.npz --taxonomy taxonomy.json
+python -m evaluation.status_trends score CHECKPOINT data/st_2023_0p5.npz --taxonomy taxonomy.csv
 ```
 
 [eBird Status & Trends](https://science.ebird.org/en/status-and-trends) models the
@@ -29,5 +29,5 @@ weeks and reports per species:
 
 All three are rank measures within a species, so the plain network output is used.
 
-Reference (V3.0.4, mean over the 11 species): range AUC 0.957, spatial rho 0.26,
-season rho 0.64.
+Reference (V3.0.4, mean over the species where a measure is defined; season rho is
+undefined for the Arctic Tern): range AUC 0.957, spatial rho 0.26, season rho 0.64.

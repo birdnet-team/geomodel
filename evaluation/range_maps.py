@@ -1,7 +1,7 @@
 """Animated weekly range maps: one GIF per species, one frame per week.
 
     python -m evaluation.range_maps CHECKPOINT OUT_DIR --species "Hirundo rustica" "Cuculus canorus" \\
-        --taxonomy TAXONOMY.json [--compare V3.pt --compare-labels V3_labels.txt] [--res 1.0] [--fps 6]
+        --taxonomy TAXONOMY.csv [--compare V3.pt --compare-labels V3_labels.txt] [--res 1.0] [--fps 6]
 
 Each frame shows the app score of the species on a regular latitude / longitude
 grid (80 N to 60 S) for one of the 48 weeks; land is gray, sea white, and only
@@ -167,7 +167,7 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument('checkpoint', help='student or release checkpoint')
     parser.add_argument('out', help='directory for the GIFs')
     parser.add_argument('--species', nargs='+', required=True, help='scientific names (or the model\'s ids)')
-    parser.add_argument('--taxonomy', help='BirdNET taxonomy JSON, for checkpoints that use BirdNET ids')
+    parser.add_argument('--taxonomy', help='BirdNET taxonomy (CSV or JSON), for checkpoints that use BirdNET ids')
     parser.add_argument('--labels', help='label file of the checkpoint, if it is a V3 release')
     parser.add_argument('--name', help='panel title of the checkpoint')
     parser.add_argument('--compare', help='a second checkpoint, drawn on the left')

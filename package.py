@@ -1,6 +1,6 @@
 """Turn a student checkpoint into a release checkpoint for ``convert.py`` and ``predict.py``.
 
-    python package.py runs/student/student.pt TAXONOMY.json data/ubiquitous.csv release/ \\
+    python package.py runs/student/student.pt TAXONOMY.csv data/ubiquitous.csv release/ \\
         --name BirdNET+_Geomodel_V4.0_Global_17K
 
 Writes ``OUT_DIR/NAME.pt`` and ``OUT_DIR/NAME_labels.txt`` (BirdNET id, scientific
@@ -16,6 +16,9 @@ the species (``species_vocab``) and three things every export applies:
   humans >= 0.30, domestic animals >= 0.25, everywhere.
 * ``score_cap``: domestic animals <= 0.5, so they pass everywhere without topping
   the list.
+
+It also stores the eBird code and taxon group of every output (``codes``,
+``taxon_groups``), so the evaluation scripts need no taxonomy file for a release.
 
 Every output must be a taxonomy species; the script stops if one is missing.
 """
@@ -35,7 +38,7 @@ from pipeline.taxonomy import load_taxonomy
 def main(argv=None) -> None:
     p = argparse.ArgumentParser(description=__doc__.split('\n\n')[0])
     p.add_argument('student', help='student checkpoint (distill.py)')
-    p.add_argument('taxonomy', help='BirdNET taxonomy JSON export')
+    p.add_argument('taxonomy', help='BirdNET taxonomy (CSV or JSON export)')
     p.add_argument('ubiquitous', help='CSV: birdnet_id, name, kind (human / domestic)')
     p.add_argument('out', help='output directory')
     p.add_argument('--name', default='geomodel', help='file name stem of the release')
@@ -51,6 +54,7 @@ def main(argv=None) -> None:
     train_args = ckpt['args']
     species = [str(s) for s in ckpt['species']]
     taxonomy = {r['birdnet_id']: r for r in load_taxonomy(args.taxonomy)}
+    codes = [taxonomy[s].get('ebird_code') or '' for s in species if s in taxonomy]
     missing = [s for s in species if s not in taxonomy]
     if missing:
         raise SystemExit(f'{len(missing)} outputs are not taxonomy species, e.g. {missing[:5]}')
@@ -84,6 +88,7 @@ def main(argv=None) -> None:
                            idx_to_species={i: s for i, s in enumerate(species)}),
         score_curve=curve,
         score_floor=floor.tolist(), score_cap=cap.tolist(),
+        codes=codes, taxon_groups=[taxonomy[s]['taxon_group'] for s in species],
         source=dict(student=pathlib.Path(args.student).name,
                     teacher=pathlib.Path(train_args.get('teacher', '')).name))
 

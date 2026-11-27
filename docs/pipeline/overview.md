@@ -21,7 +21,7 @@ graph LR
 | stage | module | input | output | time |
 |---|---|---|---|---|
 | 1 | [`gbif_map`](gbif.md#stage-1-records) | GBIF occurrence download (DwC-A) | `part_*.parquet`, one row per record | one pass over the archive (a day for the full GBIF backbone on 8 cores) |
-| 2 | [`taxonomy`](taxonomy.md) | BirdNET taxonomy JSON | `species.csv` with GBIF keys | about an hour of GBIF API lookups, cached |
+| 2 | [`taxonomy`](taxonomy.md) | BirdNET taxonomy (CSV or JSON) | `species.csv` with GBIF keys | about an hour of GBIF API lookups, cached |
 | 3 | [`gbif_targets`](gbif.md#stage-3-encounter-rates) | stage 1 + 2 | `species_res5.parquet`, `effort_res5.parquet` | a few hours (DuckDB) |
 | 4 | [`earthengine`](earthengine.md) | Earth Engine account | `habitat_res5.parquet`, `population_res5.parquet` | about an hour each |
 | 5 | [`dataset`](dataset.md) | stage 2, 3, 4 | `train.npz` | under an hour |
@@ -31,7 +31,7 @@ A full rebuild, with the paths used throughout the documentation:
 
 ```bash
 unzip -p gbif_download.zip occurrence.txt | python -m pipeline.gbif_map data/gbif_map --workers 8
-python -m pipeline.taxonomy taxonomy.json data/species.csv --cache data/gbif_keys.json
+python -m pipeline.taxonomy taxonomy.csv data/species.csv --cache data/gbif_keys.json
 python -m pipeline.gbif_targets data/gbif_map data/species.csv data/targets --effort naturalist
 python -m pipeline.earthengine cells data/ee/cells_res5.txt
 python -m pipeline.earthengine habitat data/ee/cells_res5.txt data/ee/habitat_parts

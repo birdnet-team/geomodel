@@ -1,7 +1,7 @@
 # Taxon groups
 
 ```bash
-python -m evaluation.groups release/BirdNET+_Geomodel_V4.0_Global_17K.pt data/benchmark/bench_20k --taxonomy taxonomy.json
+python -m evaluation.groups release/BirdNET+_Geomodel_V4.0_Global_17K.pt data/benchmark/bench_20k --taxonomy taxonomy.csv
 ```
 
 Encounter rates of different taxon groups are comparable only if they are measured

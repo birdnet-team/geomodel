@@ -3,13 +3,13 @@
  *
  * Runs the ONNX FP16 model entirely client-side via ONNX Runtime Web.
  * Four modes:
- *   1. Range Map    – species probability heatmap on a Leaflet map
+ *   1. Range Map    – species score heatmap on a Leaflet map
  *   2. Richness Map – predicted species count per cell
  *   3. Species List – click a location to see predicted species
  *   4. Bar Charts   – click a location to see 48-week phenology bars
  *
  * The model input is (batch, 3) = [lat, lon, week] and output is
- * (batch, n_species) sigmoid probabilities.
+ * (batch, n_species) scores.
  */
 
 (function () {
@@ -25,7 +25,7 @@
   // Perceptual scaling: gamma < 1 stretches low values for visibility
   var DISPLAY_GAMMA = 0.5;
 
-  // Preselected species (species code for quick access)
+  // Preselected species (id of the V3 labels; matched by scientific name otherwise)
   // Curated to showcase: long-distance migrants, year-round residents,
   // pelagic seabirds, island endemics, raptors, and non-bird taxa.
   var FEATURED_SPECIES = [
@@ -129,6 +129,7 @@
   var pendingInferences = new Map();
   var labels = [];
   var labelsByKey = {};
+  var labelsBySci = {};  // featured species are found by scientific name, whatever ids the label file uses
   var map = null;
   var overlayCanvas = null;
   var cachedRender = null;
@@ -178,7 +179,7 @@
             '</select>' +
           '</div>' +
           '<div class="ctrl-group" id="threshold-wrap" style="display:none">' +
-            '<label for="threshold-select">Min probability</label>' +
+            '<label for="threshold-select">Min score</label>' +
             '<select id="threshold-select">' +
               '<option value="1">1%</option>' +
               '<option value="5" selected>5%</option>' +
@@ -188,7 +189,7 @@
             '</select>' +
           '</div>' +
           '<div class="ctrl-group" id="barchart-threshold-wrap" style="display:none">' +
-            '<label for="barchart-threshold">Min avg probability</label>' +
+            '<label for="barchart-threshold">Min avg score</label>' +
             '<select id="barchart-threshold">' +
               '<option value="1">1%</option>' +
               '<option value="5" selected>5%</option>' +
@@ -215,7 +216,7 @@
           '<h3 id="sp-title">Species at location</h3>' +
           '<div class="sp-coords" id="sp-coords"></div>' +
           '<table id="species-list-table">' +
-            '<thead><tr><th>#</th><th>Species</th><th>Scientific name</th><th>Probability</th><th></th></tr></thead>' +
+            '<thead><tr><th>#</th><th>Species</th><th>Scientific name</th><th>Score</th><th></th></tr></thead>' +
             '<tbody id="sp-tbody"></tbody>' +
           '</table>' +
         '</div>' +
@@ -275,7 +276,8 @@
       return { key: parts[0], sci: parts[1] || "", common: parts[2] || parts[1] || "", index: i };
     });
     labelsByKey = {};
-    labels.forEach(function (l) { labelsByKey[l.key] = l; });
+    labelsBySci = {};
+    labels.forEach(function (l) { labelsByKey[l.key] = l; labelsBySci[l.sci.toLowerCase()] = l; });
   }
 
   // ---- Map setup -----------------------------------------------------------
@@ -359,7 +361,7 @@
     var q = inputEl.value.trim().toLowerCase();
     var matches;
     if (q.length === 0) {
-      matches = FEATURED_SPECIES.map(function (f) { return labelsByKey[f.key]; }).filter(Boolean);
+      matches = FEATURED_SPECIES.map(function (f) { return labelsByKey[f.key] || labelsBySci[f.sci.toLowerCase()]; }).filter(Boolean);
     } else {
       matches = labels.filter(function (l) {
         return l.common.toLowerCase().includes(q) || l.sci.toLowerCase().includes(q) || l.key.includes(q);
@@ -721,7 +723,7 @@
       setStatus(results.length + " species above " + (threshold * 100).toFixed(0) + "% at (" + lat.toFixed(2) + ", " + lon.toFixed(2) + ")");
 
       // Build CSV for species list
-      var csvLines = ["rank,species_code,common_name,scientific_name,probability"];
+      var csvLines = ["rank,species_id,common_name,scientific_name,score"];
       results.forEach(function (r, idx) {
         csvLines.push((idx + 1) + ',"' + r.label.key + '","' + r.label.common.replace(/"/g, '""') + '","' + r.label.sci.replace(/"/g, '""') + '",' + r.prob.toFixed(6));
       });
@@ -754,7 +756,7 @@
     var maxVal = isRichness && cachedRender.maxVal ? Math.round(cachedRender.maxVal) : 0;
     var maxProb = !isRichness && cachedRender.maxProb ? cachedRender.maxProb : 1;
 
-    var html = '<div class="legend-title">' + (isRichness ? "Predicted species count" : "Occurrence probability") + '</div><div class="legend-bar">';
+    var html = '<div class="legend-title">' + (isRichness ? "Predicted species count" : "Score") + '</div><div class="legend-bar">';
     var stops = [];
     for (var i = 0; i <= 10; i++) {
       var t = i / 10, c = colormapLookup(t);
@@ -799,7 +801,7 @@
     var week = +document.getElementById("week-select").value;
     var g = viewportGrid();
     var cm = getCellMap(cacheKey(key, week), g.step);
-    var lines = ["latitude,longitude,probability"];
+    var lines = ["latitude,longitude,score"];
     for (var iLat = 0; iLat < g.nLat; iLat++) {
       var lat = g.north - (iLat + 0.5) * g.step;
       for (var iLon = 0; iLon < g.nLon; iLon++) {
@@ -861,7 +863,7 @@
       // allProbs: Float32Array of 48 * nSpecies
       // Shape: [week0_sp0, week0_sp1, ..., week1_sp0, ...]
 
-      // Compute average probability across 48 weeks per species
+      // Average score across 48 weeks per species
       var avgProbs = new Float32Array(nSpecies);
       for (var s = 0; s < nSpecies; s++) {
         var sum = 0;
@@ -869,7 +871,7 @@
         avgProbs[s] = sum / 48;
       }
 
-      // Filter species by average probability threshold, sorted descending
+      // Species above the average-score threshold, highest first
       var indices = [];
       for (var si = 0; si < nSpecies; si++) {
         if (avgProbs[si] >= threshold) indices.push(si);
@@ -927,7 +929,7 @@
       setStatus(topIndices.length + " species above " + (threshold * 100).toFixed(0) + "% avg at (" + lat.toFixed(2) + ", " + lon.toFixed(2) + ")");
 
       // Build CSV for bar charts
-      var csvLines = ["species_code,common_name,scientific_name"];
+      var csvLines = ["species_id,common_name,scientific_name"];
       for (var wk4 = 1; wk4 <= 48; wk4++) csvLines[0] += ",week_" + wk4;
       csvLines[0] += ",average";
       for (var ti3 = 0; ti3 < topIndices.length; ti3++) {

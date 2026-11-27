@@ -13,7 +13,7 @@ python distill.py data/train.npz runs/teacher/teacher.pt data/ee/habitat_res5.pa
     --scale 1.1 --film 64 --bottleneck 288 --harmonics 16 --envelope 4 --ocean --steps 150000 \
     --benchmark data/benchmark/bench_20k --int8-check
 
-python package.py runs/student/student.pt taxonomy.json data/ubiquitous.csv release \
+python package.py runs/student/student.pt taxonomy.csv data/ubiquitous.csv release \
     --name BirdNET+_Geomodel_V4.0_Global_17K
 ```
 
@@ -84,7 +84,8 @@ are used in this step.
 ### What is added to the teacher's predictions
 
 **Range envelope** (`--envelope 4`). A species' target is set to zero more than four
-degrees (1° bins, about 440 km) from any of its records. Habitat matching alone
+degrees (1° bins: about 440 km north-south, less east-west away from the equator,
+about 220 km at 60° N) from any of its records. Habitat matching alone
 would put a species on every continent with a similar climate: a European forest
 bird in the forests of Japan. The envelope keeps the teacher's habitat knowledge
 local.

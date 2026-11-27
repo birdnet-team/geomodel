@@ -1,7 +1,7 @@
 # App filter study
 
 ```bash
-python -m evaluation.filter_study CHECKPOINT geofilter_pairs.parquet --taxonomy taxonomy.json
+python -m evaluation.filter_study CHECKPOINT geofilter_pairs.parquet --taxonomy taxonomy.csv
 python -m evaluation.filter_study BirdNET_Geomodel_V3.0.4.pt geofilter_pairs.parquet --labels BirdNET_Geomodel_V3.0.4_labels.txt
 ```
 

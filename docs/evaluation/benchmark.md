@@ -2,7 +2,7 @@
 
 ```bash
 python -m evaluation.benchmark runs/student/student.pt data/benchmark/bench_20k --out student_bench.json
-python -m evaluation.benchmark release/BirdNET+_Geomodel_V4.0_Global_17K.pt data/benchmark/bench_20k --taxonomy taxonomy.json
+python -m evaluation.benchmark release/BirdNET+_Geomodel_V4.0_Global_17K.pt data/benchmark/bench_20k --taxonomy taxonomy.csv
 python -m evaluation.benchmark runs/teacher/teacher.pt data/benchmark/bench_20k --habitat data/ee/habitat_res5.parquet
 python -m evaluation.benchmark BirdNET_Geomodel_V3.0.4.pt data/benchmark/bench_20k --labels BirdNET_Geomodel_V3.0.4_labels.txt
 ```

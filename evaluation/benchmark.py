@@ -46,7 +46,7 @@ import pandas as pd
 
 STRATA = ('thin', 'medium', 'dense')
 CLASSES = ('regular', 'scarce', 'vagrant', 'unreported')
-RATE_LINE, SCORE_LINE = 0.003, 0.1
+SCORE_LINE = 0.1  # app line; rate models are scored at the rate their curve maps to it (0.003 by default)
 
 Predict = Callable[[float, float, Sequence[int]], np.ndarray]
 
@@ -168,12 +168,20 @@ def summarize(acc: dict) -> dict:
 
 
 def geoscore(summary: dict) -> dict:
-    """GeoScore v2 and its four parts (each in [0, 1])."""
+    """GeoScore v2 and its four parts (each in [0, 1]).
+
+    A part whose stratum is missing from the benchmark (e.g. no cell-week with
+    1,000 checklists) is NaN, and so is the total; the other parts are still given.
+    """
+    def value(stratum: str, key: str) -> float:
+        v = summary.get(stratum, {}).get(key)
+        return float('nan') if v is None else float(v)
+
     parts = dict(
-        clean=1 - (summary['dense']['junk_at95'] + summary['medium']['junk_at95']) / 2,
-        top=float(np.mean([summary[s]['topk_capture'] for s in STRATA])),
-        reach=summary['thin']['recall_regular'],
-        season=summary.get('seasonality', {}).get('median_r', float('nan')))
+        clean=1 - (value('dense', 'junk_at95') + value('medium', 'junk_at95')) / 2,
+        top=float(np.mean([value(s, 'topk_capture') for s in STRATA])),
+        reach=value('thin', 'recall_regular'),
+        season=float(summary.get('seasonality', {}).get('median_r', float('nan'))))
     parts['geoscore'] = float(np.mean(list(parts.values())))
     return {k: round(v, 4) for k, v in parts.items()}
 
@@ -204,7 +212,7 @@ def disc_features(habitat_path: str, lat: np.ndarray, lng: np.ndarray, k: int = 
 
 def evaluate(predictor, prefix: str, habitat: str | None = None, weeks: Sequence[int] | None = None) -> dict:
     """Benchmark summary and GeoScore v2 of a loaded ``model.io.Predictor``."""
-    from model.io import predictor_fn
+    from model.io import DEFAULT_CURVE, predictor_fn, score_to_rate
 
     cells, freq = read_benchmark(prefix)
     codes = predictor.extra.get('codes')
@@ -221,7 +229,9 @@ def evaluate(predictor, prefix: str, habitat: str | None = None, weeks: Sequence
         features_at = lambda la, lo: feats[lookup[(round(la, 4), round(lo, 4))]]
     as_scores = not predictor.predicts_rates
     predict = predictor_fn(predictor, as_scores=as_scores, features_at=features_at)
-    summary = summarize(score_cells(predict, codes, use, cells, freq, SCORE_LINE if as_scores else RATE_LINE, weeks))
+    # The line is score 0.1; for rate models, the rate the checkpoint's own curve maps to 0.1.
+    line = SCORE_LINE if as_scores else round(float(score_to_rate(np.array(SCORE_LINE), predictor.curve or DEFAULT_CURVE)), 12)
+    summary = summarize(score_cells(predict, codes, use, cells, freq, line, weeks))
     return dict(strata=summary, geoscore=geoscore(summary))
 
 
@@ -234,7 +244,7 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument('checkpoint')
     parser.add_argument('benchmark', help='prefix of the *_cells.parquet / *_freq.parquet pair')
     parser.add_argument('--habitat', help='habitat table, needed for teachers')
-    parser.add_argument('--taxonomy', help='BirdNET taxonomy JSON, for checkpoints that use BirdNET ids')
+    parser.add_argument('--taxonomy', help='BirdNET taxonomy (CSV or JSON), for checkpoints that use BirdNET ids')
     parser.add_argument('--data', help='training file, for teachers without habitat statistics')
     parser.add_argument('--labels', help='V3 label file (eBird code in the first column)')
     parser.add_argument('--out', help='write the result as JSON')

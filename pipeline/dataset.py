@@ -77,6 +77,9 @@ def build(targets_dir: str, species_csv: str, habitat_path: str, out_path: str,
 
     con = duckdb.connect()
     con.execute(f"SET threads={threads}; SET memory_limit='{mem}'; SET temp_directory='{targets_dir}/_tmp'")
+    columns = [r[0] for r in con.execute(f"DESCRIBE SELECT * FROM read_csv_auto('{species_csv}', all_varchar=true)").fetchall()]
+    if 'ebird_code' not in columns or 'birdnet_id' not in columns:
+        raise SystemExit(f'{species_csv} is not a stage-2 species table (needs birdnet_id and ebird_code; has {columns})')
     present = [r[0] for r in con.execute(f"SELECT DISTINCT grp FROM '{targets_dir}/effort_res5.parquet'").fetchall()]
     present = sorted(present, key=lambda g: (ORDER.index(g) if g in ORDER else len(ORDER), g))
     if groups is None:

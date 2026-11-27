@@ -1,6 +1,6 @@
 """The geomodel as a filter for audio detections: re-score the 2025 app study.
 
-    python -m evaluation.filter_study CHECKPOINT PAIRS.parquet [--taxonomy TAXONOMY.json] [--labels LABELS.txt]
+    python -m evaluation.filter_study CHECKPOINT PAIRS.parquet [--taxonomy TAXONOMY.csv] [--labels LABELS.txt]
                                       [--lines 0.05 0.1 0.15] [--out result.json]
 
 In the apps the geomodel removes classifier detections of species it scores
@@ -99,7 +99,7 @@ def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__.split('\n\n')[0])
     parser.add_argument('checkpoint', help='student or release checkpoint')
     parser.add_argument('pairs', help='parquet of recordings x top-3 classifier predictions')
-    parser.add_argument('--taxonomy', help='BirdNET taxonomy JSON, for checkpoints that use BirdNET ids')
+    parser.add_argument('--taxonomy', help='BirdNET taxonomy (CSV or JSON), for checkpoints that use BirdNET ids')
     parser.add_argument('--labels', help='V3 label file (scientific name in the second column)')
     parser.add_argument('--lines', nargs='+', type=float, default=[0.05, 0.1, 0.15], help='geomodel score lines')
     parser.add_argument('--out', help='write the result as JSON')

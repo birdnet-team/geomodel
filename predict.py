@@ -1,8 +1,8 @@
 """Species list for a place and week, or a globally balanced list of common species.
 
-    python predict.py --checkpoint release/BirdNET+_Geomodel_V4.0_Global_17K.pt --lat 50.83 --lon 12.92 --week 22
-    python predict.py --checkpoint ... --lat 50.83 --lon 12.92 --week -1          # whole year (maximum over weeks)
-    python predict.py --checkpoint ... --common-species 5000 --taxonomy TAXONOMY.json --output common.txt
+    python predict.py release/BirdNET+_Geomodel_V4.0_Global_17K.pt --lat 50.83 --lon 12.92 --week 22
+    python predict.py ... --lat 50.83 --lon 12.92 --week -1          # whole year (maximum over weeks)
+    python predict.py ... --common-species 5000 --taxonomy TAXONOMY.csv --output common.txt
 
 Weeks run from 1 to 48, four per month (days 1-7, 8-14, 15-21, 22-end).
 
@@ -107,14 +107,14 @@ def common_species(predictor: Predictor, is_bird: np.ndarray, n: int, step: floa
 
 def main(argv=None) -> None:
     p = argparse.ArgumentParser(description=__doc__.split('\n\n')[0])
-    p.add_argument('--checkpoint', required=True, help='release checkpoint (package.py), student or V3 release')
+    p.add_argument('checkpoint', help='release checkpoint (package.py), student or V3 release')
     p.add_argument('--lat', type=float)
     p.add_argument('--lon', type=float)
     p.add_argument('--week', type=int, help='1-48, or -1 for the whole year')
     p.add_argument('--top-k', type=int, default=100, help='show at most this many species')
     p.add_argument('--threshold', type=float, default=0.1, help='show species scoring at least this')
     p.add_argument('--common-species', type=int, metavar='N', help='build a list of N common species instead')
-    p.add_argument('--taxonomy', help='taxonomy JSON (bird / non-bird split for --common-species)')
+    p.add_argument('--taxonomy', help='taxonomy (CSV or JSON; bird / non-bird split for --common-species)')
     p.add_argument('--grid-step', type=float, default=5.0)
     p.add_argument('--output', help='file for the --common-species list')
     args = p.parse_args(argv)
@@ -143,9 +143,11 @@ def main(argv=None) -> None:
         p.error('--week must be 1-48, or -1 for the whole year')
 
     scores = species_list(predictor, args.lat, args.lon, args.week)
-    order = [i for i in np.argsort(-scores) if scores[i] >= args.threshold][:args.top_k]
+    passing = [i for i in np.argsort(-scores) if scores[i] >= args.threshold]
+    order = passing[:args.top_k]
     when = 'whole year' if args.week in (-1, 0) else f'week {args.week}'
-    print(f'{len(order)} species at {args.lat}, {args.lon}, {when} (score >= {args.threshold})\n')
+    shown = f', showing {len(order)}' if len(order) < len(passing) else ''
+    print(f'{len(passing)} species at {args.lat}, {args.lon}, {when} (score >= {args.threshold}){shown}\n')
     print(f'{"rank":>4}  {"score":>6}  {"id":<10} {"common name":<32} scientific name')
     for rank, i in enumerate(order, 1):
         ident, scientific, common = labels[i]

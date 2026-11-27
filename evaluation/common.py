@@ -4,7 +4,7 @@ and predictions for a few outputs at many points.
 Checkpoints name their outputs in one of two ways:
 
 * V4 teachers, students and releases use BirdNET ids (``BN04673``). Names and
-  eBird codes come from the BirdNET taxonomy JSON; students also carry their
+  eBird codes come from the BirdNET taxonomy (CSV or JSON); students also carry their
   eBird codes in the checkpoint (``codes``).
 * V3 releases use the first column of their label file: the eBird code for
   birds, a number for other taxa. The label file has the scientific name in the
@@ -48,7 +48,7 @@ def ebird_codes(predictor, labels: str | None = None,
     names themselves when they are V3 ids.
     """
     if predictor.extra.get('codes') is not None:
-        return [str(c) for c in predictor.extra['codes']]
+        return [str(c) if c and str(c) not in ('None', 'nan') else '' for c in predictor.extra['codes']]
     if labels:
         first = [row[0] for row in read_labels(labels)]
         if len(first) != len(predictor.species):

@@ -1,7 +1,7 @@
 """The animated range maps in the README: several species, 48 weeks, one GIF.
 
-    python scripts/demo_gif.py --checkpoint release/BirdNET+_Geomodel_V4.0_Global_17K.pt --output demo_migrants.gif
-    python scripts/demo_gif.py --checkpoint ... --species "Barn Swallow" "Arctic Tern" --cols 2
+    python scripts/demo_gif.py release/BirdNET+_Geomodel_V4.0_Global_17K.pt --output demo_migrants.gif
+    python scripts/demo_gif.py CHECKPOINT --species "Barn Swallow" "Arctic Tern" --cols 2
 
 Species are given by common or scientific name (case-insensitive substring of the
 label file). Each panel shows the score on a 1° grid (``--resolution``); the color
@@ -90,7 +90,8 @@ def render(scores: np.ndarray, titles: list[str], vmax: list[float], week: int, 
 
 def main(argv=None) -> None:
     p = argparse.ArgumentParser(description=__doc__.split('\n\n')[0])
-    p.add_argument('--checkpoint', required=True)
+    p.add_argument('checkpoint', help='release or student checkpoint')
+    p.add_argument('--taxonomy', help='BirdNET taxonomy (CSV or JSON), for checkpoints without a label file')
     p.add_argument('--species', nargs='+', default=DEFAULT_SPECIES)
     p.add_argument('--output', default='demo_migrants.gif')
     p.add_argument('--resolution', type=float, default=1.0, help='grid spacing in degrees')
@@ -102,6 +103,11 @@ def main(argv=None) -> None:
 
     model = load(args.checkpoint)
     labels = read_labels(args.checkpoint, model.species)
+    if args.taxonomy and all(not sci for _, sci, _ in labels):
+        from pipeline.taxonomy import load_taxonomy
+        rows = {r['birdnet_id']: r for r in load_taxonomy(args.taxonomy)}
+        labels = [(s, rows.get(s, {}).get('scientific_name', ''), rows.get(s, {}).get('common_name', ''))
+                  for s in model.species]
     chosen = find_species(args.species, labels)
     if not chosen:
         raise SystemExit('no species found')

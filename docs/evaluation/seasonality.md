@@ -1,9 +1,9 @@
 # Seasonality
 
 ```bash
-python -m evaluation.seasonality CHECKPOINT data/benchmark/bench_20k --taxonomy taxonomy.json \
+python -m evaluation.seasonality CHECKPOINT data/benchmark/bench_20k --taxonomy taxonomy.csv \
     --compare BirdNET_Geomodel_V3.0.4.pt --compare-labels BirdNET_Geomodel_V3.0.4_labels.txt
-python -m evaluation.seasonality CHECKPOINT data/benchmark/bench_20k --taxonomy taxonomy.json --species barswa --weeks 21 24
+python -m evaluation.seasonality CHECKPOINT data/benchmark/bench_20k --taxonomy taxonomy.csv --species barswa --weeks 21 24
 ```
 
 A filter that passes a migrant in the months it is away lets through exactly the

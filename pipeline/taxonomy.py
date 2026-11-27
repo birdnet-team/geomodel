@@ -1,10 +1,12 @@
 """Stage 2: the model's species list, from the BirdNET taxonomy, with GBIF keys to match records.
 
-    python -m pipeline.taxonomy TAXONOMY.json data/species.csv [--cache data/gbif_keys.json]
+    python -m pipeline.taxonomy BirdNET+_Taxonomy_v0.5-Nov2026.csv data/species.csv [--cache data/gbif_keys.json]
 
-``TAXONOMY.json`` is the BirdNET taxonomy export (``{"rows": [...]}``, one row per
-class with ``birdnet_id``, ``scientific_name``, ``taxon_group``, ``gbif_id``,
-``ebird_code``, ``scientific_name_aliases`` and more). Every model output is a
+The BirdNET taxonomy has one row per class with ``birdnet_id``,
+``scientific_name``, ``taxon_group``, ``gbif_id``, ``ebird_code``,
+``scientific_name_aliases`` and more. It is published as a CSV file in the BirdNET
+model converter repository (https://github.com/birdnet-team/model-converter); the
+JSON export of the same taxonomy (``{"rows": [...]}``) works as well. Every model output is a
 taxonomy species with a ``birdnet_id``; sound classes (record type other than
 ``species``) have no geography and are skipped.
 
@@ -48,9 +50,14 @@ FIELDS = ['birdnet_id', 'scientific_name', 'common_name', 'taxon_group', 'ebird_
 
 
 def load_taxonomy(path: str | pathlib.Path, species_only: bool = True) -> list[dict]:
-    """Rows of a BirdNET taxonomy JSON export; by default only ``record_type == 'species'``."""
-    with open(path, encoding='utf-8') as f:
-        rows = json.load(f)['rows']
+    """Rows of the BirdNET taxonomy (CSV or JSON export); by default only ``record_type == 'species'``."""
+    if str(path).lower().endswith('.csv'):
+        csv.field_size_limit(10 ** 9)
+        with open(path, newline='', encoding='utf-8') as f:
+            rows = list(csv.DictReader(f))
+    else:
+        with open(path, encoding='utf-8') as f:
+            rows = json.load(f)['rows']
     return [r for r in rows if r.get('record_type') == 'species'] if species_only else rows
 
 
@@ -157,7 +164,7 @@ def read_species(path: str | pathlib.Path) -> list[dict]:
 
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__.split('\n\n')[0])
-    parser.add_argument('taxonomy', help='BirdNET taxonomy JSON export')
+    parser.add_argument('taxonomy', help='BirdNET taxonomy (CSV or JSON export)')
     parser.add_argument('out', help='species table to write (CSV)')
     parser.add_argument('--cache', help='JSON file that caches GBIF lookups between runs')
     args = parser.parse_args(argv)

@@ -6,7 +6,7 @@ Download a release (checkpoint and label file) from the
 [releases page](https://github.com/birdnet-team/geomodel/releases), then:
 
 ```bash
-python predict.py --checkpoint BirdNET+_Geomodel_V4.0_Global_17K.pt --lat 50.83 --lon 12.92 --week 22
+python predict.py BirdNET+_Geomodel_V4.0_Global_17K.pt --lat 50.83 --lon 12.92 --week 22
 ```
 
 It prints the species scoring at least 0.1 there, highest first, with score,
@@ -23,7 +23,7 @@ The ONNX files need nothing but `onnxruntime`:
 import numpy as np
 import onnxruntime as ort
 
-labels = [line.rstrip('\n').split('\t') for line in open('labels.txt', encoding='utf-8')]
+labels = [line.rstrip('\n').split('\t') for line in open('BirdNET+_Geomodel_V4.0_Global_17K_Labels.txt', encoding='utf-8')]
 session = ort.InferenceSession('BirdNET+_Geomodel_V4.0_Global_17K_INT8.onnx')
 scores = session.run(None, {'input': np.array([[50.83, 12.92, 22]], np.float32)})[0][0]
 ```

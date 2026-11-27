@@ -6,6 +6,7 @@ on:
     paths:
       - 'docs/**'
       - 'mkdocs.yml'
+      - 'model/**'
       - 'requirements-docs.txt'
       - '*.md'
   workflow_dispatch:

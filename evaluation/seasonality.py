@@ -1,6 +1,6 @@
 """Off-season leakage: does the geomodel pass a migrant in the weeks it is absent?
 
-    python -m evaluation.seasonality CHECKPOINT BENCHMARK [--taxonomy TAXONOMY.json] [--labels LABELS.txt]
+    python -m evaluation.seasonality CHECKPOINT BENCHMARK [--taxonomy TAXONOMY.csv] [--labels LABELS.txt]
                                      [--compare V3.pt --compare-labels V3_labels.txt] [--species barswa --weeks 21 24]
 
 Uses the eBird checklist benchmark (``pipeline.ebird``): ``BENCHMARK_cells.parquet``
@@ -206,7 +206,7 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument('checkpoint', help='student or release checkpoint')
     parser.add_argument('benchmark', help='prefix of the *_cells.parquet / *_freq.parquet pair')
     parser.add_argument('--labels', help='V3 label file of the checkpoint (eBird code in the first column)')
-    parser.add_argument('--taxonomy', help='BirdNET taxonomy JSON: eBird codes and names for BirdNET ids')
+    parser.add_argument('--taxonomy', help='BirdNET taxonomy (CSV or JSON): eBird codes and names for BirdNET ids')
     parser.add_argument('--name', help='name of the checkpoint in the output')
     parser.add_argument('--compare', help='a second checkpoint to compare with')
     parser.add_argument('--compare-labels', help='V3 label file of the second checkpoint')

@@ -59,8 +59,8 @@ Release files are on the [releases page](https://github.com/birdnet-team/geomode
 a PyTorch checkpoint with its label file, and ONNX, TFLite and TorchScript exports.
 
 ```bash
-python predict.py --checkpoint BirdNET+_Geomodel_V4.0_Global_17K.pt --lat 50.83 --lon 12.92 --week 22
-python predict.py --checkpoint BirdNET+_Geomodel_V4.0_Global_17K.pt --lat 50.83 --lon 12.92 --week -1   # whole year
+python predict.py BirdNET+_Geomodel_V4.0_Global_17K.pt --lat 50.83 --lon 12.92 --week 22
+python predict.py BirdNET+_Geomodel_V4.0_Global_17K.pt --lat 50.83 --lon 12.92 --week -1   # whole year
 ```
 
 The exports take one float32 tensor `[batch, 3]` (latitude, longitude, week) and
@@ -110,12 +110,12 @@ the [documentation](https://birdnet-team.github.io/geomodel/).
 ## Evaluate
 
 ```bash
-python -m evaluation.benchmark   CHECKPOINT data/benchmark/bench_20k --taxonomy taxonomy.json  # eBird benchmark, GeoScore v2
-python -m evaluation.seasonality CHECKPOINT data/benchmark/bench_20k --taxonomy taxonomy.json  # migrants passed outside their season
-python -m evaluation.groups      CHECKPOINT data/benchmark/bench_20k --taxonomy taxonomy.json  # how taxon groups share the top of the lists
-python -m evaluation.status_trends score CHECKPOINT data/st_2023_0p5.npz --taxonomy taxonomy.json  # eBird Status & Trends maps
-python -m evaluation.filter_study CHECKPOINT geofilter_pairs.parquet --taxonomy taxonomy.json  # effect on app detections
-python -m evaluation.range_maps  CHECKPOINT maps/ --species "Hirundo rustica" --taxonomy taxonomy.json  # weekly range maps (GIF)
+python -m evaluation.benchmark   CHECKPOINT data/benchmark/bench_20k --taxonomy taxonomy.csv  # eBird benchmark, GeoScore v2
+python -m evaluation.seasonality CHECKPOINT data/benchmark/bench_20k --taxonomy taxonomy.csv  # migrants passed outside their season
+python -m evaluation.groups      CHECKPOINT data/benchmark/bench_20k --taxonomy taxonomy.csv  # how taxon groups share the top of the lists
+python -m evaluation.status_trends score CHECKPOINT data/st_2023_0p5.npz --taxonomy taxonomy.csv  # eBird Status & Trends maps
+python -m evaluation.filter_study CHECKPOINT geofilter_pairs.parquet --taxonomy taxonomy.csv  # effect on app detections
+python -m evaluation.range_maps  CHECKPOINT maps/ --species "Hirundo rustica" --taxonomy taxonomy.csv  # weekly range maps (GIF)
 python -m pytest tests                                                                        # unit tests
 ```
 

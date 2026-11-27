@@ -1,7 +1,7 @@
 # Species
 
 ```bash
-python -m pipeline.taxonomy taxonomy.json data/species.csv --cache data/gbif_keys.json
+python -m pipeline.taxonomy taxonomy.csv data/species.csv --cache data/gbif_keys.json
 ```
 
 The model's species are the species of the BirdNET taxonomy, the same list the
@@ -10,9 +10,12 @@ geomodel with any BirdNET audio model without name matching. Sound classes
 (record type other than `species`) have no geography
 and are skipped.
 
-The input is the taxonomy's JSON export: `{"rows": [...]}` with, per class,
-`birdnet_id`, `scientific_name`, `common_name`, `taxon_group`, `record_type`,
-`gbif_id`, `ebird_code` and `scientific_name_aliases`.
+The taxonomy is published as `BirdNET+_Taxonomy_v0.5-Nov2026.csv` in the
+[BirdNET model converter](https://github.com/birdnet-team/model-converter) repository
+(stored with Git LFS). Each row has, among others, `birdnet_id`, `scientific_name`,
+`common_name`, `taxon_group`, `record_type`, `gbif_id`, `ebird_code` and
+`scientific_name_aliases`. A JSON export of the same taxonomy (`{"rows": [...]}`)
+works too. The commands in this documentation call the file `taxonomy.csv`.
 
 ## Matching species to GBIF records
 

@@ -95,7 +95,7 @@ def build(map_dir: str, species_csv: str, out_dir: str, *, half_life: float = 10
     weight = f'pow(0.5, ({ref_year} - year) / {half_life})'
     start = time.time()
 
-    # Species observer-days. Birds keep unmodelled species for the effort count.
+    # Species observer-days. Birds keep unmodeled species for the effort count.
     con.execute(f"""CREATE TEMP TABLE od AS
         SELECT DISTINCT {h3_parent_sql(H3_RES)} AS cell, week, m.species_key,
                CASE WHEN m.class_key = {AVES_CLASS_KEY} THEN 'Aves' ELSE {other} END AS grp,
@@ -111,7 +111,7 @@ def build(map_dir: str, species_csv: str, out_dir: str, *, half_life: float = 10
         FROM od WHERE birdnet_id IS NOT NULL GROUP BY cell, week, grp, birdnet_id
     ) TO '{out}/species_res{H3_RES}.parquet' (FORMAT parquet, COMPRESSION zstd)""")
 
-    # Effort: distinct observer-days per group. For birds this includes unmodelled
+    # Effort: distinct observer-days per group. For birds this includes unmodeled
     # species; for the other groups only modeled ones are in `od` to begin with.
     group_effort = f"""
         SELECT cell, week, grp, count(*) AS n, sum(w)::FLOAT AS n_w, max(n_species) AS n_species

@@ -1,7 +1,7 @@
 """Compare a geomodel with eBird Status & Trends weekly abundance maps.
 
     python -m evaluation.status_trends cache ST_DIR st_2023_0p5.npz [--res 0.5]
-    python -m evaluation.status_trends score CHECKPOINT st_2023_0p5.npz [--labels LABELS.txt] [--taxonomy TAXONOMY.json]
+    python -m evaluation.status_trends score CHECKPOINT st_2023_0p5.npz [--labels LABELS.txt] [--taxonomy TAXONOMY.csv]
 
 Status & Trends (S&T) models abundance from eBird checklists with its own
 covariates and gives one map per week. It is an independent reference for both
@@ -51,7 +51,7 @@ from scipy.stats import rankdata
 
 from evaluation.common import ebird_codes, predict_columns, sigmoid_of_logits
 
-MAX_DAYS_FROM_WEEK_CENTRE = 15
+MAX_DAYS_FROM_WEEK_CENTER = 15
 MIN_OCCUPIED_CELLS = 50
 MIN_OCCUPIED_WEEKS = 4
 
@@ -60,7 +60,7 @@ MIN_OCCUPIED_WEEKS = 4
 # Cache
 # ---------------------------------------------------------------------------
 
-def week_centre_doy(week: int) -> float:
+def week_center_doy(week: int) -> float:
     """Day of year at the center of model week 1-48."""
     return (week - 0.5) * 365 / 48
 
@@ -97,9 +97,9 @@ def species_weeks(path: pathlib.Path, res: float) -> np.ndarray:
                         for n in names])
         cells = None  # all weekly rasters of a species share one grid
         for week in range(1, 49):
-            distance = np.abs(doy - week_centre_doy(week))
+            distance = np.abs(doy - week_center_doy(week))
             nearest = int(distance.argmin())
-            if distance[nearest] > MAX_DAYS_FROM_WEEK_CENTRE:
+            if distance[nearest] > MAX_DAYS_FROM_WEEK_CENTER:
                 continue
             with rasterio.open(io.BytesIO(archive.read(names[nearest]))) as raster:
                 values = raster.read(1).astype(np.float32)
@@ -223,7 +223,7 @@ def main(argv: list[str] | None = None) -> None:
     run.add_argument('checkpoint', help='student or release checkpoint')
     run.add_argument('cache', help='.npz written by the cache command')
     run.add_argument('--labels', help='V3 label file (eBird code in the first column)')
-    run.add_argument('--taxonomy', help='BirdNET taxonomy JSON, for checkpoints that use BirdNET ids')
+    run.add_argument('--taxonomy', help='BirdNET taxonomy (CSV or JSON), for checkpoints that use BirdNET ids')
     run.add_argument('--stride', type=int, default=1, help='use every n-th grid row and column (quick runs)')
     run.add_argument('--out', help='write the result as JSON')
 
