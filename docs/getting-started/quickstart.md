@@ -1,79 +1,44 @@
-# Quick Start
+# Quick start
 
-This guide walks through the full pipeline from raw data to species predictions.
+## Species list for a place
 
-## The Five Stages
-
-```
-1. geoutils.py   → Build H3 grid + sample environmental data from Earth Engine
-2. gbifutils.py  → Process raw GBIF occurrence archive → filtered CSV
-3. combine.py    → Join geodata + GBIF → training parquet
-4. train.py      → Train multi-task model → checkpoints
-5. predict.py    → Inference: (lat, lon, week) → species list
-```
-
-## Stage 1 — Sample Environmental Data
-
-Build an H3 grid and sample environmental features from Google Earth Engine:
+Download a release (checkpoint and label file) from the
+[releases page](https://github.com/birdnet-team/geomodel/releases), then:
 
 ```bash
-python utils/geoutils.py --km 50 --out-dir outputs/global_chunks \
-    --threads 8 --combine --combined-out data/global_50km_ee.parquet \
-    --fill-missing
+python predict.py BirdNET+_Geomodel_V4.0_Global_17K.pt --lat 50.83 --lon 12.92 --week 22
 ```
 
-This creates a GeoParquet with one row per H3 cell, each containing elevation, temperature, precipitation, land cover, and other environmental variables. See [Earth Engine Sampling](../pipeline/geoutils.md) for details.
+It prints the species scoring at least 0.1 there, highest first, with score,
+BirdNET id, common and scientific name.
 
-## Stage 2 — Process GBIF Data
+Weeks run from 1 to 48, four per month; `--week -1` gives the whole year.
+`--threshold` and `--top-k` change how much is shown.
 
-Download a [GBIF Darwin Core Archive](https://www.gbif.org/) and process it:
+## In your own code
 
-```bash
-python utils/gbifutils.py \
-    --gbif /path/to/gbif_archive.zip \
-    --file occurrence.csv \
-    --output ./outputs/gbif_processed.csv.gz \
-    --taxonomy taxonomy_v0.2-Jun2026.csv
+The ONNX files need nothing but `onnxruntime`:
+
+```python
+import numpy as np
+import onnxruntime as ort
+
+labels = [line.rstrip('\n').split('\t') for line in open('BirdNET+_Geomodel_V4.0_Global_17K_Labels.txt', encoding='utf-8')]
+session = ort.InferenceSession('BirdNET+_Geomodel_V4.0_Global_17K_INT8.onnx')
+scores = session.run(None, {'input': np.array([[50.83, 12.92, 22]], np.float32)})[0][0]
 ```
 
-See [GBIF Processing](../pipeline/gbif.md) for details on filters applied.
+`scores[i]` belongs to `labels[i]` (BirdNET id, scientific name, common name). A
+score of 0.1 corresponds to a species reported on about 0.3 % of checklists in the
+area; see [Scores](../model/scores.md).
 
-## Stage 3 — Combine
+## Training your own model
 
-Join the H3 environmental grid with species observations:
+The full pipeline, from a GBIF download to an exported model:
 
-```bash
-python utils/combine.py \
-    --geodata data/global_50km_ee.parquet \
-    --gbif ./outputs/gbif_processed.csv.gz \
-    --output ./outputs/combined.parquet \
-    --workers 16
-```
-
-This produces a combined parquet with per-week species lists and a taxonomy CSV. See [Combining Data](../pipeline/combine.md).
-
-## Stage 4 — Train
-
-```bash
-python train.py --data_path ./outputs/combined.parquet
-```
-
-Training produces checkpoints in `./checkpoints/`. See [Training](../model/training.md) for all options.
-
-## Stage 5 — Predict
-
-```bash
-# Specific week
-python predict.py --lat 50.83 --lon 12.92 --week 10 --top_k 25
-
-# Yearly prediction
-python predict.py --lat 50.83 --lon 12.92 --week -1
-```
-
-See [Inference](../model/inference.md) for full details.
-
-## Next Steps
-
-- [Model Architecture](../model/architecture.md) — understand how the model works
-- [Visualization](../plotting/index.md) — plot range maps, richness, and more
-- [API Reference](../api/model.md) — Python API documentation
+1. [Data pipeline](../pipeline/overview.md): records, species, encounter rates,
+   habitat, training file, benchmark.
+2. [Training](../model/training.md): teacher, student, release checkpoint.
+3. [Export](../model/export.md): ONNX, TFLite, TorchScript.
+4. [Evaluation](../evaluation/benchmark.md): eBird benchmark, seasonality, Status &
+   Trends, app filter study, range maps.

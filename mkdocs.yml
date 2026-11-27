@@ -86,32 +86,27 @@ nav:
       - Quick Start: getting-started/quickstart.md
   - Data Pipeline:
       - Overview: pipeline/overview.md
-      - Earth Engine Sampling: pipeline/geoutils.md
-      - GBIF Processing: pipeline/gbif.md
-      - Combining Data: pipeline/combine.md
+      - GBIF Records: pipeline/gbif.md
+      - Species: pipeline/taxonomy.md
+      - Habitat and Population: pipeline/earthengine.md
+      - Training File: pipeline/dataset.md
+      - eBird Benchmark: pipeline/ebird.md
   - Model:
       - Architecture: model/architecture.md
       - Training: model/training.md
-      - Inference: model/inference.md
-      - Export: model/export.md
-  - Visualization:
-      - Plotting Overview: plotting/index.md
-      - Species Weeks: plotting/species-weeks.md
-      - Range Maps: plotting/range-maps.md
-      - Richness Maps: plotting/richness.md
-      - Training Curves: plotting/training-curves.md
-      - Variable Importance: plotting/variable-importance.md
-      - Environmental: plotting/environmental.md
-      - Label Propagation: plotting/propagation.md
+      - Scores: model/scores.md
+      - Export and Inference: model/export.md
+  - Evaluation:
+      - Benchmark and GeoScore: evaluation/benchmark.md
+      - Seasonality: evaluation/seasonality.md
+      - Taxon Groups: evaluation/groups.md
+      - Status and Trends: evaluation/status_trends.md
+      - App Filter Study: evaluation/filter_study.md
+      - Range Maps: evaluation/range_maps.md
   - API Reference:
-      - model: api/model.md
+      - model.model: api/model.md
       - model.loss: api/loss.md
-      - model.metrics: api/metrics.md
-      - model.autotune: api/autotune.md
-      - utils.data: api/data.md
-      - utils.geoutils: api/geoutils.md
-      - utils.gbifutils: api/gbifutils.md
-      - utils.combine: api/combine.md
+      - model.io: api/io.md
   - Community:
       - Contributing: community/contributing.md
       - Code of Conduct: community/code-of-conduct.md

@@ -1,0 +1,12 @@
+birdnet_id,name,kind
+BN22686,Human,human
+BN21006,Domestic Dog,domestic
+BN22287,Domestic Cat,domestic
+BN20810,Domestic Cattle,domestic
+BN24611,Domestic Sheep,domestic
+BN21023,Domestic Goat,domestic
+BN22100,Domestic Horse,domestic
+BN25711,Brown Rat,domestic
+BN25712,Black Rat,domestic
+BN20436,Western Honey Bee,domestic
+BN04063,Red Junglefowl,domestic

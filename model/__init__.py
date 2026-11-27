@@ -1,30 +1,6 @@
-"""Model package for BirdNET Geomodel."""
+"""BirdNET Geomodel: network, loss and checkpoint loading."""
 
-from .model import (
-    BirdNETGeoModel,
-    SpatioTemporalEncoder,
-    SpeciesPredictionHead,
-    EnvironmentalPredictionHead,
-    HabitatSpeciesHead,
-    create_model
-)
+from .loss import EncounterLoss
+from .model import BirdNETGeoModel, create_model
 
-from .loss import (
-    MultiTaskLoss,
-    compute_pos_weights,
-    focal_loss,
-    asymmetric_loss,
-)
-
-__all__ = [
-    'BirdNETGeoModel',
-    'SpatioTemporalEncoder',
-    'SpeciesPredictionHead',
-    'EnvironmentalPredictionHead',
-    'HabitatSpeciesHead',
-    'create_model',
-    'MultiTaskLoss',
-    'compute_pos_weights',
-    'focal_loss',
-    'asymmetric_loss',
-]
+__all__ = ['BirdNETGeoModel', 'EncounterLoss', 'create_model']

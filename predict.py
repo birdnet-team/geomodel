@@ -1,455 +1,157 @@
+"""Species list for a place and week, or a globally balanced list of common species.
+
+    python predict.py release/BirdNET+_Geomodel_V4.0_Global_17K.pt --lat 50.83 --lon 12.92 --week 22
+    python predict.py ... --lat 50.83 --lon 12.92 --week -1          # whole year (maximum over weeks)
+    python predict.py ... --common-species 5000 --taxonomy TAXONOMY.csv --output common.txt
+
+Weeks run from 1 to 48, four per month (days 1-7, 8-14, 15-21, 22-end).
+
+Scores are what the apps use: for V4 releases the encounter rate mapped through
+the score curve, with the floors and caps of humans and domestic animals applied.
+A score of 0.1 corresponds to a species reported on about 0.3 % of checklists.
+
+Labels are read from ``<checkpoint stem>_labels.txt`` or ``labels.txt`` next to the
+checkpoint (id, scientific name, common name, tab-separated).
+
+``--common-species N`` builds a list of N species that covers the world evenly:
+mean scores over a 5° grid and four weeks are computed for 20 regions, and the
+list takes, round by round, the next four birds and one other species from each
+region's ranking until N species are chosen.
 """
-Inference script for BirdNET Geomodel.
 
-Load a checkpoint and predict species occurrence for a given location and week.
-
-Usage:
-    python predict.py --lat 52.5 --lon 13.4 --week 22
-    python predict.py --checkpoint checkpoints/checkpoint_best.pt --lat 52.5 --lon 13.4 --week 22 --top_k 10
-    python predict.py --lat 52.5 --lon 13.4 --week 22 --threshold 0.1
-
-Common species mode — produce a globally representative species list:
-    python predict.py --common_species --num_species 5000 --output common_species.txt
-"""
+from __future__ import annotations
 
 import argparse
-import csv
-from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+import pathlib
 
 import numpy as np
-import torch
 
-from model.model import create_model
-from utils.ocean import apply_ocean_species_policy
+from model.io import Predictor, load
 
-
-def load_labels(labels_path: str) -> Dict[int, Tuple[str, str, str]]:
-    """
-    Load labels.txt (saved by train.py) — one line per species in vocab order.
-    Format: speciesCode<TAB>scientificName<TAB>commonName
-
-    Returns:
-        Dict mapping model output index → (speciesCode, scientificName, commonName)
-    """
-    labels: Dict[int, Tuple[str, str, str]] = {}
-    path = Path(labels_path)
-    if not path.exists():
-        return labels
-
-    with open(path, encoding='utf-8') as f:
-        for idx, line in enumerate(f):
-            parts = line.rstrip('\n').split('\t')
-            if len(parts) >= 3:
-                code, sci, com = parts[0], parts[1], parts[2]
-            elif len(parts) == 2:
-                code, sci = parts[0], parts[1]
-                com = sci
-            else:
-                code = sci = com = parts[0]
-            labels[idx] = (code, sci, com)
-    return labels
+# (lon_min, lat_min, lon_max, lat_max)
+REGIONS = {
+    'na_west': (-170.0, 25.0, -105.0, 72.0), 'na_east': (-105.0, 25.0, -50.0, 72.0),
+    'central_america': (-120.0, 7.0, -60.0, 25.0), 'sa_north': (-82.0, -5.0, -34.0, 13.0),
+    'sa_central': (-82.0, -25.0, -34.0, -5.0), 'sa_south': (-82.0, -56.0, -34.0, -25.0),
+    'pantanal': (-59.0, -22.0, -54.0, -15.0), 'europe_west': (-12.0, 36.0, 15.0, 62.0),
+    'europe_east': (15.0, 36.0, 40.0, 62.0), 'scandinavia': (4.0, 55.0, 32.0, 72.0),
+    'africa_north': (-18.0, 15.0, 52.0, 37.0), 'africa_west': (-18.0, -5.0, 20.0, 15.0),
+    'africa_east': (20.0, -5.0, 52.0, 15.0), 'africa_south': (-18.0, -35.0, 52.0, -5.0),
+    'middle_east': (25.0, 12.0, 60.0, 42.0), 'central_asia': (40.0, 35.0, 90.0, 55.0),
+    'south_asia': (60.0, 5.0, 98.0, 35.0), 'east_asia': (98.0, 20.0, 145.0, 55.0),
+    'southeast_asia': (92.0, -11.0, 145.0, 20.0), 'australia': (112.0, -44.0, 154.0, -10.0),
+}
 
 
-def predict(
-    checkpoint_path: str,
-    lat: float,
-    lon: float,
-    week: int,
-    top_k: Optional[int] = None,
-    threshold: Optional[float] = None,
-    device: str = 'auto',
-) -> List[Tuple[str, str, str, float]]:
-    """
-    Predict species occurrence for a location and week.
-
-    Returns list of (speciesCode, scientificName, commonName, probability) tuples,
-    sorted by probability descending.
-    """
-    if device == 'auto':
-        dev = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    else:
-        dev = torch.device(device)
-
-    # Load checkpoint
-    ckpt = torch.load(checkpoint_path, map_location=dev, weights_only=False)
-    model_config = ckpt['model_config']
-    species_vocab = ckpt['species_vocab']
-    idx_to_species = species_vocab['idx_to_species']
-
-    # Reconstruct model
-    model = create_model(
-        n_species=model_config['n_species'],
-        n_env_features=model_config['n_env_features'],
-        model_scale=model_config.get('model_scale', 1.0),
-        coord_harmonics=model_config.get('coord_harmonics', 8),
-        week_harmonics=model_config.get('week_harmonics', 4),
-        habitat_head=model_config.get('habitat_head', False),
-    )
-    model.load_state_dict(ckpt['model_state_dict'])
-    model.to(dev)
-    model.eval()
-
-    # Yearly (week 0): max predictions across all 48 weeks
-    if week == 0:
-        lat_batch = torch.full((48,), lat, dtype=torch.float32, device=dev)
-        lon_batch = torch.full((48,), lon, dtype=torch.float32, device=dev)
-        week_batch = torch.arange(1, 49, dtype=torch.float32, device=dev)
-        with torch.no_grad():
-            output = model(lat_batch, lon_batch, week_batch, return_env=False)
-            probs = torch.sigmoid(output['species_logits']).cpu().numpy()  # (48, n_species)
-        probs = probs.max(axis=0)  # yearly = max across weeks
-    else:
-        # Raw inputs — the model handles circular encoding internally
-        lat_t = torch.tensor([lat], dtype=torch.float32, device=dev)
-        lon_t = torch.tensor([lon], dtype=torch.float32, device=dev)
-        week_t = torch.tensor([week], dtype=torch.float32, device=dev)
-        with torch.no_grad():
-            output = model(lat_t, lon_t, week_t, return_env=False)
-            probs = torch.sigmoid(output['species_logits']).cpu().numpy()[0]
-
-    # Checkpoints trained with the consolidated ocean policy carry a
-    # data-derived marine allow-list. Apply it as a hard safety boundary: a
-    # terrestrial model logit can no longer bleed from an island into open
-    # ocean. Older checkpoints intentionally retain their historical output.
-    probs, _ = apply_ocean_species_policy(probs, lat, lon, species_vocab)
-
-    # Load labels file (auto-detect from checkpoint dir)
-    # Try: <checkpoint_stem>_labels.txt, then labels.txt
-    ckpt_dir = Path(checkpoint_path).parent
-    ckpt_stem = Path(checkpoint_path).stem
-    labels_path = ckpt_dir / f'{ckpt_stem}_labels.txt'
-    if not labels_path.exists():
-        labels_path = ckpt_dir / 'labels.txt'
-    labels = load_labels(str(labels_path)) if labels_path.exists() else {}
-    if not labels:
-        import warnings
-        warnings.warn(
-            f"No labels file found in {ckpt_dir} — output will use species "
-            f"codes only. Expected: {ckpt_stem}_labels.txt or labels.txt",
-            stacklevel=2,
-        )
-
-    # Build results
-    results = []
-    for idx_key, species_id in idx_to_species.items():
-        idx = int(idx_key)
-        species_id = str(species_id)
-        prob = float(probs[idx])
-        label = labels.get(idx)
-        if label:
-            code, sci_name, com_name = label
-        else:
-            code, sci_name, com_name = species_id, species_id, species_id
-        results.append((code, sci_name, com_name, prob))
-
-    results.sort(key=lambda x: x[3], reverse=True)
-
-    if threshold is not None:
-        results = [r for r in results if r[3] >= threshold]
-    if top_k is not None:
-        results = results[:top_k]
-
-    return results
+def read_labels(checkpoint: str, species: list[str]) -> list[tuple[str, str, str]]:
+    """(id, scientific name, common name) per output; ids only if no label file is found."""
+    path = pathlib.Path(checkpoint)
+    for candidate in (path.with_name(f'{path.stem}_labels.txt'), path.with_name('labels.txt')):
+        if candidate.exists():
+            rows = [line.rstrip('\n').split('\t') for line in candidate.open(encoding='utf-8')]
+            if len(rows) == len(species):
+                return [(r[0], r[1] if len(r) > 1 else '', r[2] if len(r) > 2 else '') for r in rows]
+    return [(s, '', '') for s in species]
 
 
-def _load_model_and_labels(checkpoint_path: str, device: str = 'auto'):
-    """Load model, labels, and move to device. Returns (model, labels, dev)."""
-    if device == 'auto':
-        dev = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    else:
-        dev = torch.device(device)
-
-    ckpt = torch.load(checkpoint_path, map_location=dev, weights_only=False)
-    model_config = ckpt['model_config']
-
-    model = create_model(
-        n_species=model_config['n_species'],
-        n_env_features=model_config['n_env_features'],
-        model_scale=model_config.get('model_scale', 1.0),
-        coord_harmonics=model_config.get('coord_harmonics', 8),
-        week_harmonics=model_config.get('week_harmonics', 4),
-        habitat_head=model_config.get('habitat_head', False),
-    )
-    model.load_state_dict(ckpt['model_state_dict'])
-    model.to(dev)
-    model.eval()
-
-    ckpt_dir = Path(checkpoint_path).parent
-    ckpt_stem = Path(checkpoint_path).stem
-    labels_path = ckpt_dir / f'{ckpt_stem}_labels.txt'
-    if not labels_path.exists():
-        labels_path = ckpt_dir / 'labels.txt'
-    labels = load_labels(str(labels_path)) if labels_path.exists() else {}
-
-    return model, labels, dev
+def species_list(predictor: Predictor, lat: float, lon: float, week: int) -> np.ndarray:
+    """Scores at one place; week -1 or 0 gives the maximum over the year."""
+    if week in (-1, 0):
+        return predictor.scores([lat] * 48, [lon] * 48, list(range(1, 49))).max(0)
+    return predictor.scores([lat], [lon], [week])[0]
 
 
-def _load_bird_indices(taxonomy_path: str, labels: Dict[int, Tuple[str, str, str]]) -> set:
-    """Return set of label indices that are birds (class_name == 'aves')."""
-    code_to_class = {}
-    with open(taxonomy_path, encoding='utf-8', newline='') as f:
-        reader = csv.DictReader(f)
-        for row in reader:
-            code = row['species_code']
-            cls = row.get('class_name', '').strip().lower()
-            code_to_class[code] = cls
-
-    bird_indices = set()
-    for idx, (code, _, _) in labels.items():
-        if code_to_class.get(code, '') == 'aves':
-            bird_indices.add(idx)
-    return bird_indices
-
-
-def _compute_region_scores(
-    model: torch.nn.Module,
-    dev: torch.device,
-    bbox: Tuple[float, float, float, float],
-    n_species: int,
-    grid_step: float = 5.0,
-    weeks: Tuple[int, ...] = (1, 13, 26, 39),
-    batch_size: int = 512,
-) -> np.ndarray:
-    """Compute mean species probabilities over a region's grid × weeks.
-
-    Returns:
-        np.ndarray of shape (n_species,) — mean probability per species.
-    """
+def region_means(predictor: Predictor, bbox: tuple[float, float, float, float], step: float = 5.0,
+                 weeks: tuple[int, ...] = (1, 13, 26, 39)) -> np.ndarray:
     lon_min, lat_min, lon_max, lat_max = bbox
-    lats = np.arange(lat_min + grid_step / 2, lat_max, grid_step)
-    lons = np.arange(lon_min + grid_step / 2, lon_max, grid_step)
-    if len(lats) == 0:
-        lats = np.array([(lat_min + lat_max) / 2])
-    if len(lons) == 0:
-        lons = np.array([(lon_min + lon_max) / 2])
-
-    grid_lat, grid_lon = np.meshgrid(lats, lons, indexing='ij')
-    coords = np.stack([grid_lat.ravel(), grid_lon.ravel()], axis=1)  # (G, 2)
-    n_points = len(coords)
-
-    # Build full batch: every grid point × every week
-    all_lat = np.tile(coords[:, 0], len(weeks))
-    all_lon = np.tile(coords[:, 1], len(weeks))
-    all_week = np.repeat(np.array(weeks, dtype=np.float32), n_points)
-
-    accum = np.zeros(n_species, dtype=np.float64)
-    total = len(all_lat)
-
-    for start in range(0, total, batch_size):
-        end = min(start + batch_size, total)
-        lat_t = torch.tensor(all_lat[start:end], dtype=torch.float32, device=dev)
-        lon_t = torch.tensor(all_lon[start:end], dtype=torch.float32, device=dev)
-        week_t = torch.tensor(all_week[start:end], dtype=torch.float32, device=dev)
-        with torch.no_grad():
-            out = model(lat_t, lon_t, week_t, return_env=False)
-            probs = torch.sigmoid(out['species_logits']).cpu().numpy()
-        accum += probs.sum(axis=0)
-
-    return accum / total
+    lats = np.arange(lat_min + step / 2, lat_max, step) if lat_max - lat_min > step else np.array([(lat_min + lat_max) / 2])
+    lons = np.arange(lon_min + step / 2, lon_max, step) if lon_max - lon_min > step else np.array([(lon_min + lon_max) / 2])
+    grid_lat, grid_lon = (a.ravel() for a in np.meshgrid(lats, lons, indexing='ij'))
+    lat = np.tile(grid_lat, len(weeks))
+    lon = np.tile(grid_lon, len(weeks))
+    week = np.repeat(np.array(weeks, np.float32), len(grid_lat))
+    total = np.zeros(len(predictor.species))
+    for i in range(0, len(lat), 512):
+        total += predictor.scores(lat[i:i + 512], lon[i:i + 512], week[i:i + 512]).sum(0)
+    return total / len(lat)
 
 
-def generate_common_species(
-    checkpoint_path: str,
-    num_species: int = 5000,
-    grid_step: float = 5.0,
-    taxonomy_path: Optional[str] = None,
-    device: str = 'auto',
-    output_path: Optional[str] = None,
-) -> List[Tuple[str, str, str]]:
-    """Generate a globally representative common species list.
-
-    Algorithm:
-        1. For each of ~24 non-overlapping global regions, compute mean species
-           probabilities over a lat/lon grid at 4 representative weeks.
-        2. Split species into birds and non-birds using taxonomy.
-        3. Round-robin across regions: pick 4 birds + 1 non-bird per region per
-           round until the target count is reached.
-
-    Returns:
-        List of (speciesCode, scientificName, commonName).
-    """
-    from utils.regions import GLOBAL_SAMPLING_REGIONS
-    from utils.taxonomy import find_taxonomy_csv
-
-    model, labels, dev = _load_model_and_labels(checkpoint_path, device)
-    n_species = len(labels)
-
-    if taxonomy_path is None:
-        found = find_taxonomy_csv()
-        if found is None:
-            raise FileNotFoundError(
-                "No taxonomy CSV found in ./ or data/. Pass --taxonomy "
-                "explicitly (needed for the bird/non-bird split)."
-            )
-        taxonomy_path = str(found)
-
-    print(f"Loading taxonomy from {taxonomy_path}")
-    bird_indices = _load_bird_indices(taxonomy_path, labels)
-    n_birds = len(bird_indices)
-    n_other = n_species - n_birds
-    print(f"  {n_birds} birds, {n_other} non-birds in vocabulary")
-
-    regions = list(GLOBAL_SAMPLING_REGIONS.items())
-    print(f"\nScoring {len(regions)} regions (grid_step={grid_step}°, weeks=1/13/26/39)")
-
-    # Per-region ranked lists: birds and non-birds
-    presence_threshold = 0.01  # species with mean prob > this are "present"
-    region_bird_ranks: List[List[int]] = []
-    region_other_ranks: List[List[int]] = []
-    region_present: List[set] = []  # species indices present per region
-
-    for i, (name, bbox) in enumerate(regions):
-        print(f"  [{i+1}/{len(regions)}] {name} ...", end=" ", flush=True)
-        scores = _compute_region_scores(model, dev, bbox, n_species, grid_step)
-
-        present = {idx for idx in range(n_species) if scores[idx] > presence_threshold}
-        region_present.append(present)
-
-        bird_scores = [(idx, scores[idx]) for idx in range(n_species) if idx in bird_indices]
-        other_scores = [(idx, scores[idx]) for idx in range(n_species) if idx not in bird_indices]
-
-        bird_scores.sort(key=lambda x: x[1], reverse=True)
-        other_scores.sort(key=lambda x: x[1], reverse=True)
-
-        region_bird_ranks.append([idx for idx, _ in bird_scores])
-        region_other_ranks.append([idx for idx, _ in other_scores])
-        print(f"done ({len(present)} species present, "
-              f"top bird: {labels[bird_scores[0][0]][2]}, "
-              f"top other: {labels[other_scores[0][0]][2]})")
-
-    # Round-robin selection: 4 birds + 1 other per region per round
-    selected: set = set()
-    result_order: List[int] = []
-    region_contrib = [0] * len(regions)  # count of species contributed per region
-    # Track position in each region's ranked list
-    bird_pos = [0] * len(regions)
-    other_pos = [0] * len(regions)
-
-    print(f"\nRound-robin selection (target: {num_species} species) ...")
-    while len(result_order) < num_species:
-        made_progress = False
-        for r in range(len(regions)):
-            # Pick up to 4 birds from this region
-            added_birds = 0
-            while added_birds < 4 and bird_pos[r] < len(region_bird_ranks[r]):
-                idx = region_bird_ranks[r][bird_pos[r]]
-                bird_pos[r] += 1
-                if idx not in selected:
-                    selected.add(idx)
-                    result_order.append(idx)
-                    region_contrib[r] += 1
-                    added_birds += 1
-                    made_progress = True
-                    if len(result_order) >= num_species:
-                        break
-            if len(result_order) >= num_species:
-                break
-
-            # Pick 1 non-bird from this region
-            while other_pos[r] < len(region_other_ranks[r]):
-                idx = region_other_ranks[r][other_pos[r]]
-                other_pos[r] += 1
-                if idx not in selected:
-                    selected.add(idx)
-                    result_order.append(idx)
-                    region_contrib[r] += 1
-                    made_progress = True
-                    break
-            if len(result_order) >= num_species:
-                break
-
-        if not made_progress:
-            print(f"  Exhausted all regions at {len(result_order)} species")
+def common_species(predictor: Predictor, is_bird: np.ndarray, n: int, step: float = 5.0) -> list[int]:
+    """Round-robin over regions: four birds and one other species per region and round."""
+    rankings = []
+    for name, bbox in REGIONS.items():
+        means = region_means(predictor, bbox, step)
+        order = np.argsort(-means)
+        rankings.append((order[is_bird[order]].tolist(), order[~is_bird[order]].tolist()))
+        print(f'{name}: {int((means > 0.01).sum())} species above 0.01', flush=True)
+    chosen: list[int] = []
+    seen: set[int] = set()
+    position = [[0, 0] for _ in rankings]
+    while len(chosen) < n:
+        progress = False
+        for r, lists in enumerate(rankings):
+            for kind, quota in ((0, 4), (1, 1)):
+                taken = 0
+                while taken < quota and position[r][kind] < len(lists[kind]) and len(chosen) < n:
+                    idx = lists[kind][position[r][kind]]
+                    position[r][kind] += 1
+                    if idx not in seen:
+                        seen.add(idx)
+                        chosen.append(idx)
+                        taken += 1
+                        progress = True
+        if not progress:
             break
-
-    total = len(result_order)
-    print(f"\n  Regional coverage (species selected / species present):")
-    for r, (name, _) in enumerate(regions):
-        present = region_present[r]
-        covered = len(present & selected)
-        n_present = len(present)
-        pct = 100.0 * covered / n_present if n_present else 0
-        print(f"    {name:20s}  {covered:5d} / {n_present:5d}  ({pct:5.1f}%)")
-
-    species_list = []
-    for idx in result_order:
-        code, sci, com = labels[idx]
-        species_list.append((code, sci, com))
-
-    print(f"  Selected {len(species_list)} species "
-          f"({sum(1 for idx in result_order if idx in bird_indices)} birds, "
-          f"{sum(1 for idx in result_order if idx not in bird_indices)} non-birds)")
-
-    if output_path:
-        with open(output_path, 'w', encoding='utf-8') as f:
-            for code, sci, com in species_list:
-                f.write(f"{code}\t{sci}\t{com}\n")
-        print(f"  Written to {output_path}")
-
-    return species_list
+    return chosen
 
 
-def main():
-    parser = argparse.ArgumentParser(description='Predict species with BirdNET Geomodel')
-    parser.add_argument('--checkpoint', type=str, default='checkpoints/checkpoint_best.pt', help='Path to model checkpoint')
+def main(argv=None) -> None:
+    p = argparse.ArgumentParser(description=__doc__.split('\n\n')[0])
+    p.add_argument('checkpoint', help='release checkpoint (package.py), student or V3 release')
+    p.add_argument('--lat', type=float)
+    p.add_argument('--lon', type=float)
+    p.add_argument('--week', type=int, help='1-48, or -1 for the whole year')
+    p.add_argument('--top-k', type=int, default=100, help='show at most this many species')
+    p.add_argument('--threshold', type=float, default=0.1, help='show species scoring at least this')
+    p.add_argument('--common-species', type=int, metavar='N', help='build a list of N common species instead')
+    p.add_argument('--taxonomy', help='taxonomy (CSV or JSON; bird / non-bird split for --common-species)')
+    p.add_argument('--grid-step', type=float, default=5.0)
+    p.add_argument('--output', help='file for the --common-species list')
+    args = p.parse_args(argv)
 
-    # Common species mode
-    parser.add_argument('--common_species', action='store_true', help='Generate a globally representative common species list')
-    parser.add_argument('--num_species', type=int, default=5000, help='Target number of species for --common_species')
-    parser.add_argument('--grid_step', type=float, default=5.0, help='Grid spacing in degrees for --common_species')
-    parser.add_argument('--taxonomy', type=str, default=None,
-                        help='Path to taxonomy CSV for bird/non-bird split '
-                             '(auto-detected from ./ or data/ if omitted)')
-    parser.add_argument('--output', type=str, default=None, help='Output file path for --common_species')
-
-    # Single-location mode
-    parser.add_argument('--lat', type=float, default=None, help='Latitude (-90 to 90)')
-    parser.add_argument('--lon', type=float, default=None, help='Longitude (-180 to 180)')
-    parser.add_argument('--week', type=int, default=None, help='Week number (1-48, or -1/0 for yearly)')
-    parser.add_argument('--top_k', type=int, default=100, help='Show top K species')
-    parser.add_argument('--threshold', type=float, default=0.15, help='Min probability threshold')
-    parser.add_argument('--device', type=str, default='auto', choices=['auto', 'cuda', 'cpu'])
-    args = parser.parse_args()
+    predictor = load(args.checkpoint)
+    labels = read_labels(args.checkpoint, predictor.species)
 
     if args.common_species:
-        generate_common_species(
-            checkpoint_path=args.checkpoint,
-            num_species=args.num_species,
-            grid_step=args.grid_step,
-            taxonomy_path=args.taxonomy,
-            device=args.device,
-            output_path=args.output,
-        )
+        if not args.taxonomy:
+            p.error('--common-species needs --taxonomy')
+        from pipeline.taxonomy import load_taxonomy
+        group = {r['birdnet_id']: r['taxon_group'] for r in load_taxonomy(args.taxonomy)}
+        is_bird = np.array([group.get(s) == 'Aves' for s in predictor.species])
+        chosen = common_species(predictor, is_bird, args.common_species, args.grid_step)
+        lines = ['\t'.join(labels[i]) for i in chosen]
+        if args.output:
+            pathlib.Path(args.output).write_text('\n'.join(lines) + '\n', encoding='utf-8')
+            print(f'{len(lines)} species -> {args.output}')
+        else:
+            print('\n'.join(lines))
         return
 
-    # Single-location mode: require lat, lon, week
     if args.lat is None or args.lon is None or args.week is None:
-        parser.error("--lat, --lon, and --week are required (unless using --common_species)")
-
+        p.error('--lat, --lon and --week are required')
     if not (args.week in (-1, 0) or 1 <= args.week <= 48):
-        parser.error("Week must be between 1 and 48, or -1/0 for yearly")
+        p.error('--week must be 1-48, or -1 for the whole year')
 
-    # Map CLI -1 → internal week 0 (yearly)
-    internal_week = 0 if args.week == -1 else args.week
-
-    results = predict(
-        checkpoint_path=args.checkpoint,
-        lat=args.lat, lon=args.lon, week=internal_week,
-        top_k=args.top_k, threshold=args.threshold,
-        device=args.device,
-    )
-
-    # Print results
-    week_label = "yearly" if args.week == -1 else f"week={args.week}"
-    print(f"\nPredictions for lat={args.lat}, lon={args.lon}, {week_label}")
-    print(f"{'Rank':<5} {'Code':<12} {'Probability':<12} {'Common Name':<30} {'Scientific Name'}")
-    print("-" * 100)
-    for i, (code, sci_name, com_name, prob) in enumerate(results, 1):
-        print(f"{i:<5} {code:<12} {prob:<12.4f} {com_name:<30} {sci_name}")
-
-    if not results:
-        print("  (no species above threshold)")
+    scores = species_list(predictor, args.lat, args.lon, args.week)
+    passing = [i for i in np.argsort(-scores) if scores[i] >= args.threshold]
+    order = passing[:args.top_k]
+    when = 'whole year' if args.week in (-1, 0) else f'week {args.week}'
+    shown = f', showing {len(order)}' if len(order) < len(passing) else ''
+    print(f'{len(passing)} species at {args.lat}, {args.lon}, {when} (score >= {args.threshold}){shown}\n')
+    print(f'{"rank":>4}  {"score":>6}  {"id":<10} {"common name":<32} scientific name')
+    for rank, i in enumerate(order, 1):
+        ident, scientific, common = labels[i]
+        print(f'{rank:>4}  {scores[i]:6.3f}  {ident:<10} {common:<32} {scientific}')
 
 
 if __name__ == '__main__':
