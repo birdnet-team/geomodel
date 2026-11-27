@@ -96,6 +96,7 @@ nav:
       - Training: model/training.md
       - Scores: model/scores.md
       - Export and Inference: model/export.md
+      - Upgrading from V3: model/upgrading.md
   - Evaluation:
       - Benchmark and GeoScore: evaluation/benchmark.md
       - Seasonality: evaluation/seasonality.md
