@@ -30,9 +30,9 @@ or switch to species richness (species scoring 0.1 or more) or weekly bar charts
 
 <div markdown="0">
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
-<link rel="stylesheet" href="demo.css">
+<link rel="stylesheet" href="demo.css?v=4.0-rc1">
 </div>
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 
-<script src="demo.js"></script>
+<script src="demo.js?v=4.0-rc1"></script>

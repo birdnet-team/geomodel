@@ -16,8 +16,11 @@
   "use strict";
 
   // ---- Configuration -------------------------------------------------------
-  var MODEL_URL = "geomodel_int8.onnx";
-  var LABELS_URL = "labels.txt";
+  // Change with every model or code update so browsers fetch the new files instead of cached ones
+  // (also in index.md for demo.js and demo.css).
+  var ASSET_VERSION = "4.0-rc1";
+  var MODEL_URL = "geomodel_int8.onnx?v=" + ASSET_VERSION;
+  var LABELS_URL = "labels.txt?v=" + ASSET_VERSION;
 
   // Grid resolution per zoom level (degrees per cell)
   var ZOOM_STEP = { 2: 3, 3: 2, 4: 1 };
@@ -244,7 +247,7 @@
   // ---- Model & labels ------------------------------------------------------
   async function initWorker() {
     setStatus("Loading ONNX model\u2026");
-    worker = new Worker(new URL("inference-worker.js", SCRIPT_BASE).href);
+    worker = new Worker(new URL("inference-worker.js?v=" + ASSET_VERSION, SCRIPT_BASE).href);
     worker.onerror = function (err) { console.error("Worker error:", err); };
 
     await new Promise(function (resolve, reject) {
