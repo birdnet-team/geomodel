@@ -54,9 +54,9 @@ $$
 
 Binary cross-entropy against a rate is the binomial log-likelihood per observer-day,
 so the sigmoid of the output learns the rate itself. The weight saturates: a row
-backed by one observer-day counts a little, a row with fifty almost fully, and a cell
-with fifty thousand checklists does not outweigh a thousand cells with fifty
-(`--c 40`: a row has half weight at 40 observer-days). Species of the other group
+backed by one observer-day counts little, a row with 40 observer-days half, one with
+400 nine tenths, and a cell with fifty thousand checklists does not outweigh a
+thousand cells with a few hundred (`--c 40`). Species of the other group
 are masked out.
 
 The value was chosen on the benchmark with two teacher seeds each: mean GeoScore
@@ -152,7 +152,8 @@ Options that the release recipe does not use stay available for comparisons:
 ## Reproducibility
 
 `--seed` fixes the batch order and initialization. Two teachers trained with
-different seeds differed by 0.9 GeoScore points on the benchmark (77.5 and 76.6;
+different seeds differed by 0.9 GeoScore points on the benchmark (77.5 and 76.6 at
+c = 5; 78.9 and 77.4 at c = 40;
 early stopping picked epoch 3 in one run and epoch 2 in the other), while two
 students distilled from the same teacher with different seeds differed by 0.02.
 Differences between teachers smaller than about a point are noise; compare

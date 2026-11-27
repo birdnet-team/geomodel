@@ -57,6 +57,8 @@ pip install -r requirements.txt
 
 Release files are on the [releases page](https://github.com/birdnet-team/geomodel/releases):
 a PyTorch checkpoint with its label file, and ONNX, TFLite and TorchScript exports.
+V4.0 is not released yet; until it is, the latest release is V3.0.4, and the same
+commands work with its checkpoint (`..._V3.0.4_Global_14K_FP32.pt` next to its label file).
 
 ```bash
 python predict.py BirdNET+_Geomodel_V4.0_Global_17K.pt --lat 50.83 --lon 12.92 --week 22
