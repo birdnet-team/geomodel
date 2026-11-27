@@ -46,7 +46,20 @@ in ``k_w`` and ``n_w``. ``--min-year`` and ``--max-year`` drop records outside a
 (held-out-year tests, ``evaluation.held_out_years``).
 
 ``SPECIES_CSV`` comes from stage 2 (``pipeline.taxonomy``): one row per model species
-with ``birdnet_id``, ``taxon_group`` and the GBIF species key ``gbif_key``.
+with ``birdnet_id``, ``scientific_name``, ``taxon_group`` and the GBIF species key ``gbif_key``.
+
+Which model species a record belongs to. GBIF's backbone and the model's taxonomy
+disagree for recent splits and genus changes: GBIF may lump two species the model
+keeps apart, or file a species under its former genus, so a species key can stand
+for the wrong species or none. When stage 1 kept the reported name, a record is
+assigned, in this order,
+
+1. by its reported name, if that is the scientific name or a former name (``aliases``)
+   of exactly one model species;
+2. by its species key, to the model species that the name-matched records with that
+   key belong to: in the same H3 resolution-2 region if any there, else overall (so
+   a lumped key is split by place: moorhens in Europe, gallinules in the Americas);
+3. by its species key through the stage-2 table, for keys no name-matched record explains.
 
 Outputs in ``OUT_DIR``:
 
@@ -98,6 +111,7 @@ def build(map_dir: str, species_csv: str, out_dir: str, *, half_life: float = 10
     con = duckdb.connect()
     con.execute(f"SET threads={threads}; SET memory_limit='{mem}'; SET temp_directory='{out}/_tmp'; "
                 f"SET max_temp_directory_size='{temp_limit}'; SET preserve_insertion_order=false")
+    has_names = 'name' in [r[0] for r in con.execute(f"DESCRIBE SELECT * FROM read_parquet('{files[0]}')").fetchall()]
 
     # One GBIF key can stand for several BirdNET species when GBIF lumps a split;
     # stage 2 only keeps keys that are unique, min() just makes the choice explicit.
@@ -106,6 +120,8 @@ def build(map_dir: str, species_csv: str, out_dir: str, *, half_life: float = 10
                any_value(taxon_group) AS grp
         FROM read_csv_auto('{species_csv}', all_varchar=true)
         WHERE gbif_key IS NOT NULL AND gbif_key <> '' GROUP BY 1""")
+    con.execute(f"""CREATE TABLE grp_of AS SELECT birdnet_id, any_value(taxon_group) AS grp
+        FROM read_csv_auto('{species_csv}', all_varchar=true) GROUP BY 1""")
 
     years = [f'year >= {min_year}' if min_year else '', f'year <= {max_year}' if max_year else '']
     where = ' AND '.join(y for y in years if y) or 'TRUE'
@@ -113,15 +129,52 @@ def build(map_dir: str, species_csv: str, out_dir: str, *, half_life: float = 10
     weight = f'pow(0.5, ({ref_year} - year) / {half_life})'
     start = time.time()
 
+    region = h3_parent_sql(2)
+    if has_names:
+        # names that belong to exactly one model species
+        cols = [r[0] for r in con.execute(f"DESCRIBE SELECT * FROM read_csv_auto('{species_csv}', all_varchar=true)")
+                .fetchall()]
+        alias = (f"""UNION SELECT DISTINCT trim(unnest(string_split(aliases, '|'))) AS name, birdnet_id
+                    FROM read_csv_auto('{species_csv}', all_varchar=true) WHERE aliases IS NOT NULL"""
+                 if 'aliases' in cols else '')
+        con.execute(f"""CREATE TABLE names AS
+            SELECT name, min(birdnet_id) AS birdnet_id
+            FROM (SELECT scientific_name AS name, birdnet_id FROM read_csv_auto('{species_csv}', all_varchar=true)
+                  {alias})
+            WHERE name IS NOT NULL AND name <> '' GROUP BY 1 HAVING count(DISTINCT birdnet_id) = 1""")
+        # what the name-matched records of each species key are, per region
+        con.execute(f"""CREATE TABLE key_region AS
+            SELECT species_key, {region} AS region, n.birdnet_id, count(*) AS c
+            FROM read_parquet({files!r}) m JOIN names n USING (name)
+            WHERE {where} AND species_key IS NOT NULL GROUP BY ALL""")
+        con.execute("""CREATE TABLE key_region_top AS
+            SELECT species_key, region, arg_max(birdnet_id, c) AS birdnet_id FROM key_region GROUP BY ALL""")
+        con.execute("""CREATE TABLE key_top AS
+            SELECT species_key, arg_max(birdnet_id, c) AS birdnet_id
+            FROM (SELECT species_key, birdnet_id, sum(c) AS c FROM key_region GROUP BY ALL) GROUP BY ALL""")
+        moved = con.execute("""SELECT count(*) FROM key_top k JOIN tax t USING (species_key)
+                                WHERE k.birdnet_id <> t.birdnet_id""").fetchone()[0]
+        print(f'name matching: {con.execute("SELECT count(*) FROM key_top").fetchone()[0]} species keys explained by '
+              f'reported names, {moved} of them assigned to another species than in the stage-2 table',
+              f'{time.time() - start:.0f} s', flush=True)
+        source = f"""(SELECT m.*, coalesce(n.birdnet_id, r.birdnet_id, k.birdnet_id, t0.birdnet_id) AS bid
+            FROM read_parquet({files!r}) m
+            LEFT JOIN names n USING (name)
+            LEFT JOIN key_region_top r ON r.species_key = m.species_key AND r.region = {region}
+            LEFT JOIN key_top k ON k.species_key = m.species_key
+            LEFT JOIN tax t0 ON t0.species_key = m.species_key)"""
+    else:
+        source = f"(SELECT m.*, t0.birdnet_id AS bid FROM read_parquet({files!r}) m LEFT JOIN tax t0 USING (species_key))"
+
     # Species observer-days. Birds keep unmodeled species for the effort count. With a
     # shared non-bird effort that leaves out eBird's checklists, non-bird records from
     # that dataset are left out of the counts too, so that k <= n.
     nonbird_source = f"AND m.dataset_key <> '{EBIRD_DATASET}'" if effort in ('naturalist', 'modeled') else ''
     con.execute(f"""CREATE TEMP TABLE od AS
-        SELECT DISTINCT {h3_parent_sql(H3_RES)} AS cell, week, m.species_key,
+        SELECT DISTINCT {h3_parent_sql(H3_RES)} AS cell, week, {'coalesce(m.species_key, -m.taxon_key)' if has_names else 'm.species_key'} AS species_key,
                CASE WHEN m.class_key = {AVES_CLASS_KEY} THEN 'Aves' ELSE {other} END AS grp,
-               t.birdnet_id, year, month, day, {observer} AS obs, m.dataset_key = '{EBIRD_DATASET}' AS eb
-        FROM read_parquet({files!r}) m LEFT JOIN tax t USING (species_key)
+               m.bid AS birdnet_id, year, month, day, {observer} AS obs, m.dataset_key = '{EBIRD_DATASET}' AS eb
+        FROM {source} m LEFT JOIN grp_of t ON t.birdnet_id = m.bid
         WHERE {where} AND (m.class_key = {AVES_CLASS_KEY}
                            OR (t.birdnet_id IS NOT NULL AND t.grp <> 'Aves' {nonbird_source}))""")
     print('observer-day rows', con.execute('SELECT count(*) FROM od').fetchone()[0],

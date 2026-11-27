@@ -27,7 +27,9 @@ have no training data and are left out of the model.
 GBIF lookups are cached in ``--cache``, so a re-run only asks for new names.
 
 Output columns: ``birdnet_id, scientific_name, common_name, taxon_group,
-ebird_code, gbif_key, how`` (how the key was found, or why there is none).
+ebird_code, gbif_key, how`` (how the key was found, or why there is none) and
+``aliases`` (former scientific names, ``|``-separated; stage 3 matches reported names
+against them too).
 Cartilaginous fish join the bony-fish group (``Actinopterygii``): there are few of
 them and they share observers.
 """
@@ -46,7 +48,7 @@ from collections import defaultdict
 GBIF_API = 'https://api.gbif.org/v1'
 USER_AGENT = 'birdnet-geomodel/4 (+https://github.com/birdnet-team/geomodel)'
 GROUP_ALIASES = {'Chondrichthyes': 'Actinopterygii'}
-FIELDS = ['birdnet_id', 'scientific_name', 'common_name', 'taxon_group', 'ebird_code', 'gbif_key', 'how']
+FIELDS = ['birdnet_id', 'scientific_name', 'common_name', 'taxon_group', 'ebird_code', 'gbif_key', 'how', 'aliases']
 
 
 def load_taxonomy(path: str | pathlib.Path, species_only: bool = True) -> list[dict]:
@@ -152,7 +154,8 @@ def resolve(rows: list[dict], gbif: GbifKeys) -> list[dict]:
             birdnet_id=row['birdnet_id'], scientific_name=row['scientific_name'],
             common_name=row.get('common_name') or '',
             taxon_group=GROUP_ALIASES.get(row['taxon_group'], row['taxon_group']),
-            ebird_code=row.get('ebird_code') or '', gbif_key=key or '', how=how))
+            ebird_code=row.get('ebird_code') or '', gbif_key=key or '', how=how,
+            aliases='|'.join(aliases(row))))
     return out
 
 

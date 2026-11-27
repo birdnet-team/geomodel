@@ -9,7 +9,8 @@ stdin so the archive never has to be unpacked on disk::
 Each record keeps only what the later stages need: where (H3 cell at resolution 6;
 coarser cells are its parents), when (year, month, day, model week), what (GBIF
 species and class key), and who (dataset, a hash of the observer, coordinate
-uncertainty, individual count). Keeping year, dataset and observer means that the
+uncertainty, individual count) plus the name the record was reported under. Keeping
+year, dataset and observer means that the
 grid, the effort definition, the year window and the recency weighting can all be
 changed later by re-running stage 3 (``pipeline.gbif_targets``), without another pass
 over the archive.
@@ -20,16 +21,21 @@ Output: ``OUT_DIR/part_NNNNNN.parquet`` with the columns
     year         int16    0 = unknown
     month, day   int8
     week         int8     model week 1-48 (four per month, see ``model_week``)
-    species_key  int32    GBIF species key
+    species_key  int32    GBIF species key, null when GBIF matched the record above species rank
+    taxon_key    int32    GBIF key of the name the record was matched to, 0 = unknown
+    name         string   reported name reduced to genus and epithet (dictionary-encoded), null = none
     class_key    int32    GBIF class key (212 = Aves), 0 = unknown
     dataset_key  string   GBIF dataset key (dictionary-encoded)
     observer     uint32   CRC32 of recordedByID or recordedBy, 0 = unknown
     unc_m        uint32   coordinateUncertaintyInMeters, 0 = unknown
     n_ind        int32    individualCount, 0 = unknown
 
-plus ``OUT_DIR/_stats/part_NNNNNN.json`` with row counts per chunk. Records without
-coordinates, species, month or day, and records flagged with geospatial issues are
-dropped. Chunk boundaries depend only on ``--chunk-mb``, so an interrupted run
+plus ``OUT_DIR/_stats/part_NNNNNN.json`` with row counts per chunk. The reported name
+matters where GBIF's backbone and the model's taxonomy disagree: after a split that
+GBIF lumps, or a genus change GBIF has not followed, the species key alone points to
+the wrong species or to none (stage 3 matches by name first). Records without
+coordinates, month or day, without both a species key and a name, and records
+flagged with geospatial issues are dropped. Chunk boundaries depend only on ``--chunk-mb``, so an interrupted run
 resumes where it stopped.
 """
 
@@ -52,6 +58,7 @@ COLUMNS = [
     'decimalLatitude', 'decimalLongitude', 'coordinateUncertaintyInMeters',
     'datasetKey', 'hasGeospatialIssues', 'classKey', 'speciesKey',
 ]
+OPTIONAL = ['verbatimScientificName', 'taxonKey']  # read when the download has them
 H3_RES = 6
 
 
@@ -90,7 +97,8 @@ def process_chunk(job: tuple[int, list[str], bytes, pathlib.Path]) -> dict:
         read_options=pcsv.ReadOptions(column_names=header, block_size=64 << 20),
         parse_options=pcsv.ParseOptions(delimiter='\t', quote_char=False, invalid_row_handler=skip_row),
         convert_options=pcsv.ConvertOptions(
-            include_columns=COLUMNS, column_types={k: pa.string() for k in COLUMNS},
+            include_columns=COLUMNS + [c for c in OPTIONAL if c in header],
+            column_types={k: pa.string() for k in COLUMNS + OPTIONAL},
             strings_can_be_null=True, null_values=['']))
     rows_in = table.num_rows
 
@@ -111,8 +119,17 @@ def process_chunk(job: tuple[int, list[str], bytes, pathlib.Path]) -> dict:
     except pa.ArrowInvalid as error:
         raise RuntimeError(f'chunk {index}: {error}') from error
 
+    if 'verbatimScientificName' in table.column_names:
+        # genus and epithet only: authors, years and subspecies dropped, genus capitalized, epithet lower case
+        words = pc.list_slice(pc.utf8_split_whitespace(pc.utf8_trim_whitespace(table['verbatimScientificName'])), 0, 2)
+        name = pc.binary_join(words, ' ')
+        name = pc.if_else(pc.equal(pc.list_value_length(words), 2), pc.utf8_capitalize(name), None)
+    else:
+        name = pa.nulls(table.num_rows, pa.string())
+    taxon = number('taxonKey', pa.int32()) if 'taxonKey' in table.column_names else pa.nulls(table.num_rows, pa.int32())
     keep = pc.and_(pc.and_(pc.is_valid(lat), pc.is_valid(lon)),
-                   pc.and_(pc.is_valid(species), pc.and_(pc.is_valid(month), pc.is_valid(day))))
+                   pc.and_(pc.or_(pc.is_valid(species), pc.is_valid(name)),
+                           pc.and_(pc.is_valid(month), pc.is_valid(day))))
     keep = pc.and_(keep, pc.and_(pc.and_(pc.greater_equal(month, 1), pc.less_equal(month, 12)),
                                  pc.and_(pc.greater_equal(day, 1), pc.less_equal(day, 31))))
     keep = pc.and_(keep, pc.and_(pc.less_equal(pc.abs(lat), 90), pc.less_equal(pc.abs(lon), 180)))
@@ -120,7 +137,8 @@ def process_chunk(job: tuple[int, list[str], bytes, pathlib.Path]) -> dict:
     keep = keep.fill_null(False)
 
     table = table.filter(keep)
-    lat, lon, year, month, day, species = (a.filter(keep) for a in (lat, lon, year, month, day, species))
+    lat, lon, year, month, day, species, name, taxon = (
+        a.filter(keep) for a in (lat, lon, year, month, day, species, name, taxon))
 
     lat_np, lon_np = lat.to_numpy(), lon.to_numpy()
     cells = np.fromiter((h3.latlng_to_cell(a, b, H3_RES) for a, b in zip(lat_np, lon_np)),
@@ -134,6 +152,9 @@ def process_chunk(job: tuple[int, list[str], bytes, pathlib.Path]) -> dict:
         'day': day,
         'week': model_week(month.to_numpy(), day.to_numpy()),
         'species_key': species,
+        'taxon_key': pc.fill_null(taxon, 0),
+        'name': pc.dictionary_encode(pa.chunked_array([name]).combine_chunks() if isinstance(name, pa.Array)
+                                     else name.combine_chunks()),
         'class_key': pc.fill_null(number('classKey', pa.int32()), 0),
         'dataset_key': pc.dictionary_encode(table['datasetKey'].combine_chunks()),
         'observer': observers,

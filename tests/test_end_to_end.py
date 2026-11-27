@@ -195,3 +195,48 @@ def test_modeled_effort_counts_only_days_with_modeled_species(work):
         o = lambda t: t[t.grp == 'Other'].sort_values(['cell', 'week']).reset_index(drop=True)
         pd.testing.assert_frame_equal(o(e), o(eff['naturalist']))
 
+
+
+def test_species_matched_by_reported_name(tmp_path):
+    """Lumped GBIF keys are split by place, and genus changes follow the reported name."""
+    import h3
+
+    rng = np.random.default_rng(1)
+    europe, kenya = (50.8, 12.9), (-1.3, 36.8)
+    rows = []
+    def add(obs, where, dataset, key, name, taxon):
+        lat, lng = where[0] + rng.normal(0, 0.2), where[1] + rng.normal(0, 0.2)
+        rows.append([f'o{obs}', '', '1', '2021', str(rng.integers(1, 13)), str(rng.integers(1, 29)), f'{lat:.4f}',
+                     f'{lng:.4f}', '', dataset, 'false', '212', key, name, taxon])
+    for i in range(40):
+        # GBIF lumps moorhen and gallinule under key 401; eBird reports them by name, iNat records carry the key only
+        add(i, europe, EBIRD, '401', 'Gallinula chloropus', '401')
+        add(100 + i, kenya, EBIRD, '401', 'Gallinula galeata Lichtenstein, 1818', '9401')
+        add(200 + i, europe, 'inat', '401', '', '401')
+        add(300 + i, kenya, 'inat', '401', '', '401')
+        # genus change: the stage-2 key 402 has no records; eBird records have no species key, iNat uses the old key 403
+        add(400 + i, europe, EBIRD, '', 'Thinornis dubius', '9499')
+        add(500 + i, europe, 'inat', '403', 'Charadrius dubius', '403')
+    cols = COLUMNS + ['verbatimScientificName', 'taxonKey']
+    (tmp_path / 'occ.txt').write_text('\t'.join(cols) + '\n' + '\n'.join('\t'.join(r) for r in rows) + '\n')
+    with open(tmp_path / 'occ.txt', 'rb') as f:
+        out = subprocess.run([sys.executable, '-m', 'pipeline.gbif_map', f'{tmp_path}/map', '--workers', '1'],
+                             stdin=f, cwd=ROOT, capture_output=True, text=True, timeout=600)
+    assert out.returncode == 0, out.stderr
+    pd.DataFrame([
+        dict(birdnet_id='BN40001', scientific_name='Gallinula chloropus', taxon_group='Aves', gbif_key='401'),
+        dict(birdnet_id='BN40002', scientific_name='Gallinula galeata', taxon_group='Aves', gbif_key=''),
+        dict(birdnet_id='BN40003', scientific_name='Thinornis dubius', taxon_group='Aves', gbif_key='402',
+             aliases='Charadrius dubius'),
+    ]).to_csv(tmp_path / 'species.csv', index=False)
+    run('-m', 'pipeline.gbif_targets', f'{tmp_path}/map', f'{tmp_path}/species.csv', f'{tmp_path}/t',
+        '--effort', 'naturalist', '--threads', '1', '--mem', '1GB')
+    sp = pd.read_parquet(f'{tmp_path}/t/species_res5.parquet')
+    lat = {c: h3.cell_to_latlng(h3.int_to_str(int(c)))[0] for c in sp.cell.unique()}
+    sp['north'] = sp.cell.map(lat) > 20
+    k = sp.groupby(['birdnet_id', 'north']).k.sum().to_dict()
+    assert k.get(('BN40001', True), 0) == 80 and ('BN40001', False) not in k  # eBird + iNat in Europe, none in Kenya
+    assert k.get(('BN40002', False), 0) == 80 and ('BN40002', True) not in k  # the gallinule gets its records back
+    assert k.get(('BN40003', True), 0) == 80  # by name without a key, and through the old key
+    e = pd.read_parquet(f'{tmp_path}/t/effort_res5.parquet')
+    assert (sp.merge(e, on=['cell', 'week', 'grp']).eval('k <= n')).all()
