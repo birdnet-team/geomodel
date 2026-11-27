@@ -1,8 +1,8 @@
 """Stage 3: count observer-days per species and per taxon group from the stage-1 records.
 
     python -m pipeline.gbif_targets data/gbif_map data/species.csv data/targets \\
-        [--effort group|naturalist|modeled] [--half-life 10] [--ref-year 2026]
-        [--min-year 0] [--max-year 0] [--threads 8] [--mem 24GB]
+        [--effort group|naturalist|modeled] [--bird-source all|ebird|prefer-ebird]
+        [--half-life 10] [--ref-year 2026] [--min-year 0] [--max-year 0] [--threads 8] [--mem 24GB]
 
 The unit of evidence is the **observer-day**: one observer, one date, one H3 cell at
 resolution 5 (~250 km²). However many records an observer makes of a species that
@@ -27,6 +27,14 @@ crab, a frog and a mammal on one scale and gives a species real zeros where
 naturalists are active but never record it. Small groups need this: when a group
 has only a few modeled species, the group's own effort is mostly the records of
 those species, and their rates are close to 1 wherever they are recorded at all.
+
+Bird rates depend on how people report. On complete checklists (eBird) every
+species seen is listed; on platforms for single observations people tend to report
+notable birds (a sparrowhawk, a flock of bramblings) and leave out common ones, so
+an observer-day with only a sparrowhawk makes it look common. ``--bird-source ebird``
+counts birds (species and effort) from eBird's checklists only. ``prefer-ebird`` does
+so in every cell and week with at least ``--min-ebird`` eBird observer-days and uses
+all datasets elsewhere, so places with few eBird checklists keep their data.
 
 ``--effort modeled`` narrows that effort to observer-days on which a species of the
 model (any group, birds included) was recorded, so a day spent photographing plants
@@ -69,8 +77,9 @@ def h3_parent_sql(res: int) -> str:
 
 
 def build(map_dir: str, species_csv: str, out_dir: str, *, half_life: float = 10.0, ref_year: int = 2026,
-          min_year: int = 0, max_year: int = 0, effort: str = 'group', threads: int = 8, mem: str = '24GB',
-          temp_limit: str = '300GB', limit_files: int = 0) -> None:
+          min_year: int = 0, max_year: int = 0, effort: str = 'group', bird_source: str = 'all',
+          min_ebird: int = 5, threads: int = 8, mem: str = '24GB', temp_limit: str = '300GB',
+          limit_files: int = 0) -> None:
     import duckdb
 
     out = pathlib.Path(out_dir)
@@ -82,6 +91,8 @@ def build(map_dir: str, species_csv: str, out_dir: str, *, half_life: float = 10
         files = files[:limit_files]
     if effort not in ('group', 'naturalist', 'modeled'):
         raise ValueError(f'unknown effort definition {effort!r}')
+    if bird_source not in ('all', 'ebird', 'prefer-ebird'):
+        raise ValueError(f'unknown bird source {bird_source!r}')
     other = "'Other'" if effort in ('naturalist', 'modeled') else 't.grp'
 
     con = duckdb.connect()
@@ -109,12 +120,24 @@ def build(map_dir: str, species_csv: str, out_dir: str, *, half_life: float = 10
     con.execute(f"""CREATE TEMP TABLE od AS
         SELECT DISTINCT {h3_parent_sql(H3_RES)} AS cell, week, m.species_key,
                CASE WHEN m.class_key = {AVES_CLASS_KEY} THEN 'Aves' ELSE {other} END AS grp,
-               t.birdnet_id, year, month, day, {observer} AS obs
+               t.birdnet_id, year, month, day, {observer} AS obs, m.dataset_key = '{EBIRD_DATASET}' AS eb
         FROM read_parquet({files!r}) m LEFT JOIN tax t USING (species_key)
         WHERE {where} AND (m.class_key = {AVES_CLASS_KEY}
                            OR (t.birdnet_id IS NOT NULL AND t.grp <> 'Aves' {nonbird_source}))""")
     print('observer-day rows', con.execute('SELECT count(*) FROM od').fetchone()[0],
           f'{time.time() - start:.0f} s', flush=True)
+
+    # Bird source: keep eBird's bird rows only, everywhere or where eBird has enough observer-days.
+    if bird_source == 'ebird':
+        con.execute("DELETE FROM od WHERE grp = 'Aves' AND NOT eb")
+    elif bird_source == 'prefer-ebird':
+        con.execute(f"""DELETE FROM od WHERE grp = 'Aves' AND NOT eb AND (cell, week) IN (
+            SELECT cell, week FROM (SELECT DISTINCT cell, week, year, month, day, obs FROM od
+                                    WHERE grp = 'Aves' AND eb)
+            GROUP BY cell, week HAVING count(*) >= {min_ebird})""")
+    if bird_source != 'all':
+        print(f'bird source {bird_source}: {con.execute("SELECT count(*) FROM od").fetchone()[0]} rows kept',
+              flush=True)
 
     con.execute(f"""COPY (
         SELECT cell, week, grp, birdnet_id, count(*) AS k, sum({weight})::FLOAT AS k_w,
@@ -167,13 +190,18 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument('--effort', default='group', choices=['group', 'naturalist', 'modeled'],
                         help='effort of non-bird species: their own group, all naturalist observer-days, '
                              'or naturalist observer-days with a modeled species')
+    parser.add_argument('--bird-source', default='all', choices=['all', 'ebird', 'prefer-ebird'],
+                        help="birds from every dataset, from eBird's checklists only, or from eBird where a "
+                             'cell and week has at least --min-ebird eBird observer-days')
+    parser.add_argument('--min-ebird', type=int, default=5, help='eBird observer-days for prefer-ebird')
     parser.add_argument('--limit-files', type=int, default=0, help='read only the first N parts (tests)')
     parser.add_argument('--threads', type=int, default=8)
     parser.add_argument('--mem', default='24GB', help='DuckDB memory limit')
     parser.add_argument('--temp-limit', default='300GB', help='DuckDB spill space limit')
     args = parser.parse_args(argv)
     build(args.map_dir, args.species_csv, args.out, half_life=args.half_life, ref_year=args.ref_year,
-          min_year=args.min_year, max_year=args.max_year, effort=args.effort, threads=args.threads,
+          min_year=args.min_year, max_year=args.max_year, effort=args.effort, bird_source=args.bird_source,
+          min_ebird=args.min_ebird, threads=args.threads,
           mem=args.mem, temp_limit=args.temp_limit, limit_files=args.limit_files)
 
 

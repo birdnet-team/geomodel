@@ -169,3 +169,29 @@ def test_modeled_effort_counts_only_days_with_modeled_species(work):
     a = lambda e: eff[e][eff[e].grp == 'Aves'].sort_values(['cell', 'week']).reset_index(drop=True)
     pd.testing.assert_frame_equal(a('naturalist'), a('modeled'))
 
+    # bird source: eBird's checklists only, or eBird where a cell and week has enough of them
+    birds = m[m.class_key == 212]
+    days = ['cell5', 'week', 'year', 'month', 'day', 'observer']
+    assert (birds.dataset_key == EBIRD).any() and (birds.dataset_key != EBIRD).any()
+    n_all = birds.drop_duplicates(days).groupby(['cell5', 'week']).size()
+    n_eb = birds[birds.dataset_key == EBIRD].drop_duplicates(days).groupby(['cell5', 'week']).size()
+    for source, min_eb in (('ebird', 0), ('prefer-ebird', 2)):
+        out = f'{d}/t_{source}'
+        run('-m', 'pipeline.gbif_targets', f'{d}/map2', f'{d}/species.csv', out, '--effort', 'naturalist',
+            '--bird-source', source, '--min-ebird', str(max(min_eb, 1)), '--threads', '1', '--mem', '1GB')
+        e = pd.read_parquet(f'{out}/effort_res5.parquet')
+        got = e[e.grp == 'Aves'].set_index(['cell', 'week']).n.astype(int)
+        got.index = got.index.set_names(['cell5', 'week'])
+        if source == 'ebird':
+            want = n_eb
+        else:  # eBird where it has at least min_eb observer-days, all datasets elsewhere
+            want = pd.Series({k: (n_eb[k] if n_eb.get(k, 0) >= min_eb else v) for k, v in n_all.items()})
+            assert (want != n_all).any() and (n_eb.reindex(n_all.index, fill_value=0) < min_eb).any()
+        assert got.sort_index().to_dict() == want.astype(int).sort_index().to_dict()
+        sp = pd.read_parquet(f'{out}/species_res5.parquet')
+        j = sp.merge(e, on=['cell', 'week', 'grp'], how='left')
+        assert j.n.notna().all() and (j.k <= j.n).all()
+        # non-bird rows do not depend on the bird source
+        o = lambda t: t[t.grp == 'Other'].sort_values(['cell', 'week']).reset_index(drop=True)
+        pd.testing.assert_frame_equal(o(e), o(eff['naturalist']))
+
