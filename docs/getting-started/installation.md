@@ -43,7 +43,7 @@ earthengine authenticate
 python -m pytest tests
 ```
 
-The tests use small synthetic data and take a few seconds.
+The tests use small synthetic data and take under a minute on a CPU.
 
 ## Documentation
 

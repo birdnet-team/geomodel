@@ -23,7 +23,7 @@ The ONNX files need nothing but `onnxruntime`:
 import numpy as np
 import onnxruntime as ort
 
-labels = [line.rstrip('\n').split('\t') for line in open('BirdNET+_Geomodel_V4.0_Global_17K_Labels.txt', encoding='utf-8')]
+labels = [line.rstrip('\n').split('\t') for line in open('BirdNET+_Geomodel_V4.0_Global_17K_labels.txt', encoding='utf-8')]
 session = ort.InferenceSession('BirdNET+_Geomodel_V4.0_Global_17K_INT8.onnx')
 scores = session.run(None, {'input': np.array([[50.83, 12.92, 22]], np.float32)})[0][0]
 ```

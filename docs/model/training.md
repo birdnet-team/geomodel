@@ -66,7 +66,9 @@ With `--benchmark`, the teacher is scored on the eBird benchmark at the end
 ([Benchmark](../evaluation/benchmark.md)); habitat features at the benchmark cells
 come from `--habitat-table`. In that mode the test blocks join the training data,
 because the benchmark is the test set. `--holdout-km 150` removes every training
-cell within 150 km of a benchmark cell for a strictly spatial test. Without
+cell within 150 km of a benchmark cell for a strictly spatial test; give the
+student the same `--holdout-km` (with `--benchmark`), so those records also stay out
+of its range envelope and its list of marine species. Without
 `--benchmark` the script reports, per group, log loss, top-10 capture, recall of
 regular species and rank correlation on the test blocks, next to a baseline that
 predicts each species' average rate everywhere.
@@ -133,6 +135,7 @@ Options that the release recipe does not use stay available for comparisons:
 | | `--habitat-head` | habitat-species head with a learned gate |
 | | `--qat-frac` | INT8-aware training (weights and inputs) at the end |
 | `pipeline.gbif_targets` | `--effort group` | non-bird effort from the species' own group |
+| | `--effort modeled` | non-bird effort from observer-days with a modeled species |
 | | `--half-life` | recency weighting (large value = none) |
 
 ## Reproducibility

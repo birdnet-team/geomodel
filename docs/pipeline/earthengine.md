@@ -2,8 +2,10 @@
 
 The teacher model uses the habitat of each place to carry what it learns from
 well-observed places to similar ones with few records. The habitat comes from
-[Google Earth Engine](https://earthengine.google.com) (an account and
-`earthengine authenticate` once per machine).
+[Google Earth Engine](https://earthengine.google.com): an account, a Google Cloud
+project registered for Earth Engine, and once per machine `earthengine authenticate`
+and `earthengine set_project PROJECT` (or `--project PROJECT` on the `habitat` and
+`population` commands).
 
 ```bash
 python -m pipeline.earthengine cells data/ee/cells_res5.txt

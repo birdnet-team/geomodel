@@ -166,6 +166,21 @@ class Predictor:
         return score
 
 
+def find_labels(checkpoint: str, n_outputs: int) -> str | None:
+    """The label file next to a checkpoint: ``<stem>_labels.txt`` (or ``_Labels.txt``), else
+    ``labels.txt``, and only if it has one row per output. None if there is none."""
+    from pathlib import Path
+
+    path = Path(checkpoint)
+    for name in (f'{path.stem}_labels.txt', f'{path.stem}_Labels.txt', 'labels.txt'):
+        candidate = path.with_name(name)
+        if candidate.is_file():
+            with candidate.open(encoding='utf-8') as f:
+                if sum(1 for _ in f) == n_outputs:
+                    return str(candidate)
+    return None
+
+
 def _load(path: str) -> dict:
     return torch.load(path, map_location='cpu', weights_only=False)
 

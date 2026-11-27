@@ -11,7 +11,8 @@ coarser cells are its parents), when (year, month, day, model week), what (GBIF
 species and class key), and who (dataset, a hash of the observer, coordinate
 uncertainty, individual count). Keeping year, dataset and observer means that the
 grid, the effort definition, the year window and the recency weighting can all be
-changed later by re-running stage 2, without another pass over the archive.
+changed later by re-running stage 3 (``pipeline.gbif_targets``), without another pass
+over the archive.
 
 Output: ``OUT_DIR/part_NNNNNN.parquet`` with the columns
 

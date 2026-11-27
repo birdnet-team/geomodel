@@ -38,6 +38,15 @@ def test_envelope_mask_radius_and_wrap(tiny_training_file):
     assert env[2, int(-33.9 + 90), int(151.2 + 180)]
 
 
+def test_envelope_leaves_out_held_out_cells(tiny_training_file):
+    data = TrainingData(str(tiny_training_file))
+    skip = data.cells_near(np.array([50.9]), np.array([13.0]), km=50)  # the two cells near Chemnitz
+    assert skip.tolist() == [True, True, False, False]
+    env = envelope_mask(data, radius=2, skip_cells=skip)
+    assert not env[0].any() and not env[1].any()  # recorded only near the benchmark point
+    assert env[2, int(-33.9 + 90), int(151.2 + 180)]
+
+
 def test_open_ocean_and_marine_species(tiny_training_file):
     assert open_ocean([0.0, 50.83], [-150.0, 12.92]).tolist() == [True, False]
     data = TrainingData(str(tiny_training_file))

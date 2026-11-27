@@ -16,7 +16,7 @@ python convert.py --checkpoint release/BirdNET+_Geomodel_V4.0_Global_17K.pt --ou
 | `tflite_fp16` | `geomodel_fp16.tflite` | TensorFlow Lite with float16 weights |
 | `tflite_int8` | `geomodel_int8.tflite` | dynamic-range INT8 (activations rounded to 8 bits as well) |
 | `tf` | `saved_model/` | TensorFlow SavedModel |
-| `torchscript` | `geomodel.pt` | traced TorchScript; returns logits unless `--torchscript_sigmoid` |
+| `torchscript` | `geomodel.pt` | traced TorchScript; returns logits unless `--torchscript-sigmoid` |
 
 The apps ship the INT8 ONNX file. Its weights take one byte each, but nothing else
 is rounded: ONNX Runtime's own dynamic quantization, and TFLite's dynamic-range INT8,
@@ -41,7 +41,8 @@ All formats take one float32 tensor of shape `(batch, 3)` with the columns latit
 scores in the order of the label file. The score curve, the floors for humans and
 domestic animals and the cap for domestic animals are part of the graph
 ([Scores](scores.md)), so an export returns exactly what `predict.py` prints. For a
-whole-year list, run all 48 weeks and take the maximum per species.
+whole-year list, run all 48 weeks and take the maximum per species; week 0 or -1
+given to a file is read as week 48 or 47.
 
 The label file has one line per output: BirdNET id, scientific name and common
 name, tab-separated.

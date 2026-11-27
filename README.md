@@ -137,7 +137,9 @@ predict.py       species list for a place and week
 evaluation/      benchmark, seasonality, Status & Trends, app filter study, range maps
 data/            small curated inputs (humans and domestic animals)
 docs/            documentation and the web demo
+scripts/         demo animation (demo_gif.py)
 tests/           unit tests
+paper/           LaTeX source of the V3 paper
 ```
 
 ## Web demo

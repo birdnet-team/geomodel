@@ -58,12 +58,15 @@ def ocean_cells(res: int = 3, buffer_km: float = 25.0) -> tuple[np.ndarray, np.n
     return centers[keep, 0].astype(np.float32), centers[keep, 1].astype(np.float32)
 
 
-def marine_species(data, buffer_km: float = 25.0, min_rows: int = 5) -> np.ndarray:
+def marine_species(data, buffer_km: float = 25.0, min_rows: int = 5, skip_cells: np.ndarray | None = None) -> np.ndarray:
     """Boolean per species: recorded in at least ``min_rows`` open-ocean training rows.
 
-    Cells with habitat data are land, whatever the land mask says.
+    Cells with habitat data are land, whatever the land mask says. ``skip_cells``
+    (boolean per cell) leaves cells out, e.g. those held out near benchmark cells.
     """
     sea_cell = open_ocean(data.cell_lat, data.cell_lng, buffer_km) & ~data.cell_has_habitat
+    if skip_cells is not None:
+        sea_cell = sea_cell & ~skip_cells
     sea_row = sea_cell[data.row_cell]
     entries = np.repeat(sea_row, np.diff(data.ptr))
     counts = np.bincount(data.col[entries], minlength=data.n_species)

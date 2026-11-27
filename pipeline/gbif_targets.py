@@ -99,13 +99,16 @@ def build(map_dir: str, species_csv: str, out_dir: str, *, half_life: float = 10
     weight = f'pow(0.5, ({ref_year} - year) / {half_life})'
     start = time.time()
 
-    # Species observer-days. Birds keep unmodeled species for the effort count.
+    # Species observer-days. Birds keep unmodeled species for the effort count. With a
+    # shared non-bird effort that leaves out eBird's checklists, non-bird records from
+    # that dataset are left out of the counts too, so that k <= n.
+    nonbird_source = f"AND m.dataset_key <> '{EBIRD_DATASET}'" if effort in ('naturalist', 'modeled') else ''
     con.execute(f"""CREATE TEMP TABLE od AS
         SELECT DISTINCT {h3_parent_sql(H3_RES)} AS cell, week, m.species_key,
                CASE WHEN m.class_key = {AVES_CLASS_KEY} THEN 'Aves' ELSE {other} END AS grp,
                t.birdnet_id, year, month, day, {observer} AS obs
         FROM read_parquet({files!r}) m LEFT JOIN tax t USING (species_key)
-        WHERE {where} AND (m.class_key = {AVES_CLASS_KEY} OR (t.birdnet_id IS NOT NULL AND t.grp <> 'Aves'))""")
+        WHERE {where} AND (m.class_key = {AVES_CLASS_KEY} OR (t.birdnet_id IS NOT NULL AND t.grp <> 'Aves' {nonbird_source}))""")
     print('observer-day rows', con.execute('SELECT count(*) FROM od').fetchone()[0],
           f'{time.time() - start:.0f} s', flush=True)
 

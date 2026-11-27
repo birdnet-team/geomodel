@@ -69,6 +69,14 @@ of naturalist activity in the cell that included the frog. This puts mammals,
 insects, frogs and fish on one scale, and a cell with plenty of naturalists but no
 record of a species gives it real zeros.
 
+`--effort modeled` narrows that to observer-days with a record of a species the
+model covers (any group, birds included), so a day spent photographing plants or
+fungi does not count against a frog. It is about a fifth smaller than the
+naturalist effort and lifts non-bird rates a little (on the benchmark places,
+insects at 0.1 or more go from 5.8 to 7.7 per place and week, amphibians from 2.3
+to 3.2). With either shared effort, non-bird records from eBird's dataset are left
+out of the counts as they are of the effort.
+
 The older alternative, `--effort group`, counts only observer-days with a modeled
 species of the same group (mammals for mammals, and so on). It inflates small
 groups: when a group has a handful of modeled species, its effort is mostly their
@@ -90,6 +98,6 @@ shift, and observer behavior changes; recent records describe today better.
 | `species_res5.parquet` | `cell, week, grp, birdnet_id, k, k_w, n_years, year_max` |
 | `effort_res5.parquet` | `cell, week, grp, n, n_w, n_species` |
 
-`grp` is `Aves` for birds and the taxon group (or `Other` with naturalist effort)
+`grp` is `Aves` for birds and the taxon group (or `Other` with naturalist or modeled effort)
 for the rest. The stage runs in [DuckDB](https://duckdb.org); `--mem`, `--threads`
 and `--temp-limit` bound memory, cores and spill space.

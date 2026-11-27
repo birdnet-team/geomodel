@@ -2,7 +2,7 @@
 
     python predict.py release/BirdNET+_Geomodel_V4.0_Global_17K.pt --lat 50.83 --lon 12.92 --week 22
     python predict.py ... --lat 50.83 --lon 12.92 --week -1          # whole year (maximum over weeks)
-    python predict.py ... --common-species 5000 --taxonomy TAXONOMY.csv --output common.txt
+    python predict.py ... --common-species 5000 --output common.txt
 
 Weeks run from 1 to 48, four per month (days 1-7, 8-14, 15-21, 22-end).
 
@@ -10,8 +10,9 @@ Scores are what the apps use: for V4 releases the encounter rate mapped through
 the score curve, with the floors and caps of humans and domestic animals applied.
 A score of 0.1 corresponds to a species reported on about 0.3 % of checklists.
 
-Labels are read from ``<checkpoint stem>_labels.txt`` or ``labels.txt`` next to the
-checkpoint (id, scientific name, common name, tab-separated).
+Labels are read from ``<checkpoint stem>_labels.txt`` (or ``_Labels.txt``) or
+``labels.txt`` next to the checkpoint (id, scientific name, common name,
+tab-separated), if the file has one row per output.
 
 ``--common-species N`` builds a list of N species that covers the world evenly:
 mean scores over a 5° grid and four weeks are computed for 20 regions, and the
@@ -23,10 +24,11 @@ from __future__ import annotations
 
 import argparse
 import pathlib
+import sys
 
 import numpy as np
 
-from model.io import Predictor, load
+from model.io import Predictor, find_labels, load
 
 # (lon_min, lat_min, lon_max, lat_max)
 REGIONS = {
@@ -45,13 +47,13 @@ REGIONS = {
 
 def read_labels(checkpoint: str, species: list[str]) -> list[tuple[str, str, str]]:
     """(id, scientific name, common name) per output; ids only if no label file is found."""
-    path = pathlib.Path(checkpoint)
-    for candidate in (path.with_name(f'{path.stem}_labels.txt'), path.with_name('labels.txt')):
-        if candidate.exists():
-            rows = [line.rstrip('\n').split('\t') for line in candidate.open(encoding='utf-8')]
-            if len(rows) == len(species):
-                return [(r[0], r[1] if len(r) > 1 else '', r[2] if len(r) > 2 else '') for r in rows]
-    return [(s, '', '') for s in species]
+    path = find_labels(checkpoint, len(species))
+    if path is None:
+        print(f'note: no label file with {len(species)} rows next to {checkpoint}; showing ids only',
+              file=sys.stderr)
+        return [(s, '', '') for s in species]
+    rows = [line.rstrip('\n').split('\t') for line in open(path, encoding='utf-8')]
+    return [(r[0], r[1] if len(r) > 1 else '', r[2] if len(r) > 2 else '') for r in rows]
 
 
 def species_list(predictor: Predictor, lat: float, lon: float, week: int) -> np.ndarray:
@@ -114,7 +116,8 @@ def main(argv=None) -> None:
     p.add_argument('--top-k', type=int, default=100, help='show at most this many species')
     p.add_argument('--threshold', type=float, default=0.1, help='show species scoring at least this')
     p.add_argument('--common-species', type=int, metavar='N', help='build a list of N common species instead')
-    p.add_argument('--taxonomy', help='taxonomy (CSV or JSON; bird / non-bird split for --common-species)')
+    p.add_argument('--taxonomy', help='taxonomy (CSV or JSON) for the bird / non-bird split of --common-species; '
+                                      'releases carry it')
     p.add_argument('--grid-step', type=float, default=5.0)
     p.add_argument('--output', help='file for the --common-species list')
     args = p.parse_args(argv)
@@ -123,11 +126,14 @@ def main(argv=None) -> None:
     labels = read_labels(args.checkpoint, predictor.species)
 
     if args.common_species:
-        if not args.taxonomy:
-            p.error('--common-species needs --taxonomy')
-        from pipeline.taxonomy import load_taxonomy
-        group = {r['birdnet_id']: r['taxon_group'] for r in load_taxonomy(args.taxonomy)}
-        is_bird = np.array([group.get(s) == 'Aves' for s in predictor.species])
+        if args.taxonomy:
+            from pipeline.taxonomy import load_taxonomy
+            group = {r['birdnet_id']: r['taxon_group'] for r in load_taxonomy(args.taxonomy)}
+            is_bird = np.array([group.get(s) == 'Aves' for s in predictor.species])
+        elif predictor.extra.get('taxon_groups') is not None:  # releases carry their groups
+            is_bird = np.array([g == 'Aves' for g in predictor.extra['taxon_groups']])
+        else:
+            p.error('--common-species needs --taxonomy for this checkpoint')
         chosen = common_species(predictor, is_bird, args.common_species, args.grid_step)
         lines = ['\t'.join(labels[i]) for i in chosen]
         if args.output:

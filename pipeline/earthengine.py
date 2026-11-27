@@ -122,10 +122,11 @@ def reduce_cells(cells: list[str], images) -> list[dict]:
     return rows
 
 
-def fetch_parts(cells: list[str], out_dir: str, images_fn, chunk: int, threads: int) -> None:
+def fetch_parts(cells: list[str], out_dir: str, images_fn, chunk: int, threads: int,
+                project: str | None = None) -> None:
     import ee
 
-    ee.Initialize()
+    ee.Initialize(project=project) if project else ee.Initialize()
     os.makedirs(out_dir, exist_ok=True)
     images = images_fn()
     todo = [(i, cells[i:i + chunk]) for i in range(0, len(cells), chunk)
@@ -183,6 +184,8 @@ def main(argv: list[str] | None = None) -> None:
         p.add_argument('out_dir')
         p.add_argument('--chunk', type=int, default=150 if name == 'habitat' else 300)
         p.add_argument('--threads', type=int, default=2)
+        p.add_argument('--project', help='Google Cloud project registered for Earth Engine '
+                                         '(default: the one set with `earthengine set_project`)')
     p = sub.add_parser('collect', help='join parts into a parquet table')
     p.add_argument('parts_dir')
     p.add_argument('out')
@@ -197,7 +200,7 @@ def main(argv: list[str] | None = None) -> None:
     else:
         cells = pathlib.Path(args.cells).read_text().split()
         images = habitat_images if args.command == 'habitat' else population_images
-        fetch_parts(cells, args.out_dir, images, args.chunk, args.threads)
+        fetch_parts(cells, args.out_dir, images, args.chunk, args.threads, args.project)
 
 
 if __name__ == '__main__':

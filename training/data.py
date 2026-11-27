@@ -53,12 +53,17 @@ class TrainingData:
     def n_features(self) -> int:
         return self.cell_features.shape[1]
 
-    def hold_out_near(self, lat: np.ndarray, lng: np.ndarray, km: float) -> int:
-        """Mark every cell within ``km`` of the given points as held out; returns the cell count."""
+    def cells_near(self, lat: np.ndarray, lng: np.ndarray, km: float) -> np.ndarray:
+        """Boolean per cell: within ``km`` of any of the given points."""
         near = np.zeros(len(self.cell_lat), bool)
         for i in range(0, len(self.cell_lat), 2000):
             d = haversine_km(self.cell_lat[i:i + 2000, None], self.cell_lng[i:i + 2000, None], lat[None], lng[None])
             near[i:i + 2000] = d.min(1) < km
+        return near
+
+    def hold_out_near(self, lat: np.ndarray, lng: np.ndarray, km: float) -> int:
+        """Mark every cell within ``km`` of the given points as held out; returns the cell count."""
+        near = self.cells_near(lat, lng, km)
         self.row_split[near[self.row_cell]] = HELD_OUT
         return int(near.sum())
 
