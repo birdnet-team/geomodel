@@ -1,19 +1,17 @@
-# BirdNET Geomodel — paper source
+# BirdNET Geomodel paper source
 
-> **This paper describes V3** (union labels, label propagation, the environment
-> auxiliary task). V4 changes the targets, the training and the outputs; its methods
-> are documented in `docs/` until a V4 report replaces this one. The scripts and
-> checkpoints referenced below are not part of the repository.
+> This paper describes V3 (union labels, label propagation, the environment
+> auxiliary task). V4 changes the targets, the training and the outputs. Its methods
+> are documented in `docs/` until a V4 report replaces this one.
 
-LaTeX source for the arXiv preprint. Converted from `report/report_draft.md`;
-**`main.tex` + `body.tex` are now the source of truth** — edits belong here, not
-in the markdown draft.
+LaTeX source for the arXiv preprint. It was converted from a Markdown draft;
+`main.tex` and `body.tex` are the source of truth, and edits belong here.
 
 ## Layout
 
 | File | Purpose |
 |:-----|:--------|
-| `main.tex` | Preamble, title block, abstract, bibliography — the file you compile |
+| `main.tex` | Preamble, title block, abstract, bibliography; the file you compile |
 | `body.tex` | Sections 1--9 (`\input` by `main.tex`) |
 | `appendix.tex` | Appendices A--E, input after the bibliography |
 | `references.bib` | 50 BibTeX entries, one per work cited |
@@ -23,26 +21,17 @@ in the markdown draft.
 
 Figures 1 and 2 are native TikZ, written directly in `body.tex`.
 
-All charts and the global maps are vector PDFs, regenerated without in-plot titles
-(the titles now live in the LaTeX captions) by:
+All charts and the global maps (filter-study panels, observation density map,
+richness and propagation maps) are vector PDFs without in-plot titles; the titles
+are in the LaTeX captions. Each figure exists as `.png` and `.pdf`, and the paper
+uses the `.pdf`. Data-heavy layers are rasterized inside the PDF, so file sizes stay
+small while text and axes remain vector. The scripts that generate the figures are
+not part of the repository.
 
-```bash
-python report/scripts/filter_study_geofilter.py     # filter-study panels
-python report/scripts/plot_observation_density.py   # observation density map
-python report/scripts/plot_label_propagation.py     # richness + propagation maps
-```
-
-Each writes a `.png` and a `.pdf`; the paper uses the `.pdf`. Data-heavy layers are
-rasterized inside the PDF so file sizes stay reasonable while text and axes remain
-vector.
-
-The eBird S&T overlap maps are the exception: they remain PNGs, cropped to remove
-their baked-in titles. They were **not** regenerated, because no checkpoint in
-`checkpoints/` matches the "scale 0.75, 12K species" production model whose metrics
-Table 3 reports, and regenerating with a different checkpoint would put the figures
-and the table out of sync. Regenerate them with
-`python report/scripts/compare_ebirdst.py --checkpoint <the right one>` once that is
-resolved, and drop `set_title` from `plot_overlap_map` at the same time.
+The eBird S&T overlap maps are the exception. They are PNGs, cropped to remove their
+baked-in titles. They were not regenerated, because that requires the "scale 0.75,
+12K species" production model whose metrics Table 3 reports; figures from a
+different model would not match the table.
 
 ## Building locally
 
@@ -61,32 +50,27 @@ make docx-from-pdf  # main-layout.docx -- looks like the PDF, not editable
 ```
 
 `make_docx.py` drives both. The default route converts the LaTeX sources with
-pandoc: it produces real Word headings, real tables, embedded figures (the two
-TikZ diagrams are compiled to images on the fly), Word equations, and citations
-resolved from `references.bib` into author-date form with a reference list. The
-page layout is Word's, not the arXiv style's.
+pandoc. The result has Word headings and tables, embedded figures (the two TikZ
+diagrams are compiled to images on the fly), Word equations, and citations resolved
+from `references.bib` into author-date form with a reference list. The page layout
+is Word's, not the arXiv style's.
 
-`--from-pdf` converts the rendered `main.pdf` through LibreOffice instead. It
-keeps the printed appearance, but the text lands in one frame per line --- no
-headings, no tables, no practical way to edit it. Use it only when someone needs
-to look at the paper in Word.
+`--from-pdf` converts the rendered `main.pdf` through LibreOffice instead. It keeps
+the printed appearance, but the text lands in one frame per line, with no headings,
+no tables and no practical way to edit it. Use it only to view the paper in Word.
 
-Requires pandoc; if it is not on PATH the script uses the copy in the project
-venv (`.venv/bin/pip install pypandoc_binary`). Neither output is authoritative
---- check tables and equations before sending either anywhere.
+The default route requires pandoc. If pandoc is not on PATH, the script uses the
+copy in the project venv (`.venv/bin/pip install pypandoc_binary`). Neither output
+is authoritative, so check tables and equations before sending either one.
 
-Requirements: a TeX Live installation with `latexmk`, `bibtex`, and the packages
-listed in the `main.tex` preamble (all standard; TeX Live 2019 or newer is
-sufficient — verified on 2019).
+Requirements: a TeX Live installation with `latexmk`, `bibtex` and the packages
+listed in the `main.tex` preamble (all standard). TeX Live 2019 or newer works; the
+build is tested on 2019.
 
 ### VS Code
 
-`.vscode/settings.json` in the repository root configures LaTeX Workshop with a
-`latexmk` recipe, build-on-save, SyncTeX, and a tab viewer. Open `paper/main.tex`
-and use *LaTeX Workshop: Build LaTeX project*, or just save the file.
-
-Note that `.vscode/` is git-ignored, so those settings stay local to this
-machine.
+With the LaTeX Workshop extension, open `paper/main.tex` and run *LaTeX Workshop:
+Build LaTeX project*. The repository does not include VS Code settings.
 
 ## arXiv submission
 
@@ -94,8 +78,8 @@ machine.
 make arxiv      # -> arxiv-submission.tar.gz
 ```
 
-arXiv compiles the sources itself but **does not run BibTeX**, so the bundle
-includes `main.bbl` and omits `references.bib`. Everything else it needs
+arXiv compiles the sources itself but does not run BibTeX, so the bundle includes
+`main.bbl` and omits `references.bib`. Everything else it needs
 (`main.tex`, `body.tex`, `arxiv.sty`, `figures/`) is in the tarball, and no
 package is loaded that is outside the standard TeX Live distribution.
 
@@ -114,5 +98,4 @@ pdfLaTeX + BibTeX setting; do not switch the project to biber.
   an empty section; uncomment the two lines once the content exists.
 - Figure panel titles inside the eBird S&T maps are small at grid size. The
   species names are repeated as LaTeX subcaptions, so the panels remain
-  identifiable; regenerating the maps without in-image titles would look cleaner
-  still.
+  identifiable. Maps without in-image titles would look cleaner.

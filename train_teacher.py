@@ -15,7 +15,7 @@ The best epoch by validation loss is kept; training stops two epochs after the
 last improvement.
 
 With ``--benchmark`` the teacher is scored on the eBird benchmark at the end, and
-the test blocks join the training data (the benchmark is the test set then).
+the test blocks join the training data (the benchmark then serves as the test set).
 ``--holdout-km`` removes every training cell within that distance of a benchmark
 cell, for a strictly spatial test. Without ``--benchmark``, a per-group report on
 the test blocks compares the model with each species' average rate.

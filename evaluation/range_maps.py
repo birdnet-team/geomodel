@@ -5,11 +5,11 @@
 
 Each frame shows the app score of the species on a regular latitude / longitude
 grid (80 N to 60 S) for one of the 48 weeks; land is gray, sea white, and only
-land is colored. The color steps are at 0.02, 0.05, 0.1, 0.25 and 0.5, so
-the default app line of 0.1 is one of the color edges.
-Each panel title gives the share of land at or above 0.1 that week. With
-``--compare``, the second checkpoint (typically the current V3 release) is drawn
-on the left and the checkpoint on the right, on the same scale.
+land is colored. The color steps are at 0.02, 0.05, 0.1, 0.25 and 0.5, so the
+default app line of 0.1 is one of the color edges. Each panel title gives the
+share of land at or above 0.1 that week. With ``--compare``, the second
+checkpoint (for example a V3 release) is drawn on the left and the checkpoint on
+the right, on the same scale.
 
 Scores come from ``model.io``: the score curve, floors and caps of release
 checkpoints, the default curve for students, the plain output of V3 releases.

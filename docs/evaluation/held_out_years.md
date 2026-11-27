@@ -18,8 +18,8 @@ python -m evaluation.held_out_years data/test_y23.npz data/train_y22.npz \
 Train the earlier-years teacher exactly like the all-years one ([Training](../model/training.md)):
 with `--benchmark`, the test blocks of the training file join the training data, so
 both teachers have seen the same places and differ only in the years. The test rows
-are cell-weeks of the later years. Per taxon group, each model is
-compared with two baselines built from the earlier years:
+are cell-weeks of the later years. Per taxon group, each model is compared with two
+baselines built from the earlier years:
 
 | name | prediction |
 |---|---|
@@ -30,7 +30,8 @@ and scored with log loss (summed over species), top-10 capture, recall of regula
 species (rate at least 5 %, predicted at least 2 %) and rank correlation. `--min-n` and
 `--max-n` pick rows by effort: the lookup of past rates is hard to beat where many
 people record, so the interesting rows are the thin ones. A model trained on all
-years (`all` above) has seen the test years and is an upper reference.
+years (`all` above) has seen the test years and is an upper reference. The
+evaluation holds the two training files in memory (about 4 GB for V4-sized files).
 
 ## Results for V4
 
@@ -49,9 +50,12 @@ teacher; in thin and sparse rows it is two to three times that spread, so the mo
 does age a little where data are scarce. Non-birds lose more (thin rows: top-10 0.42
 against 0.46-0.47), but stay far ahead of past rates (0.16). On the eBird benchmark
 the teacher trained up to 2022 scores 76.7, between the two seeds of the full one
-(76.6 and 77.5). These results are from teachers trained with c = 5, the default
-before c = 40 ([Training](../model/training.md#data-and-loss)). The evaluation holds the two training files in memory (about 4 GB
-for V4-sized files). Where few people record, the model keeps far more of the
-regular species than a lookup of what was recorded there before. Where many people
-record, the lookup ranks the most common species slightly better: the model smooths
-what the data in such places already show.
+(76.6 and 77.5).
+
+Where few people record, the model keeps far more of the regular species than a
+lookup of what was recorded there before. Where many people record, the lookup
+ranks the most common species slightly better: the model smooths what the data in
+such places already show.
+
+These results are from teachers trained with c = 5; the default is c = 40
+([Training](../model/training.md#data-and-loss)).

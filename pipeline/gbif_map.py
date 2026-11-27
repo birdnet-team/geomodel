@@ -187,7 +187,7 @@ def main(argv: list[str] | None = None) -> None:
             yield job
 
     total = dict(rows_in=0, rows_out=0, malformed=0, bytes=0, chunks=0)
-    # No maxtasksperchild: recycling workers deadlocked the pool on long runs.
+    # No maxtasksperchild: recycling workers can deadlock the pool on long runs.
     with mp.Pool(args.workers) as pool:
         for stats in pool.imap_unordered(process_chunk, jobs()):
             backlog.release()

@@ -59,8 +59,9 @@ values from 0 to 1; the tables here give them as percentages):
 | reach | `recall_regular` in thin cell-weeks | common species pass where data are scarce |
 | season | median seasonal correlation | the score follows migration |
 
-The version-3 GeoScore was computed on training-style labels that the model itself
-had helped shape; it is gone. Reference values on the 2,325-cell benchmark:
+GeoScore v2 uses only eBird frequencies. The version-3 GeoScore was computed on
+training-style labels that the model itself had helped shape and is not used.
+Reference values on the 2,325-cell benchmark:
 
 | model | clean | top | reach | season | GeoScore v2 |
 |---|---|---|---|---|---|

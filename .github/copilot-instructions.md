@@ -17,8 +17,8 @@
 
 ## What the project is
 
-Predicts, for (latitude, longitude, week 1-48), a score per species of the BirdNET
-taxonomy. BirdNET apps use it to filter audio detections. The score follows the
+The model predicts, for (latitude, longitude, week 1-48), a score per species of the
+BirdNET taxonomy. BirdNET apps use it to filter audio detections. The score follows the
 encounter rate (share of checklists or observer-days that record the species),
 mapped through a score curve (rate 0.003 -> score 0.1). Humans always pass,
 domestic animals stay mid-range. Every output is a BirdNET id.
@@ -43,5 +43,5 @@ domestic animals stay mid-range. Every output is a BirdNET id.
 
 ## Keep
 
-Training options that the release recipe does not use stay switchable for ablations
+Training options the release model does not use stay switchable for ablations
 (loss variants, env auxiliary head, habitat head, effort definitions, envelope, ocean rule).

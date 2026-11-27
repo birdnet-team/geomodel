@@ -17,8 +17,7 @@ Metrics, per test row and averaged: log loss summed over species, top-10 capture
 at least one recorded species; ``train_teacher.py`` counts empty rows as 0), recall of regular
 species (rate >= 5 % predicted >= 2 %) and rank correlation (rows with enough species to rank).
 Rows are processed in chunks; memory is dominated by the two training files (about 4 GB for
-V4-sized files). Only species present in
-every model and in both files are scored.
+V4-sized files). Only species present in every model and in both files are scored.
 """
 
 from __future__ import annotations

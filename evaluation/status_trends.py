@@ -7,7 +7,8 @@ Status & Trends (S&T) models abundance from eBird checklists with its own
 covariates and gives one map per week. It is an independent reference for both
 the range and its timing, and unlike the checklist benchmark it covers areas with
 few observers. It exists for a limited set of species; the cache built here holds
-whatever species are in ``ST_DIR`` (11 migrants and residents so far).
+whatever species are in ``ST_DIR`` (the reference values in the documentation use
+11 migrants and residents).
 
 ``cache`` reads the median-abundance downloads ``{code}_abundance_median_2023.zip``
 (52 weekly GeoTIFFs at 3 km in an equal-area projection) and averages them onto a

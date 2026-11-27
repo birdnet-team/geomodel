@@ -1,8 +1,8 @@
 # Training
 
-Training has two steps. A **teacher** learns encounter rates from the records,
-using coordinates, week and habitat. A **student**, the released model, learns the
-teacher's predictions from coordinates and week alone.
+Training has two steps. A teacher learns encounter rates from the records, using
+coordinates, week and habitat. A student, the released model, learns the teacher's
+predictions from coordinates and week alone.
 
 ```bash
 python train_teacher.py data/train.npz runs/teacher --tag teacher --habitat --seed 1 \
@@ -17,10 +17,10 @@ python package.py runs/student/student.pt taxonomy.csv data/ubiquitous.csv relea
     --name BirdNET+_Geomodel_V4.0_Global_17K --nonbird-f0 0.001
 ```
 
-The training file is built with naturalist effort (`pipeline.gbif_targets --effort
-naturalist`, [GBIF records](../pipeline/gbif.md#effort)); `--ocean` and the separate
-non-bird anchor (`--nonbird-f0 0.001`, [Scores](scores.md#a-separate-anchor-for-non-birds))
-are part of the release recipe.
+The release model uses a training file built with naturalist effort
+(`pipeline.gbif_targets --effort naturalist`, [GBIF records](../pipeline/gbif.md#effort)),
+the ocean rule (`--ocean`) and the separate non-bird anchor (`--nonbird-f0 0.001`,
+[Scores](scores.md#a-separate-anchor-for-non-birds)).
 
 On one RTX 4090 the teacher takes about 25 minutes and the student about 35; the
 benchmark evaluation at the end of each adds about ten minutes on the CPU. The
@@ -59,10 +59,11 @@ backed by one observer-day counts little, a row with 40 observer-days half, one 
 thousand cells with a few hundred (`--c 40`). Species of the other group
 are masked out.
 
-The value was chosen on the benchmark with two teacher seeds each: mean GeoScore
-77.0 at c = 5, 77.2 at c = 15, 78.2 at c = 40 and 77.8 at c = 100 (one seed).
+c = 40 scored best on the benchmark. Mean teacher GeoScore over two seeds is 77.0
+at c = 5, 77.2 at c = 15 and 78.2 at c = 40; one seed at c = 100 gives 77.8.
 Students gain less: 76.0 from c = 5 teachers, 76.7 from c = 15 and from c = 40.
-Off-season leak and false rejections in the filter study did not change.
+Off-season leak and false rejections in the
+[App filter study](../evaluation/filter_study.md) did not change with c.
 
 ### Optimization
 
@@ -75,8 +76,8 @@ starts at -5 (rate 0.007), since most species are absent from most rows.
 
 With `--benchmark`, the teacher is scored on the eBird benchmark at the end
 ([Benchmark](../evaluation/benchmark.md)); habitat features at the benchmark cells
-come from `--habitat-table`. In that mode the test blocks join the training data,
-because the benchmark is the test set. `--holdout-km 150` removes every training
+come from `--habitat-table`. In that mode the test blocks join the training data
+([Splits](../pipeline/dataset.md#splits)). `--holdout-km 150` removes every training
 cell within 150 km of a benchmark cell for a strictly spatial test; give the
 student the same `--holdout-km` (with `--benchmark`), so those records also stay out
 of its range envelope and its list of marine species. Without
@@ -128,7 +129,7 @@ that way next to the float32 result. The difference in GeoScore is a few tenths.
 
 ## Ablation switches
 
-Options that the release recipe does not use stay available for comparisons:
+Options the release model does not use are kept for comparisons:
 
 | script | option | what it does |
 |---|---|---|
@@ -136,7 +137,7 @@ Options that the release recipe does not use stay available for comparisons:
 | | `--pos-weight` | scales the loss of entries with a positive rate |
 | | `--gamma-pos`, `--gamma-neg` | focal down-weighting of easy entries (asymmetric loss) |
 | | `--rank-weight` | adds a list-wise term that rewards putting common species on top |
-| | `--c` | effort at which a row has half weight (release: 40; 5 and 15 were compared) |
+| | `--c` | effort at which a row has half weight (release: 40; see [Data and loss](#data-and-loss)) |
 | | `--no-coords` | habitat and week only |
 | | without `--habitat` | coordinates and week only (evaluated directly; `package.py` takes students) |
 | | `--week-harmonics`, `--coord-harmonics`, `--scale` | network shape |
@@ -151,10 +152,9 @@ Options that the release recipe does not use stay available for comparisons:
 
 ## Reproducibility
 
-`--seed` fixes the batch order and initialization. Two teachers trained with
-different seeds differed by 0.9 GeoScore points on the benchmark (77.5 and 76.6 at
-c = 5; 78.9 and 77.4 at c = 40;
-early stopping picked epoch 3 in one run and epoch 2 in the other), while two
-students distilled from the same teacher with different seeds differed by 0.02.
-Differences between teachers smaller than about a point are noise; compare
-recipes on more than one teacher seed.
+`--seed` fixes the batch order and initialization. Pairs of teachers that differ
+only in the seed scored 77.5 and 76.6 on the benchmark at c = 5 (early stopping
+picked epoch 3 in one run and epoch 2 in the other) and 78.9 and 77.4 at c = 40.
+Two students distilled from the same teacher with different seeds differed by 0.02.
+Differences between teachers of up to about 1.5 points can be seed noise, so
+compare recipes on more than one teacher seed.

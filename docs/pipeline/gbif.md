@@ -32,10 +32,10 @@ flags with geospatial issues. Per block, `_stats/part_*.json` counts what came i
 what was kept. Block boundaries depend only on the block size, so a run that stops
 resumes at the next missing block.
 
-The point of this stage is to keep what later decisions need (year, dataset,
-observer) and nothing else. The grid, the definition of effort, the year window and
-the recency weights are all decided in stage 3, which reads these parts instead of
-the multi-terabyte archive.
+This stage keeps the fields that later choices depend on (year, dataset, observer)
+and nothing else. The grid, the definition of effort, the year window and the
+recency weights are all set in stage 3, which reads these parts instead of the
+multi-terabyte archive.
 
 ## Stage 3: encounter rates
 
@@ -56,7 +56,7 @@ species, cell and week:
 
 ### Effort
 
-What counts as effort decides what a zero means.
+What counts as effort determines what a zero means.
 
 **Birds** use every bird observer-day, including species the model does not cover.
 Most bird records come from complete checklists (eBird), on which any species seen
@@ -77,18 +77,18 @@ insects at 0.1 or more go from 5.8 to 7.7 per place and week, amphibians from 2.
 to 3.2). With either shared effort, non-bird records from eBird's dataset are left
 out of the counts as they are of the effort.
 
-The older alternative, `--effort group`, counts only observer-days with a modeled
-species of the same group (mammals for mammals, and so on). It inflates small
-groups: when a group has a handful of modeled species, its effort is mostly their
-own records, and their rates are close to 1 wherever they are recorded at all. A
-crab recorded on most crustacean observer-days then looks as common as the most
-common bird. It is kept for comparison.
+`--effort group` counts only observer-days with a modeled species of the same group
+(mammals for mammals, and so on). It inflates small groups: when a group has a
+handful of modeled species, its effort is mostly their own records, and their rates
+are close to 1 wherever they are recorded at all. A crab recorded on most crustacean
+observer-days then looks as common as the most common bird. This option is kept for
+comparison.
 
 ### Recency
 
 Each observer-day counts `0.5 ** ((ref_year - year) / half_life)` in the weighted
 columns `k_w` and `n_w` (half-life 10 years, reference year 2026 by default). Ranges
-shift, and observer behavior changes; recent records describe today better.
+shift and observer behavior changes, so recent records describe the present better.
 `--max-year` drops later records and `--min-year` earlier ones, for testing on years
 the model has not seen ([Held-out years](../evaluation/held_out_years.md)).
 

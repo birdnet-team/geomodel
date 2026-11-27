@@ -1,6 +1,6 @@
 # Installation
 
-Python 3.10 or newer.
+Requires Python 3.10 or newer.
 
 ```bash
 git clone https://github.com/birdnet-team/geomodel.git
@@ -9,9 +9,8 @@ python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-`requirements.txt` covers everything. If you only want to run a released model,
-`numpy`, `torch` and (for the exports) `onnxruntime` are enough. The other packages
-are needed for:
+`requirements.txt` installs everything. To run a released model, `numpy`, `torch`
+and (for the exports) `onnxruntime` are enough. The other packages are needed for:
 
 | packages | for |
 |---|---|
@@ -23,8 +22,8 @@ are needed for:
 | `tensorflow`, `onnx2tf`, `tf-keras`, `onnx-graphsurgeon`, `sng4onnx`, `psutil` | TFLite and SavedModel exports |
 | `pytest` | tests |
 
-Training needs a GPU with about 16 GB of memory for the release configuration; it
-runs on the CPU too, slowly. The data pipeline needs disk space for the GBIF
+Training the release configuration needs a GPU with about 16 GB of memory. It also
+runs on the CPU, slowly. The data pipeline needs disk space for the GBIF
 download (several hundred GB to a few TB, depending on the download) and the
 per-record parquet files (about a tenth of that).
 

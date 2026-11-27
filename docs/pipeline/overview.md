@@ -20,7 +20,7 @@ graph LR
 
 | stage | module | input | output | time |
 |---|---|---|---|---|
-| 1 | [`gbif_map`](gbif.md#stage-1-records) | GBIF occurrence download (DwC-A) | `part_*.parquet`, one row per record | one pass over the archive (a day for the full GBIF backbone on 8 cores) |
+| 1 | [`gbif_map`](gbif.md#stage-1-records) | GBIF occurrence download (DwC-A) | `part_*.parquet`, one row per record | one pass over the archive (a day for the full GBIF archive on 8 cores) |
 | 2 | [`taxonomy`](taxonomy.md) | BirdNET taxonomy (CSV or JSON) | `species.csv` with GBIF keys | about an hour of GBIF API lookups, cached |
 | 3 | [`gbif_targets`](gbif.md#stage-3-encounter-rates) | stage 1 + 2 | `species_res5.parquet`, `effort_res5.parquet` | a few hours (DuckDB) |
 | 4 | [`earthengine`](earthengine.md) | Earth Engine account | `habitat_res5.parquet`, `population_res5.parquet` | about an hour each |
@@ -53,15 +53,15 @@ resolution.
 ## Weeks
 
 The year has 48 weeks, four per month: days 1-7, 8-14, 15-21 and 22 to the end of
-the month. eBird uses the same convention, which makes the benchmark line up with
-the model without any resampling.
+the month. eBird uses the same convention, so the benchmark lines up with the model
+without resampling.
 
 ## What the targets mean
 
-The training target is an **encounter rate**: of all the observer-days in a cell
-and week, the share on which the species was recorded. It is what a birder would
-call "how often do you see it there", and it is what the app score is built from
-(see [Scores](../model/scores.md)). It is not abundance, and it is not presence:
-a species recorded once in ten years in a busy cell has a tiny rate, which is the
-point. The original V3 model trained on "was it ever recorded here" and therefore
-scored a single vagrant record like a common breeder.
+The training target is an encounter rate: of all the
+[observer-days](gbif.md#observer-days) in a cell and week, the share on which the
+species was recorded. A birder would call it "how often do you see it there", and
+the app score is built from it (see [Scores](../model/scores.md)). It is neither
+abundance nor presence. A species recorded once in ten years in a busy cell gets a
+tiny rate. V3 trained on "was it ever recorded here" and so scored a single vagrant
+record like a common breeder.

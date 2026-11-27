@@ -9,9 +9,9 @@ zeros: a species missing from many checklists is absent or rare. The geomodel is
 scored against it (``evaluation.benchmark``).
 
 eBird data cannot be redistributed, so the repository ships no frequencies. To
-build the benchmark you need your own eBird API access and permission to use the
-frequency data. Store what you fetch as gzipped JSON lines
-(``RESPONSES_DIR/*.jsonl.gz``), one location per line::
+build the benchmark you need your own access to the frequency data and permission
+to use it. The input is gzipped JSON lines (``RESPONSES_DIR/*.jsonl.gz``), one
+location per line::
 
     {"lat": 50.83, "lng": 12.92,
      "resp": {"numCompleteChecklists": [48 integers, checklists per week],

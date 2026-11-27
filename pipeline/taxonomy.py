@@ -6,9 +6,9 @@ The BirdNET taxonomy has one row per class with ``birdnet_id``,
 ``scientific_name``, ``taxon_group``, ``gbif_id``, ``ebird_code``,
 ``scientific_name_aliases`` and more. It is published as a CSV file in the BirdNET
 model converter repository (https://github.com/birdnet-team/model-converter); the
-JSON export of the same taxonomy (``{"rows": [...]}``) works as well. Every model output is a
-taxonomy species with a ``birdnet_id``; sound classes (record type other than
-``species``) have no geography and are skipped.
+JSON export of the same taxonomy (``{"rows": [...]}``) works as well. Every model
+output is a taxonomy species with a ``birdnet_id``; sound classes (record type
+other than ``species``) have no geography and are skipped.
 
 GBIF files every occurrence under the *accepted* species key, so each species is
 resolved to that key:

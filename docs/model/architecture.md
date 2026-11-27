@@ -4,8 +4,8 @@ The released model takes three numbers, latitude, longitude and week, and return
 one value per species. Everything else (encoding, habitat, the score curve) happens
 inside the network or during training. Two networks share the same building blocks:
 
-- the **teacher** sees coordinates, week and the habitat of the place;
-- the **student** sees coordinates and week only. It is the released model.
+- the teacher sees coordinates, week and the habitat of the place;
+- the student sees coordinates and week only. It is the released model.
 
 ```mermaid
 graph TD
@@ -56,7 +56,7 @@ Linear(bottleneck → species). With seventeen thousand species the output layer
 by far the largest part of the network, so the bottleneck width is the main knob for
 the file size.
 
-The network's sigmoid output is an **encounter rate**. Release checkpoints turn it
+The network's sigmoid output is an encounter rate. Release checkpoints turn it
 into the app score inside the exported graph (see [Scores](scores.md)).
 
 ## Teacher: habitat input
@@ -64,19 +64,19 @@ into the app score inside the exported graph (see [Scores](scores.md)).
 The teacher adds a three-layer MLP that maps the habitat features of the place
 (climate, land cover, elevation, water; [Habitat](../pipeline/earthengine.md)) to a
 vector of the embedding width, which is added to the encoder output before the
-species head. Habitat lets the teacher predict a species in a well-matching but
-little-visited valley because it has seen it in similar valleys elsewhere.
+species head. [Training](training.md#why-two-models) explains what habitat adds
+and how it reaches the student.
 
 ## Optional heads (ablations)
 
 `model/model.py` keeps two heads from version 3 for comparisons:
 
-- an **environment head** that predicts the habitat features from the embedding,
-  used as an auxiliary task (`distill.py --env-aux`);
-- a **habitat-species head** with a learned gate between a direct and a
-  habitat-based species prediction (`distill.py --habitat-head`).
+- an environment head that predicts the habitat features from the embedding, used
+  as an auxiliary task (`distill.py --env-aux`);
+- a habitat-species head with a learned gate between a direct and a habitat-based
+  species prediction (`distill.py --habitat-head`).
 
-The release recipe uses neither: habitat reaches the student through the teacher.
+The release model uses neither: habitat reaches the student through the teacher.
 
 ## Size
 
