@@ -191,6 +191,10 @@ def main(argv=None) -> None:
     if teacher.kind != 'teacher' or teacher.species != data.species:
         raise SystemExit('the teacher must be a habitat teacher trained on this training file')
     net, env = teacher.model.to(device), teacher.env.to(device)
+    teacher_holdout = float((teacher.extra.get('args') or {}).get('holdout_km') or 0.0)
+    if teacher_holdout != args.holdout_km:
+        raise SystemExit(f'--holdout-km {args.holdout_km:g} differs from the teacher\'s ({teacher_holdout:g} km); '
+                         'a spatial test needs both held out the same way')
     skip = None
     if args.holdout_km > 0:
         # As in train_teacher.py: records near benchmark cells shape neither the envelope

@@ -84,6 +84,42 @@ def test_student_with_env_head_loads(tmp_path):
     assert p.rates([10.0], [20.0], [5]).shape == (1, 3)
 
 
+def test_held_out_years_alignment(tiny_training_file):
+    """Past file and model list the species in other orders; an oracle model and the past lookup
+    must still score perfectly, and prevalence must be the effort-weighted mean rate."""
+    from evaluation.held_out_years import evaluate
+
+    test = dict(np.load(tiny_training_file, allow_pickle=False))
+    perm = np.array([3, 0, 4, 2, 1])  # past species i is test species perm[i]
+    inverse = np.argsort(perm)
+    past = dict(test, species=test['species'][perm], species_grp=test['species_grp'][perm],
+                codes=test['codes'][perm], col=inverse[test['col']].astype(np.int32))
+    species = [str(s) for s in test['species']]
+
+    class Oracle:  # returns each test row's rates, in reversed species order
+        def __init__(self):
+            self.species = species[::-1]
+
+        def rates(self, lat, lng, week, features=None):
+            out = np.zeros((len(lat), len(species)), np.float32)
+            for i, (la, lo, w) in enumerate(zip(lat, lng, week)):
+                for r in range(len(test['row_cell'])):
+                    c = test['row_cell'][r]
+                    if test['cell_lat'][c] == la and test['cell_lng'][c] == lo and test['row_week'][r] == w:
+                        out[i, test['col'][test['ptr'][r]:test['ptr'][r + 1]]] = test['val'][test['ptr'][r]:test['ptr'][r + 1]]
+            return out[:, ::-1]
+
+    report = evaluate(test, past, {'oracle': Oracle()}, min_n=1.0)
+    for name in ('oracle', 'past'):
+        assert report[f'Aves/{name}']['top10'] == 1.0 and report[f'Aves/{name}']['recall_regular'] == 1.0
+    assert report['Aves/past']['past_rows_found'] == 1.0
+    # prevalence over the Aves rows (n_w 40, 10, 30, 2): effort-weighted mean rate per species
+    prev = np.array([0.5 * 40 + 0.3 * 10, 0.1 * 40, 0.8 * 30]) / 82
+    targets = np.array([[0.5, 0.1, 0], [0.3, 0, 0], [0, 0, 0.8], [0, 0, 0]])
+    loss = -(targets * np.log(prev) + (1 - targets) * np.log1p(-prev)).sum(1).mean()
+    assert np.isclose(report['Aves/prevalence']['logloss'], loss, atol=1e-3)
+
+
 def test_held_out_years_past_lookup(tiny_training_file):
     """With the same file as past and test, the past lookup reproduces the targets."""
     from evaluation.held_out_years import evaluate

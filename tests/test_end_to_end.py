@@ -107,6 +107,8 @@ def test_documented_chain(work):
     human = release.species.index('BN22686')
     assert (onnx_scores[:, human] >= 0.30 - 1e-4).all()  # the floor holds in the export
     assert release.extra['codes'][:3] == ['aaa1', 'bbb1', 'ccc1']
+    exported = [line.split('\t')[0] for line in open(f'{d}/exports/labels.txt', encoding='utf-8')]
+    assert exported == release.species  # the label file travels with the exports, in output order
 
     run('package.py', f'{d}/runs/student.pt', f'{d}/taxonomy.csv', f'{d}/ubiquitous.csv', f'{d}/release', '--name', 'gm2',
         '--nonbird-f0', '0.001')

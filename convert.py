@@ -756,14 +756,16 @@ def convert(
 
     # Copy the label file (one row per output) alongside exports
     n_species = model_config["n_species"]
-    labels_src = find_labels(checkpoint_path, n_species)
+    idx_to_species = (ckpt.get("species_vocab") or {}).get("idx_to_species") or {}
+    ids = [str(idx_to_species[i]) for i in sorted(idx_to_species, key=int)] or None
+    labels_src = find_labels(checkpoint_path, n_species, ids)
     if labels_src is not None:
         import shutil
 
         shutil.copy2(labels_src, outpath / "labels.txt")
         print(f"Copied {Path(labels_src).name} → {outpath / 'labels.txt'}")
     else:
-        print(f"⚠️  No label file with {n_species} rows next to the checkpoint; exports/labels.txt not written")
+        print(f"⚠️  No label file for these {n_species} outputs next to the checkpoint; exports/labels.txt not written")
 
     # Copy the model license and acceptable-use guidance alongside exports
     project_root = Path(__file__).resolve().parent

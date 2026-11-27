@@ -1,7 +1,8 @@
 """Stage 3: count observer-days per species and per taxon group from the stage-1 records.
 
     python -m pipeline.gbif_targets data/gbif_map data/species.csv data/targets \\
-        [--half-life 10] [--ref-year 2026] [--max-year 0] [--threads 8] [--mem 24GB]
+        [--effort group|naturalist|modeled] [--half-life 10] [--ref-year 2026]
+        [--min-year 0] [--max-year 0] [--threads 8] [--mem 24GB]
 
 The unit of evidence is the **observer-day**: one observer, one date, one H3 cell at
 resolution 5 (~250 km²). However many records an observer makes of a species that
@@ -29,10 +30,12 @@ those species, and their rates are close to 1 wherever they are recorded at all.
 
 ``--effort modeled`` narrows that effort to observer-days on which a species of the
 model (any group, birds included) was recorded, so a day spent photographing plants
-or fungi does not count against a frog.
+or fungi does not count against a frog. With either shared effort, non-bird records
+from eBird's dataset are left out of the counts as they are of the effort.
 
 Recent years weigh more: each observer-day counts ``0.5 ** ((ref_year - year) / half_life)``
-in ``k_w`` and ``n_w``. ``--max-year`` drops later records (held-out-year tests).
+in ``k_w`` and ``n_w``. ``--min-year`` and ``--max-year`` drop records outside a year window
+(held-out-year tests, ``evaluation.held_out_years``).
 
 ``SPECIES_CSV`` comes from stage 2 (``pipeline.taxonomy``): one row per model species
 with ``birdnet_id``, ``taxon_group`` and the GBIF species key ``gbif_key``.
@@ -108,7 +111,8 @@ def build(map_dir: str, species_csv: str, out_dir: str, *, half_life: float = 10
                CASE WHEN m.class_key = {AVES_CLASS_KEY} THEN 'Aves' ELSE {other} END AS grp,
                t.birdnet_id, year, month, day, {observer} AS obs
         FROM read_parquet({files!r}) m LEFT JOIN tax t USING (species_key)
-        WHERE {where} AND (m.class_key = {AVES_CLASS_KEY} OR (t.birdnet_id IS NOT NULL AND t.grp <> 'Aves' {nonbird_source}))""")
+        WHERE {where} AND (m.class_key = {AVES_CLASS_KEY}
+                           OR (t.birdnet_id IS NOT NULL AND t.grp <> 'Aves' {nonbird_source}))""")
     print('observer-day rows', con.execute('SELECT count(*) FROM od').fetchone()[0],
           f'{time.time() - start:.0f} s', flush=True)
 

@@ -47,9 +47,9 @@ REGIONS = {
 
 def read_labels(checkpoint: str, species: list[str]) -> list[tuple[str, str, str]]:
     """(id, scientific name, common name) per output; ids only if no label file is found."""
-    path = find_labels(checkpoint, len(species))
+    path = find_labels(checkpoint, len(species), species)
     if path is None:
-        print(f'note: no label file with {len(species)} rows next to {checkpoint}; showing ids only',
+        print(f'note: no label file for these {len(species)} outputs next to {checkpoint}; showing ids only',
               file=sys.stderr)
         return [(s, '', '') for s in species]
     rows = [line.rstrip('\n').split('\t') for line in open(path, encoding='utf-8')]

@@ -166,9 +166,10 @@ class Predictor:
         return score
 
 
-def find_labels(checkpoint: str, n_outputs: int) -> str | None:
+def find_labels(checkpoint: str, n_outputs: int, ids: Sequence[str] | None = None) -> str | None:
     """The label file next to a checkpoint: ``<stem>_labels.txt`` (or ``_Labels.txt``), else
-    ``labels.txt``, and only if it has one row per output. None if there is none."""
+    ``labels.txt``, and only if it has one row per output and, when ``ids`` are given, those
+    ids in its first column. None if there is none."""
     from pathlib import Path
 
     path = Path(checkpoint)
@@ -176,8 +177,9 @@ def find_labels(checkpoint: str, n_outputs: int) -> str | None:
         candidate = path.with_name(name)
         if candidate.is_file():
             with candidate.open(encoding='utf-8') as f:
-                if sum(1 for _ in f) == n_outputs:
-                    return str(candidate)
+                first = [line.split('\t', 1)[0].strip() for line in f]
+            if len(first) == n_outputs and (ids is None or first == [str(i) for i in ids]):
+                return str(candidate)
     return None
 
 

@@ -58,7 +58,8 @@ def ocean_cells(res: int = 3, buffer_km: float = 25.0) -> tuple[np.ndarray, np.n
     return centers[keep, 0].astype(np.float32), centers[keep, 1].astype(np.float32)
 
 
-def marine_species(data, buffer_km: float = 25.0, min_rows: int = 5, skip_cells: np.ndarray | None = None) -> np.ndarray:
+def marine_species(data, buffer_km: float = 25.0, min_rows: int = 5,
+                   skip_cells: np.ndarray | None = None) -> np.ndarray:
     """Boolean per species: recorded in at least ``min_rows`` open-ocean training rows.
 
     Cells with habitat data are land, whatever the land mask says. ``skip_cells``

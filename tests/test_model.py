@@ -83,3 +83,15 @@ def test_export_wrapper_matches_predictor_with_per_species_anchor():
     # a lower anchor raises the score of the same rate
     rate = p.rates(x[:, 0], x[:, 1], x[:, 2])
     assert np.allclose(rate_to_score(rate[:, 3], dict(DEFAULT_CURVE, f0=0.0005)), p.scores(x[:, 0], x[:, 1], x[:, 2])[:, 3], atol=1e-6)
+
+
+def test_find_labels_checks_rows_and_ids(tmp_path):
+    from model.io import find_labels
+
+    ckpt = tmp_path / 'm.pt'
+    (tmp_path / 'labels.txt').write_text('BN1\ta\tA\nBN9\tb\tB\n')  # another model, same row count
+    assert find_labels(str(ckpt), 2, ['BN1', 'BN2']) is None
+    assert find_labels(str(ckpt), 2) == str(tmp_path / 'labels.txt')  # without ids only the count is checked
+    (tmp_path / 'm_Labels.txt').write_text('BN1\ta\tA\nBN2\tb\tB\n')
+    assert find_labels(str(ckpt), 2, ['BN1', 'BN2']) == str(tmp_path / 'm_Labels.txt')
+    assert find_labels(str(ckpt), 3, ['BN1', 'BN2', 'BN3']) is None
