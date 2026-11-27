@@ -89,7 +89,8 @@ common bird. It is kept for comparison.
 Each observer-day counts `0.5 ** ((ref_year - year) / half_life)` in the weighted
 columns `k_w` and `n_w` (half-life 10 years, reference year 2026 by default). Ranges
 shift, and observer behavior changes; recent records describe today better.
-`--max-year` drops later records, for testing on years the model has not seen.
+`--max-year` drops later records and `--min-year` earlier ones, for testing on years
+the model has not seen ([Held-out years](../evaluation/held_out_years.md)).
 
 ### Output
 

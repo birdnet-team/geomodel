@@ -82,3 +82,22 @@ def test_student_with_env_head_loads(tmp_path):
     torch.save(dict(state=model.state_dict(), species=['a', 'b', 'c'], codes=['', '', ''], args=args), tmp_path / 's.pt')
     p = load(str(tmp_path / 's.pt'))
     assert p.rates([10.0], [20.0], [5]).shape == (1, 3)
+
+
+def test_held_out_years_past_lookup(tiny_training_file):
+    """With the same file as past and test, the past lookup reproduces the targets."""
+    from evaluation.held_out_years import evaluate
+
+    z = dict(np.load(tiny_training_file, allow_pickle=False))
+
+    class Constant:
+        species = [str(s) for s in z['species']]
+
+        def rates(self, lat, lng, week, features=None):
+            return np.full((len(lat), len(self.species)), 0.1, np.float32)
+
+    report = evaluate(z, z, {'flat': Constant()}, min_n=1.0)
+    assert report['Aves/past']['past_rows_found'] == 1.0
+    assert report['Aves/past']['top10'] == 1.0 and report['Aves/past']['recall_regular'] == 1.0
+    assert report['Aves/past']['logloss'] < report['Aves/flat']['logloss']
+    assert set(report) >= {'Aves/flat', 'Aves/prevalence', 'Other/past'}
