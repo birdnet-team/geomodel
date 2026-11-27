@@ -4,10 +4,10 @@
         --formats onnx onnx_fp16 onnx_int8 torchscript
 
 Every export takes one float32 tensor ``(batch, 3)`` with the columns latitude,
-longitude and week (1-48) and returns one score per species, in label order
-(TorchScript returns the logits of those scores unless ``--torchscript-sigmoid``). The
+longitude and week (1-48) and returns one score per species, in label order. The
 score curve, floors and caps stored in the checkpoint (``package.py``) are part of
-the exported graph, so the files return the same scores as ``predict.py``.
+the exported graph, so each file is a complete model: it returns the same scores as
+``predict.py`` with no code around it.
 
 Formats:
     onnx         ONNX, float32
@@ -19,7 +19,7 @@ Formats:
     tflite_int8  TensorFlow Lite dynamic-range INT8 (activations rounded too; not
                  recommended, scores far from the data can move a lot)
     tf           TensorFlow SavedModel
-    torchscript  TorchScript (traced); returns logits unless --torchscript-sigmoid
+    torchscript  TorchScript (traced); --torchscript-logits returns logits instead of scores
     all          all of the above
 
 Each export is checked against PyTorch on a fixed set of places and weeks and
@@ -437,7 +437,7 @@ def _export_torchscript(
     outdir: Path,
     tol: float,
     device: torch.device,
-    apply_sigmoid: bool = False,
+    apply_sigmoid: bool = True,
     score_floor: torch.Tensor | None = None,
     score_curve: dict | None = None,
     score_cap: torch.Tensor | None = None,
@@ -457,10 +457,8 @@ def _export_torchscript(
         tol: Numerical tolerance.  Tracing is the same FP32 computation as
             the reference, so the difference should be within this.
         device: Torch device.
-        apply_sigmoid: If ``True``, bake the sigmoid into the traced graph so it
-            returns scores, like the ONNX and TFLite exports. If ``False``
-            (default), return logits and leave the activation to the
-            downstream runtime.
+        apply_sigmoid: If ``True`` (default), the traced graph returns scores, like
+            the ONNX and TFLite exports. If ``False``, it returns their logits.
     """
     path = outdir / "geomodel.pt"
     print(f"\n[torchscript] Exporting to {path}")
@@ -482,7 +480,7 @@ def _export_torchscript(
     frozen = torch.jit.freeze(traced)
     torch.jit.save(frozen, str(path))
 
-    activation = "sigmoid probabilities" if apply_sigmoid else "raw logits"
+    activation = "scores" if apply_sigmoid else "logits of the scores"
     print(f"  Output: {activation}")
 
     # Reload the saved file and run the reference batch
@@ -671,7 +669,7 @@ def convert(
     formats: list[str] | None = None,
     tol: float = 1e-4,
     device: str = "auto",
-    torchscript_sigmoid: bool = False,
+    torchscript_logits: bool = False,
 ) -> dict[str, tuple[bool, float]]:
     """Convert a checkpoint to the requested formats.
 
@@ -681,8 +679,8 @@ def convert(
         formats: List of format names (default: ``['onnx_fp16']``).
         tol: Base tolerance for numerical validation.
         device: ``'auto'``, ``'cuda'``, or ``'cpu'``.
-        torchscript_sigmoid: Bake sigmoid into the TorchScript export so it
-            returns scores. Default ``False`` (return logits).
+        torchscript_logits: Let the TorchScript export return the logits of the
+            scores instead of the scores.
 
     Returns:
         Dict mapping format name to a ``(passed, max_diff)`` tuple, where
@@ -807,7 +805,7 @@ def convert(
             outpath,
             tol=tol,
             device=dev,
-            apply_sigmoid=torchscript_sigmoid,
+            apply_sigmoid=not torchscript_logits,
             score_floor=score_floor,
             score_curve=score_curve,
             score_cap=score_cap,
@@ -889,13 +887,12 @@ def main():
         help="Device for PyTorch model (default: auto)",
     )
     parser.add_argument(
-        "--torchscript-sigmoid",
-        "--torchscript_sigmoid",
-        dest="torchscript_sigmoid",
+        "--torchscript-logits",
         action="store_true",
-        help="Bake sigmoid into the TorchScript export so it returns "
-        "scores (default: return logits)",
+        help="TorchScript export returns the logits of the scores instead of the scores",
     )
+    # Scores are the default; the old flag is accepted and has no effect.
+    parser.add_argument("--torchscript-sigmoid", "--torchscript_sigmoid", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
 
     results = convert(
@@ -904,7 +901,7 @@ def main():
         formats=args.formats,
         tol=args.tol,
         device=args.device,
-        torchscript_sigmoid=args.torchscript_sigmoid,
+        torchscript_logits=args.torchscript_logits,
     )
 
     sys.exit(0 if all(ok for ok, _ in results.values()) else 1)

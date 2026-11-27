@@ -16,7 +16,7 @@ python convert.py --checkpoint release/BirdNET+_Geomodel_V4.0_Global_17K.pt --ou
 | `tflite_fp16` | `geomodel_fp16.tflite` | TensorFlow Lite with float16 weights |
 | `tflite_int8` | `geomodel_int8.tflite` | dynamic-range INT8 (activations rounded to 8 bits as well) |
 | `tf` | `saved_model/` | TensorFlow SavedModel |
-| `torchscript` | `geomodel.pt` | traced TorchScript; returns logits unless `--torchscript-sigmoid` |
+| `torchscript` | `geomodel.pt` | traced TorchScript (`--torchscript-logits` returns logits instead of scores) |
 
 The apps ship the INT8 ONNX file. Its weights take one byte each, and nothing else
 is rounded. ONNX Runtime's own dynamic quantization and TFLite's dynamic-range INT8
@@ -65,7 +65,7 @@ import torch
 
 model = torch.jit.load('exports/geomodel.pt', map_location='cpu').eval()
 with torch.no_grad():
-    scores = torch.sigmoid(model(torch.tensor([[50.83, 12.92, 22.0]])))
+    scores = model(torch.tensor([[50.83, 12.92, 22.0]]))
 ```
 
 In Python, from a clone of the repository, `model.io.load` opens any checkpoint (release,
