@@ -94,7 +94,8 @@ def build(targets_dir: str, species_csv: str, habitat_path: str, out_path: str,
     con.execute(f'CREATE TABLE g(grp VARCHAR, gi INTEGER); INSERT INTO g VALUES {group_list}')
     con.execute(f"""CREATE TABLE e AS
         SELECT row_number() OVER (ORDER BY gi, cell, week) - 1 AS rid, cell, week, gi, n, n_w
-        FROM '{targets_dir}/effort_res5.parquet' JOIN g USING (grp)""")
+        FROM '{targets_dir}/effort_res5.parquet' JOIN g USING (grp)
+        WHERE n_w > 0""")  # rows made only of records without a year have no weight and no rate
     # Output order: by group, then BirdNET id. Only species with at least one record.
     con.execute(f"""CREATE TABLE sp AS
         SELECT row_number() OVER (ORDER BY gi, birdnet_id) - 1 AS sid, birdnet_id, gi,

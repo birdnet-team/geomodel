@@ -94,6 +94,10 @@ def test_documented_chain(work):
         '--scale', '0.25', '--harmonics', '4', '--steps', '60', '--batch-size', '64', '--envelope', '2', '--ocean',
         '--ubiquitous', f'{d}/ubiquitous.csv', '--population', f'{d}/population.parquet')
     run('package.py', f'{d}/runs/student.pt', f'{d}/taxonomy.csv', f'{d}/ubiquitous.csv', f'{d}/release', '--name', 'gm')
+    teacher = subprocess.run([sys.executable, 'package.py', f'{d}/runs/teacher.pt', f'{d}/taxonomy.csv',
+                              f'{d}/ubiquitous.csv', f'{d}/release', '--name', 'teacher'], cwd=ROOT, capture_output=True,
+                             text=True, timeout=600)
+    assert teacher.returncode != 0 and 'teacher checkpoint' in teacher.stderr
     run('convert.py', '--checkpoint', f'{d}/release/gm.pt', '--outdir', f'{d}/exports', '--formats', 'onnx', 'onnx_int8',
         '--device', 'cpu')
 

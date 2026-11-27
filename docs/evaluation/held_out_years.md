@@ -49,7 +49,8 @@ teacher; in thin and sparse rows it is two to three times that spread, so the mo
 does age a little where data are scarce. Non-birds lose more (thin rows: top-10 0.42
 against 0.46-0.47), but stay far ahead of past rates (0.16). On the eBird benchmark
 the teacher trained up to 2022 scores 76.7, between the two seeds of the full one
-(76.6 and 77.5). The evaluation holds the two training files in memory (about 4 GB
+(76.6 and 77.5). These results are from teachers trained with c = 5, the default
+before c = 40 ([Training](../model/training.md#data-and-loss)). The evaluation holds the two training files in memory (about 4 GB
 for V4-sized files). Where few people record, the model keeps far more of the
 regular species than a lookup of what was recorded there before. Where many people
 record, the lookup ranks the most common species slightly better: the model smooths

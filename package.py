@@ -78,6 +78,8 @@ def main(argv=None) -> None:
         print(f'note: the training floors were set on the default curve {DEFAULT_CURVE}; '
               f'with {curve} the released floors and the learned ones differ')
 
+    if 'env' in ckpt:
+        raise SystemExit(f'{args.student} is a teacher checkpoint; package.py takes students (distill.py)')
     config = dict(
         n_species=len(species), n_env_features=env_outputs(ckpt['state']), model_scale=train_args['scale'],
         coord_harmonics=train_args.get('harmonics', 16), week_harmonics=train_args.get('week_harmonics', 8),

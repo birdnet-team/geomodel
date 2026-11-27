@@ -14,8 +14,13 @@ python distill.py data/train.npz runs/teacher/teacher.pt data/ee/habitat_res5.pa
     --benchmark data/benchmark/bench_20k --int8-check
 
 python package.py runs/student/student.pt taxonomy.csv data/ubiquitous.csv release \
-    --name BirdNET+_Geomodel_V4.0_Global_17K
+    --name BirdNET+_Geomodel_V4.0_Global_17K --nonbird-f0 0.001
 ```
+
+The training file is built with naturalist effort (`pipeline.gbif_targets --effort
+naturalist`, [GBIF records](../pipeline/gbif.md#effort)); `--ocean` and the separate
+non-bird anchor (`--nonbird-f0 0.001`, [Scores](scores.md#a-separate-anchor-for-non-birds))
+are part of the release recipe.
 
 On one RTX 4090 the teacher takes about 25 minutes and the student about 35; the
 benchmark evaluation at the end of each adds about ten minutes on the CPU. The
@@ -49,9 +54,15 @@ $$
 
 Binary cross-entropy against a rate is the binomial log-likelihood per observer-day,
 so the sigmoid of the output learns the rate itself. The weight saturates: a row
-backed by one observer-day counts a little, a row with fifty almost fully, and a cell
-with fifty thousand checklists does not outweigh a thousand cells with fifty
-(`--c 5`). Species of the other group are masked out.
+backed by one observer-day counts little, a row with 40 observer-days half, one with
+400 nine tenths, and a cell with fifty thousand checklists does not outweigh a
+thousand cells with a few hundred (`--c 40`). Species of the other group
+are masked out.
+
+The value was chosen on the benchmark with two teacher seeds each: mean GeoScore
+77.0 at c = 5, 77.2 at c = 15, 78.2 at c = 40 and 77.8 at c = 100 (one seed).
+Students gain less: 76.0 from c = 5 teachers, 76.7 from c = 15 and from c = 40.
+Off-season leak and false rejections in the filter study did not change.
 
 ### Optimization
 
@@ -125,9 +136,9 @@ Options that the release recipe does not use stay available for comparisons:
 | | `--pos-weight` | scales the loss of entries with a positive rate |
 | | `--gamma-pos`, `--gamma-neg` | focal down-weighting of easy entries (asymmetric loss) |
 | | `--rank-weight` | adds a list-wise term that rewards putting common species on top |
-| | `--c` | effort at which a row has half weight |
+| | `--c` | effort at which a row has half weight (release: 40; 5 and 15 were compared) |
 | | `--no-coords` | habitat and week only |
-| | without `--habitat` | coordinates and week only (no distillation needed) |
+| | without `--habitat` | coordinates and week only (evaluated directly; `package.py` takes students) |
 | | `--week-harmonics`, `--coord-harmonics`, `--scale` | network shape |
 | `distill.py` | `--envelope 0` | no range envelope |
 | | without `--ocean` | no ocean rule |
@@ -141,7 +152,8 @@ Options that the release recipe does not use stay available for comparisons:
 ## Reproducibility
 
 `--seed` fixes the batch order and initialization. Two teachers trained with
-different seeds differed by 0.9 GeoScore points on the benchmark (77.5 and 76.6;
+different seeds differed by 0.9 GeoScore points on the benchmark (77.5 and 76.6 at
+c = 5; 78.9 and 77.4 at c = 40;
 early stopping picked epoch 3 in one run and epoch 2 in the other), while two
 students distilled from the same teacher with different seeds differed by 0.02.
 Differences between teachers smaller than about a point are noise; compare

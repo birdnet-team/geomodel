@@ -65,3 +65,12 @@ for TFLite FP16) and 0.2 for INT8:
 ```bash
 python predict.py BirdNET+_Geomodel_V4.0_Global_17K.pt --lat 50.83 --lon 12.92 --week 22 --top-k 20
 ```
+
+## Old checkpoints
+
+V3.0.x release checkpoints still load in `predict.py`, `convert.py` and the
+evaluation scripts. Their outputs are the network's own values, exactly as in their
+ONNX and TFLite exports (V3.0.4: within 3e-5 of its FP32 ONNX file), with V3 ids and
+the V3 label file (`..._Global_14K_Labels.txt` is found next to `..._Global_14K_FP32.pt`).
+V3's `predict.py` also set non-marine species to 0 at open-sea points; that step was
+never part of the V3 exports and is not repeated.

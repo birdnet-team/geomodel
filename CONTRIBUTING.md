@@ -4,7 +4,7 @@ Thank you for your interest in contributing! This document provides guidelines a
 
 ## Code of Conduct
 
-This project adheres to the [Contributor Covenant Code of Conduct](CODE_OF_CONDUCT.md). By participating, you are expected to uphold this code. Please report unacceptable behavior to <ccb-birdnet@cornell.edu>.
+This project adheres to the [Contributor Covenant Code of Conduct](https://github.com/birdnet-team/geomodel/blob/main/CODE_OF_CONDUCT.md). By participating, you are expected to uphold this code. Please report unacceptable behavior to <ccb-birdnet@cornell.edu>.
 
 ## How to Contribute
 
