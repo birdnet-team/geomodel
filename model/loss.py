@@ -29,7 +29,7 @@ import torch.nn.functional as F
 
 @dataclass
 class EncounterLoss:
-    c: float = 40.0
+    c: float = 15.0
     link: str = 'logit'
     pos_weight: float = 1.0
     gamma_pos: float = 0.0

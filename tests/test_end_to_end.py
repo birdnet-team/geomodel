@@ -12,6 +12,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import pytest
+import torch
 
 ROOT = Path(__file__).resolve().parents[1]
 EBIRD = '4fa7b334-ce0d-4e88-aaae-2e0c138d049e'
@@ -99,7 +100,7 @@ def test_documented_chain(work):
                              text=True, timeout=600)
     assert teacher.returncode != 0 and 'teacher checkpoint' in teacher.stderr
     run('convert.py', '--checkpoint', f'{d}/release/gm.pt', '--outdir', f'{d}/exports', '--formats', 'onnx', 'onnx_int8',
-        '--device', 'cpu')
+        'torchscript', '--device', 'cpu')
 
     import onnxruntime as ort
 
@@ -108,6 +109,9 @@ def test_documented_chain(work):
     x = np.array([[50.8, 12.9, 22], [-1.3, 36.8, 5]], np.float32)
     onnx_scores = ort.InferenceSession(f'{d}/exports/geomodel.onnx').run(None, {'input': x})[0]
     assert np.allclose(release.scores(x[:, 0], x[:, 1], x[:, 2]), onnx_scores, atol=1e-4)
+    # TorchScript is a complete model too: scores out, nothing to apply afterwards
+    ts_scores = torch.jit.load(f'{d}/exports/geomodel.pt')(torch.from_numpy(x)).numpy()
+    assert np.allclose(ts_scores, onnx_scores, atol=1e-4)
     human = release.species.index('BN22686')
     assert (onnx_scores[:, human] >= 0.30 - 1e-4).all()  # the floor holds in the export
     assert release.extra['codes'][:3] == ['aaa1', 'bbb1', 'ccc1']

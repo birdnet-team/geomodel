@@ -57,5 +57,5 @@ lookup of what was recorded there before. Where many people record, the lookup
 ranks the most common species slightly better: the model smooths what the data in
 such places already show.
 
-These results are from teachers trained with c = 5; the default is c = 40
+These results are from teachers trained with c = 5; the default is c = 15
 ([Training](../model/training.md#data-and-loss)).

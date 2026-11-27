@@ -12,7 +12,9 @@ input is the same in V4. The meaning of the outputs and their labels change.
   -1 the same as week 47. V3 files had learned a whole-year answer for week 0, V4
   files have not.
 - One value per species, in label-file order, between 0 and 1.
-- TorchScript returns logits; ONNX and TFLite return the final values.
+- Every file is one complete graph: latitude, longitude and week in, final scores
+  out. The score curve, floors and caps are inside it. V3 TorchScript files returned
+  logits; V4 TorchScript files return scores like the other formats.
 
 ## What changes
 
