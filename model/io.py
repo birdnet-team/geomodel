@@ -169,11 +169,15 @@ class Predictor:
 def find_labels(checkpoint: str, n_outputs: int, ids: Sequence[str] | None = None) -> str | None:
     """The label file next to a checkpoint: ``<stem>_labels.txt`` (or ``_Labels.txt``), else
     ``labels.txt``, and only if it has one row per output and, when ``ids`` are given, those
-    ids in its first column. None if there is none."""
+    ids in its first column. None if there is none. V3 release files carry a precision tag
+    that their label file lacks (``..._14K_FP32.pt`` next to ``..._14K_Labels.txt``)."""
+    import re
     from pathlib import Path
 
     path = Path(checkpoint)
-    for name in (f'{path.stem}_labels.txt', f'{path.stem}_Labels.txt', 'labels.txt'):
+    stems = dict.fromkeys([path.stem, re.sub(r'_(FP32|FP16|INT8)$', '', path.stem)])
+    names = [f'{stem}_{suffix}.txt' for stem in stems for suffix in ('labels', 'Labels')]
+    for name in (*names, 'labels.txt'):
         candidate = path.with_name(name)
         if candidate.is_file():
             with candidate.open(encoding='utf-8') as f:
