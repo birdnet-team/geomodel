@@ -25,7 +25,7 @@ This project adheres to the [Contributor Covenant Code of Conduct](CODE_OF_CONDU
 
 1. Fork the repo and create a branch from `main`.
 2. If you've added code, add or update docstrings.
-3. Make sure the code runs without errors.
+3. Make sure the code runs without errors and `python -m pytest tests` passes (under a minute on a CPU).
 4. Keep commits small and focused; write clear commit messages.
 5. Open a pull request with a description of what changed and why.
 
@@ -45,14 +45,17 @@ cd geomodel
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
+python -m pytest tests
 ```
+
+The documentation builds with `pip install -r requirements-docs.txt && mkdocs serve`.
 
 ## Style Guide
 
 - Follow [PEP 8](https://peps.python.org/pep-0008/) for Python code.
 - Use type hints for function signatures.
 - Write docstrings for all public classes, methods, and functions.
-- Keep lines to 100 characters or fewer where practical.
+- Keep lines to 120 characters or fewer where practical.
 - Use `snake_case` for functions and variables, `PascalCase` for classes.
 
 ## Commit Messages
