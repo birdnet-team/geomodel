@@ -1,5 +1,10 @@
 # BirdNET Geomodel — paper source
 
+> **This paper describes V3** (union labels, label propagation, the environment
+> auxiliary task). V4 changes the targets, the training and the outputs; its methods
+> are documented in `docs/` until a V4 report replaces this one. The scripts and
+> checkpoints referenced below are not part of the repository.
+
 LaTeX source for the arXiv preprint. Converted from `report/report_draft.md`;
 **`main.tex` + `body.tex` are now the source of truth** — edits belong here, not
 in the markdown draft.

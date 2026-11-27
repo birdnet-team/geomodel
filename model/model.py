@@ -552,7 +552,7 @@ class BirdNETGeoModel(nn.Module):
         Args:
             lat: Raw latitude in degrees, shape ``(batch,)``.
             lon: Raw longitude in degrees, shape ``(batch,)``.
-            week: Week number (0–48), shape ``(batch,)``.
+            week: Week number (1-48, circular: 0 equals 48), shape ``(batch,)``.
             return_env: If True, also return environmental predictions.
 
         Returns:
@@ -586,47 +586,6 @@ class BirdNETGeoModel(nn.Module):
         if return_env:
             output['env_pred'] = self.env_head(encoded)
         return output
-
-    def predict_species(
-        self, lat: torch.Tensor, lon: torch.Tensor, week: torch.Tensor,
-        threshold: float = 0.5,
-    ) -> torch.Tensor:
-        """Return binary species predictions at the given threshold.
-
-        Args:
-            lat: Latitude tensor.
-            lon: Longitude tensor.
-            week: Week tensor.
-            threshold: Probability threshold for a positive prediction.
-
-        Returns:
-            Binary tensor of shape ``(batch, n_species)``.
-        """
-        self.eval()
-        with torch.no_grad():
-            probs = torch.sigmoid(
-                self(lat, lon, week, return_env=False)['species_logits']
-            )
-            return (probs >= threshold).float()
-
-    def get_species_probabilities(
-        self, lat: torch.Tensor, lon: torch.Tensor, week: torch.Tensor,
-    ) -> torch.Tensor:
-        """Return sigmoid probabilities for all species.
-
-        Args:
-            lat: Latitude tensor.
-            lon: Longitude tensor.
-            week: Week tensor.
-
-        Returns:
-            Probability tensor of shape ``(batch, n_species)``.
-        """
-        self.eval()
-        with torch.no_grad():
-            return torch.sigmoid(
-                self(lat, lon, week, return_env=False)['species_logits']
-            )
 
 
 # ---------------------------------------------------------------------------

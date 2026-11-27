@@ -95,7 +95,7 @@ The V4 release student:
 | `week_harmonics` | 8 |
 | `film_dim` | 64 |
 | `species_bottleneck` | 288 |
-| parameters | about 9.7 million |
+| parameters | 9.4 million in the exported graph (9.7 million with the unused habitat-prediction head kept in the checkpoint) |
 | ONNX INT8 file | just under 10 MB |
 
 ## References

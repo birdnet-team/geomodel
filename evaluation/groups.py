@@ -8,7 +8,8 @@ not, small groups float to the top everywhere: a crab recorded on most crustacea
 observer-days scores like the most common bird. This check makes that visible.
 
 At a sample of benchmark places (``--places``, default 400) and four weeks, per
-taxon group: the mean number of species scoring at least 0.5 and 0.9, the mean
+taxon group: the mean number of species scoring at least 0.1 (the recommended
+filter line), 0.5 and 0.9, the mean
 score of the group's top five, and the share of the top 20 of the whole list that
 the group takes. A few named places are listed in full (``--show``).
 """
@@ -27,14 +28,15 @@ WEEKS = (4, 16, 28, 40)
 
 
 def group_table(scores: np.ndarray, groups: np.ndarray) -> pd.DataFrame:
-    """Per group: outputs, species >= 0.5 and >= 0.9 per place, top-5 mean, share of the top 20."""
+    """Per group: outputs, species >= 0.1, 0.5 and 0.9 per place, top-5 mean, share of the top 20."""
     top20 = np.argsort(-scores, 1)[:, :20]
     rows = []
     for g, n in collections.Counter(groups).most_common():
         m = groups == g
         x = scores[:, m]
         top5 = np.sort(x, 1)[:, -5:].mean() if m.sum() >= 5 else np.nan
-        rows.append(dict(group=g, outputs=int(n), per_place_ge_0_5=round(float((x >= 0.5).sum(1).mean()), 1),
+        rows.append(dict(group=g, outputs=int(n), per_place_ge_0_1=round(float((x >= 0.1).sum(1).mean()), 1),
+                         per_place_ge_0_5=round(float((x >= 0.5).sum(1).mean()), 1),
                          per_place_ge_0_9=round(float((x >= 0.9).sum(1).mean()), 1), top5_mean=round(float(top5), 2),
                          share_of_top20=round(float(m[top20].mean()), 3)))
     return pd.DataFrame(rows)

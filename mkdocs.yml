@@ -103,6 +103,7 @@ nav:
       - Taxon Groups: evaluation/groups.md
       - Status and Trends: evaluation/status_trends.md
       - App Filter Study: evaluation/filter_study.md
+      - Held-out Years: evaluation/held_out_years.md
       - Range Maps: evaluation/range_maps.md
   - API Reference:
       - model.model: api/model.md

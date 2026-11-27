@@ -4,7 +4,8 @@
         --formats onnx onnx_fp16 onnx_int8 torchscript
 
 Every export takes one float32 tensor ``(batch, 3)`` with the columns latitude,
-longitude and week (1-48) and returns one score per species, in label order. The
+longitude and week (1-48) and returns one score per species, in label order
+(TorchScript returns the logits of those scores unless ``--torchscript-sigmoid``). The
 score curve, floors and caps stored in the checkpoint (``package.py``) are part of
 the exported graph, so the files return the same scores as ``predict.py``.
 
@@ -18,7 +19,7 @@ Formats:
     tflite_int8  TensorFlow Lite dynamic-range INT8 (activations rounded too; not
                  recommended, scores far from the data can move a lot)
     tf           TensorFlow SavedModel
-    torchscript  TorchScript (traced); returns logits unless --torchscript_sigmoid
+    torchscript  TorchScript (traced); returns logits unless --torchscript-sigmoid
     all          all of the above
 
 Each export is checked against PyTorch on a fixed set of places and weeks and
@@ -40,7 +41,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-from model.io import curve_terms, model_from_config
+from model.io import curve_terms, find_labels, model_from_config
 
 
 # ---------------------------------------------------------------------------
@@ -753,17 +754,18 @@ def convert(
         f"range [{ref_outputs.min():.4f}, {ref_outputs.max():.4f}]"
     )
 
-    # Copy labels.txt alongside exports
-    ckpt_dir = Path(checkpoint_path).parent
-    ckpt_stem = Path(checkpoint_path).stem
-    labels_src = ckpt_dir / f"{ckpt_stem}_labels.txt"
-    if not labels_src.exists():
-        labels_src = ckpt_dir / "labels.txt"
-    if labels_src.exists():
+    # Copy the label file (one row per output) alongside exports
+    n_species = model_config["n_species"]
+    idx_to_species = (ckpt.get("species_vocab") or {}).get("idx_to_species") or {}
+    ids = [str(idx_to_species[i]) for i in sorted(idx_to_species, key=int)] or None
+    labels_src = find_labels(checkpoint_path, n_species, ids)
+    if labels_src is not None:
         import shutil
 
         shutil.copy2(labels_src, outpath / "labels.txt")
-        print(f"Copied {labels_src.name} → {outpath / 'labels.txt'}")
+        print(f"Copied {Path(labels_src).name} → {outpath / 'labels.txt'}")
+    else:
+        print(f"⚠️  No label file for these {n_species} outputs next to the checkpoint; exports/labels.txt not written")
 
     # Copy the model license and acceptable-use guidance alongside exports
     project_root = Path(__file__).resolve().parent
@@ -896,10 +898,12 @@ def main():
         help="Device for PyTorch model (default: auto)",
     )
     parser.add_argument(
+        "--torchscript-sigmoid",
         "--torchscript_sigmoid",
+        dest="torchscript_sigmoid",
         action="store_true",
         help="Bake sigmoid into the TorchScript export so it returns "
-        "probabilities (default: return raw logits)",
+        "scores (default: return logits)",
     )
     args = parser.parse_args()
 

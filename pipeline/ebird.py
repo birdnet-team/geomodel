@@ -41,6 +41,8 @@ import gzip
 import hashlib
 import json
 
+import numpy as np
+
 N_WEEKS = 48
 
 
@@ -61,8 +63,11 @@ def read_responses(directory: str, keep_empty: bool = False) -> dict[str, dict]:
                         continue
                     lists = sorted((s['speciesCode'], tuple(s['frequencies'])) for s in response['frequencies'])
                     key = hashlib.blake2b(json.dumps([checklists, lists]).encode(), digest_size=8).hexdigest()
-                    cell = cells.setdefault(key, dict(checklists=checklists, lists=lists, points=[]))
-                    cell['points'].append((record['lat'], record['lng']))
+                    if key not in cells:  # kept compact: codes and a float32 [species, 48] array
+                        cells[key] = dict(checklists=checklists, codes=[c for c, _ in lists],
+                                          values=np.array([v for _, v in lists], np.float32).reshape(len(lists), N_WEEKS),
+                                          points=[])
+                    cells[key]['points'].append((record['lat'], record['lng']))
         except EOFError:  # gzip file still being written
             pass
     return cells
@@ -77,37 +82,48 @@ def parse(directory: str, species_csv: str, prefix: str) -> None:
     by_code = {r['ebird_code']: r['birdnet_id'] for r in read_species(species_csv) if r['ebird_code']}
     cells = read_responses(directory)
     c_cols: dict[str, list] = collections.defaultdict(list)
-    f_cols: dict[str, list] = collections.defaultdict(list)
     unmatched: collections.Counter = collections.Counter()
-
-    for cell_id, cell in cells.items():
-        points, checklists = cell['points'], cell['checklists']
-        c_cols['cell_id'].append(cell_id)
-        c_cols['lat'].append(sum(p[0] for p in points) / len(points))
-        c_cols['lng'].append(sum(p[1] for p in points) / len(points))
-        c_cols['n_points'].append(len(points))
-        c_cols['n_total'].append(sum(checklists))
-        for week in range(N_WEEKS):
-            c_cols[f'n_w{week + 1:02d}'].append(checklists[week])
-        for code, values in cell['lists']:
-            birdnet_id = by_code.get(code)
-            if birdnet_id is None:
-                unmatched[code] += 1
-                continue
-            for week, value in enumerate(values):
-                if value > 0:
-                    f_cols['cell_id'].append(cell_id)
-                    f_cols['birdnet_id'].append(birdnet_id)
-                    f_cols['ebird_code'].append(code)
-                    f_cols['week'].append(week + 1)
-                    f_cols['freq'].append(value / 100)
-                    f_cols['n'].append(checklists[week])
-
     schema = pa.schema([('cell_id', pa.string()), ('birdnet_id', pa.string()), ('ebird_code', pa.string()),
                         ('week', pa.int8()), ('freq', pa.float32()), ('n', pa.int32())])
+    batch: dict[str, list] = collections.defaultdict(list)
+    n_rows = 0
+
+    # frequency rows are written in batches, so memory stays small on the fine levels
+    with pq.ParquetWriter(f'{prefix}_freq.parquet', schema, compression='zstd') as writer:
+        def flush():
+            if batch['week']:
+                writer.write_table(pa.table({k: np.concatenate(v) for k, v in batch.items()}, schema=schema))
+                batch.clear()
+
+        for cell_id, cell in cells.items():
+            points, checklists = cell['points'], cell['checklists']
+            c_cols['cell_id'].append(cell_id)
+            c_cols['lat'].append(sum(p[0] for p in points) / len(points))
+            c_cols['lng'].append(sum(p[1] for p in points) / len(points))
+            c_cols['n_points'].append(len(points))
+            c_cols['n_total'].append(sum(checklists))
+            for week in range(N_WEEKS):
+                c_cols[f'n_w{week + 1:02d}'].append(checklists[week])
+            known = np.array([code in by_code for code in cell['codes']], bool)
+            unmatched.update(code for code, k in zip(cell['codes'], known) if not k)
+            if not known.any():
+                continue
+            codes = np.array(cell['codes'], object)[known]
+            values = cell['values'][known]  # [species, 48], percent
+            species, week = np.nonzero(values > 0)
+            batch['cell_id'].append(np.full(len(week), cell_id, object))
+            batch['birdnet_id'].append(np.array([by_code[c] for c in codes], object)[species])
+            batch['ebird_code'].append(codes[species])
+            batch['week'].append((week + 1).astype(np.int8))
+            batch['freq'].append(values[species, week] / 100)
+            batch['n'].append(np.asarray(checklists, np.int32)[week])
+            n_rows += len(week)
+            if sum(len(w) for w in batch['week']) >= 2_000_000:
+                flush()
+        flush()
+
     pq.write_table(pa.table(dict(c_cols)), f'{prefix}_cells.parquet', compression='zstd')
-    pq.write_table(pa.table(dict(f_cols), schema=schema), f'{prefix}_freq.parquet', compression='zstd')
-    print(f'{len(cells)} cells, {len(f_cols["week"])} frequency rows; '
+    print(f'{len(cells)} cells, {n_rows} frequency rows; '
           f'{len(unmatched)} eBird codes without a BirdNET id (most common: {unmatched.most_common(5)})')
 
 

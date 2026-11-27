@@ -6,8 +6,11 @@ the same; what the outputs mean and how they are labeled changes.
 ## What stays
 
 - One float32 input tensor `[batch, 3]`: latitude, longitude, week (1-48, four per
-  month). Week 0 or -1 for the whole year is handled outside the model, as before:
-  run all 48 weeks and take the maximum.
+  month). For the whole year, run all 48 weeks and take the maximum per species, as
+  `predict.py --week -1` does. Do not pass week 0 or -1 to the model files: the week
+  is read as a position on a circle, so 0 is the same as week 48 (late December) and
+  -1 the same as week 47. V3 files had learned a whole-year answer for week 0; V4
+  files have not.
 - One value per species, in label-file order, between 0 and 1.
 - TorchScript returns logits; ONNX and TFLite return the final values.
 

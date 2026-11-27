@@ -49,7 +49,8 @@ curve) and 0.1 for V3 releases, which predict scores directly.
 
 ## GeoScore v2
 
-One number from 0 to 100, the mean of four parts that each read as a percentage:
+One number, the mean of four parts that each read as a share (`geoscore()` returns
+values from 0 to 1; the tables here give them as percentages):
 
 | part | definition | what it rewards |
 |---|---|---|

@@ -30,6 +30,9 @@ Three things are added to the teacher's targets:
 Options kept for ablations: ``--env-aux`` (predict the habitat as an auxiliary
 task), ``--habitat-head``, ``--qat-frac`` (INT8-aware training at the end).
 
+``--holdout-km`` leaves records near benchmark cells out of the envelope and the
+marine species, for a strictly spatial test with a teacher trained the same way.
+
 ``--benchmark`` scores the student on the eBird benchmark when done; ``--int8-check``
 also scores it as the INT8 export runs it (weights stored as int8 per output
 channel, arithmetic in float32; ``convert.py --formats onnx_int8``).
@@ -87,6 +90,9 @@ def parse_args(argv=None) -> argparse.Namespace:
     p.add_argument('--qat-frac', type=float, default=0.0, help='share of steps trained INT8-aware (at the end)')
     # evaluation
     p.add_argument('--benchmark', help='eBird benchmark prefix')
+    p.add_argument('--holdout-km', type=float, default=0.0,
+                   help='leave records this close to benchmark cells out of the envelope and the marine '
+                        'species (use with a teacher trained with the same --holdout-km)')
     p.add_argument('--int8-check', action='store_true', help='also score with int8 weights')
     p.add_argument('--results', help='append a one-line summary to this JSONL file')
     return p.parse_args(argv)
@@ -127,13 +133,20 @@ def quantize_weights(model: nn.Module) -> None:
 # Targets
 # ---------------------------------------------------------------------------
 
-def envelope_mask(data: TrainingData, radius: int) -> torch.Tensor:
-    """``[species, 180, 360]`` True within ``radius`` one-degree bins of any record of the species."""
+def envelope_mask(data: TrainingData, radius: int, skip_cells: np.ndarray | None = None) -> torch.Tensor:
+    """``[species, 180, 360]`` True within ``radius`` one-degree bins of any record of the species.
+
+    ``skip_cells`` (boolean per cell) leaves the records of those cells out.
+    """
     cells = np.repeat(data.row_cell, np.diff(data.ptr))
+    col = data.col
+    if skip_cells is not None:
+        keep = ~skip_cells[cells]
+        cells, col = cells[keep], col[keep]
     lat_bin = np.clip((data.cell_lat + 90).astype(int), 0, 179)
     lng_bin = np.clip((data.cell_lng + 180).astype(int), 0, 359)
     occupied = torch.zeros(data.n_species, 180, 360, dtype=torch.bool)
-    occupied[torch.from_numpy(data.col), torch.from_numpy(lat_bin[cells]), torch.from_numpy(lng_bin[cells])] = True
+    occupied[torch.from_numpy(col), torch.from_numpy(lat_bin[cells]), torch.from_numpy(lng_bin[cells])] = True
     parts = []
     for i in range(0, data.n_species, 1000):
         x = occupied[i:i + 1000].float()[:, None]
@@ -178,6 +191,20 @@ def main(argv=None) -> None:
     if teacher.kind != 'teacher' or teacher.species != data.species:
         raise SystemExit('the teacher must be a habitat teacher trained on this training file')
     net, env = teacher.model.to(device), teacher.env.to(device)
+    teacher_holdout = float((teacher.extra.get('args') or {}).get('holdout_km') or 0.0)
+    if teacher_holdout != args.holdout_km:
+        raise SystemExit(f'--holdout-km {args.holdout_km:g} differs from the teacher\'s ({teacher_holdout:g} km); '
+                         'a spatial test needs both held out the same way')
+    skip = None
+    if args.holdout_km > 0:
+        # As in train_teacher.py: records near benchmark cells shape neither the envelope
+        # nor the list of marine species (the teacher should be held out the same way).
+        if not args.benchmark:
+            raise SystemExit('--holdout-km needs --benchmark')
+        from evaluation.benchmark import read_benchmark
+        bench_cells, _ = read_benchmark(args.benchmark)
+        skip = data.cells_near(bench_cells.lat.to_numpy(), bench_cells.lng.to_numpy(), args.holdout_km)
+        print(f'{int(skip.sum())} cells within {args.holdout_km:.0f} km of a benchmark cell left out', flush=True)
 
     # Pool: land cells of the habitat table, then the cells of the training file.
     habitat = pd.read_parquet(args.habitat)
@@ -203,7 +230,7 @@ def main(argv=None) -> None:
         lat_all, lng_all = np.concatenate([lat_all, sea_lat]), np.concatenate([lng_all, sea_lng])
         has_habitat = np.concatenate([np.ones(len(habitat), bool), data.cell_has_habitat, np.zeros(len(sea_lat), bool)])
         sea = torch.from_numpy(open_ocean(lat_all, lng_all) & ~has_habitat).to(device)
-        marine = torch.from_numpy(marine_species(data)).to(device)
+        marine = torch.from_numpy(marine_species(data, skip_cells=skip)).to(device)
         print(f'ocean: {len(sea_lat)} open-ocean cells added, {int(sea.sum())} pool cells at sea, '
               f'{int(marine.sum())} marine species', flush=True)
     pool_lat = torch.from_numpy(lat_all).to(device)
@@ -213,7 +240,7 @@ def main(argv=None) -> None:
 
     envelope = None
     if args.envelope:
-        envelope = envelope_mask(data, args.envelope).to(device)
+        envelope = envelope_mask(data, args.envelope, skip).to(device)
         lat_bin = torch.clamp((pool_lat + 90).long(), 0, 179)
         lng_bin = torch.clamp((pool_lng + 180).long(), 0, 359)
         print(f'envelope {args.envelope}°: {envelope.float().mean().item() * 100:.1f} % of (species, bin) inside', flush=True)

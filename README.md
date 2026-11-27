@@ -116,6 +116,7 @@ python -m evaluation.groups      CHECKPOINT data/benchmark/bench_20k --taxonomy 
 python -m evaluation.status_trends score CHECKPOINT data/st_2023_0p5.npz --taxonomy taxonomy.csv  # eBird Status & Trends maps
 python -m evaluation.filter_study CHECKPOINT geofilter_pairs.parquet --taxonomy taxonomy.csv  # effect on app detections
 python -m evaluation.range_maps  CHECKPOINT maps/ --species "Hirundo rustica" --taxonomy taxonomy.csv  # weekly range maps (GIF)
+python -m evaluation.held_out_years test_y23.npz train_y22.npz --model y22=teacher_y22.pt        # later years vs earlier ones
 python -m pytest tests                                                                        # unit tests
 ```
 
@@ -137,7 +138,9 @@ predict.py       species list for a place and week
 evaluation/      benchmark, seasonality, Status & Trends, app filter study, range maps
 data/            small curated inputs (humans and domestic animals)
 docs/            documentation and the web demo
+scripts/         demo animation (demo_gif.py)
 tests/           unit tests
+paper/           LaTeX source of the V3 paper
 ```
 
 ## Web demo

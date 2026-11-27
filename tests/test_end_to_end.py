@@ -49,8 +49,8 @@ def work(tmp_path_factory):
             for key, cls, _, group, _, where, months in SPECIES:
                 if where != home or month not in months or rng.random() > 0.6:
                     continue
-                if group != 'Aves' and dataset == EBIRD:
-                    continue
+                if group != 'Aves' and dataset == EBIRD and rng.random() > 0.2:
+                    continue  # a few non-bird records in eBird's dataset: counted in no shared effort
                 rows.append([f'obs{observer}', '', '1', '2020', str(month), str(day), f'{lat:.4f}', f'{lng:.4f}',
                              '', dataset, 'false', str(cls), str(key)])
     text = '\t'.join(COLUMNS) + '\n' + '\n'.join('\t'.join(r) for r in rows) + '\n'
@@ -107,6 +107,8 @@ def test_documented_chain(work):
     human = release.species.index('BN22686')
     assert (onnx_scores[:, human] >= 0.30 - 1e-4).all()  # the floor holds in the export
     assert release.extra['codes'][:3] == ['aaa1', 'bbb1', 'ccc1']
+    exported = [line.split('\t')[0] for line in open(f'{d}/exports/labels.txt', encoding='utf-8')]
+    assert exported == release.species  # the label file travels with the exports, in output order
 
     run('package.py', f'{d}/runs/student.pt', f'{d}/taxonomy.csv', f'{d}/ubiquitous.csv', f'{d}/release', '--name', 'gm2',
         '--nonbird-f0', '0.001')
@@ -150,10 +152,11 @@ def test_modeled_effort_counts_only_days_with_modeled_species(work):
     o = o.sort_index(); ref = ref.sort_index()
     assert eff['naturalist'][eff['naturalist'].grp == 'Other'].n.sum() > o.sum()  # plant days only count there
     assert (o.astype(int).values == ref.values).all() and list(o.index) == list(ref.index)
-    # k <= n for non-birds
-    sp = pd.read_parquet(f'{d}/t_modeled/species_res5.parquet')
-    j = sp[sp.grp == 'Other'].merge(eff['modeled'][eff['modeled'].grp == 'Other'], on=['cell', 'week', 'grp'], how='left')
-    assert j.n.notna().all() and (j.k <= j.n).all()
+    # k <= n for non-birds: their eBird-dataset records are left out of k as they are of n
+    for e in ('naturalist', 'modeled'):
+        sp = pd.read_parquet(f'{d}/t_{e}/species_res5.parquet')
+        j = sp[sp.grp == 'Other'].merge(eff[e][eff[e].grp == 'Other'], on=['cell', 'week', 'grp'], how='left')
+        assert j.n.notna().all() and (j.k <= j.n).all() and (j.k_w <= j.n_w + 1e-4).all()
     # Aves rows identical between modes
     a = lambda e: eff[e][eff[e].grp == 'Aves'].sort_values(['cell', 'week']).reset_index(drop=True)
     pd.testing.assert_frame_equal(a('naturalist'), a('modeled'))
