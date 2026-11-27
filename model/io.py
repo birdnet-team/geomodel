@@ -42,11 +42,17 @@ def _sigmoid(z: np.ndarray) -> np.ndarray:
 # Score curve
 # ---------------------------------------------------------------------------
 
-def curve_terms(curve: dict) -> tuple[float, float]:
-    """(gain, offset) so that ``logit(score) = offset + gain * ln(rate)``."""
+def curve_terms(curve: dict, per_species: bool = True):
+    """(gain, offset) so that ``logit(score) = offset + gain * ln(rate)``.
+
+    A curve may carry ``f0_species``, one anchor rate per output (e.g. a lower one for
+    non-birds); the offset is then an array over species. ``per_species=False``
+    ignores it and uses the common ``f0``.
+    """
     gain = float(curve['steepness']) / math.log(10.0)
-    offset = math.log(curve['anchor'] / (1 - curve['anchor'])) - float(curve['steepness']) * math.log10(curve['f0'])
-    return gain, offset
+    f0 = np.asarray(curve['f0_species'], np.float64) if per_species and curve.get('f0_species') is not None else curve['f0']
+    offset = math.log(curve['anchor'] / (1 - curve['anchor'])) - float(curve['steepness']) * np.log10(f0)
+    return gain, (float(offset) if np.ndim(offset) == 0 else offset)
 
 
 def rate_to_score(rate: np.ndarray, curve: dict = DEFAULT_CURVE) -> np.ndarray:
@@ -56,8 +62,8 @@ def rate_to_score(rate: np.ndarray, curve: dict = DEFAULT_CURVE) -> np.ndarray:
 
 
 def score_to_rate(score: np.ndarray, curve: dict = DEFAULT_CURVE) -> np.ndarray:
-    """App score -> encounter rate (inverse of ``rate_to_score``)."""
-    gain, offset = curve_terms(curve)
+    """App score -> encounter rate (inverse of ``rate_to_score``; common anchor only)."""
+    gain, offset = curve_terms(curve, per_species=False)
     score = np.clip(score, 1e-12, 1 - 1e-12)
     return np.exp((np.log(score / (1 - score)) - offset) / gain)
 

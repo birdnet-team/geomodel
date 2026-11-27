@@ -74,7 +74,11 @@ class ExportWrapper(nn.Module):
         #   logit(score) = logit(anchor) + steepness * (log10 r - log10 f0)
         # so a species reported on a fraction f0 of checklists scores `anchor`.
         if score_curve is not None:
-            self.curve_gain, self.curve_offset = curve_terms(score_curve)
+            self.curve_gain, offset = curve_terms(score_curve)
+            if np.ndim(offset):  # one anchor per species
+                self.register_buffer("curve_offset", torch.as_tensor(offset, dtype=torch.float32))
+            else:
+                self.curve_offset = offset
         else:
             self.curve_gain = None
         # Optional per-species minimum score (e.g. humans and domestic animals,

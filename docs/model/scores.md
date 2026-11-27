@@ -39,6 +39,15 @@ stored in the release checkpoint (`score_curve`) and applied in the exported gra
 so every format returns the same scores. `model.io.rate_to_score` and
 `score_to_rate` convert in Python.
 
+### A separate anchor for non-birds
+
+Non-bird rates are shares of all naturalist activity in a place, and species that are
+heard far more often than photographed (many frogs and insects) end up with low
+rates. `package.py --nonbird-f0 0.001` gives non-birds their own anchor: a non-bird
+reported on 0.1 % of naturalist observer-days then scores 0.1. The curve stores one
+anchor per output (`f0_species`) and every export applies it. Without the option all
+species share the same anchor.
+
 ## Humans and domestic animals
 
 The apps use the human class to recognize speech: if someone holds a phone, there is
