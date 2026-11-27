@@ -18,7 +18,7 @@
   // ---- Configuration -------------------------------------------------------
   // Change with every model or code update so browsers fetch the new files instead of cached ones
   // (also in index.md for demo.js and demo.css).
-  var ASSET_VERSION = "4.0-rc1";
+  var ASSET_VERSION = "4.0-rc2";
   var MODEL_URL = "geomodel_int8.onnx?v=" + ASSET_VERSION;
   var LABELS_URL = "labels.txt?v=" + ASSET_VERSION;
 
